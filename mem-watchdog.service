@@ -1,0 +1,21 @@
+[Unit]
+Description=Crostini Memory Watchdog — protects VS Code from OOM killer
+Documentation=https://github.com/chf3198/crostini-mem-watchdog
+After=default.target
+
+# Why this service exists:
+# earlyoom v1.7 crashes on Crostini immediately (exit 104) because the
+# ChromeOS kernel reports SwapFree: 18446744073709551360 kB (uint64 overflow).
+# earlyoom's strtol() call overflows fatally. This custom watchdog uses only
+# MemAvailable and PSI, which are both correct on this kernel.
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/mem-watchdog.sh
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

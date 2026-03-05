@@ -1,0 +1,12 @@
+{
+  "name": "mem-watchdog-status",
+  "displayName": "Mem Watchdog Status",
+  "description": "Status bar: mem-watchdog systemd service state + live RAM stats from /proc/meminfo",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": { "vscode": "^1.74.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {}
+}

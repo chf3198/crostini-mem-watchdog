@@ -1,0 +1,19 @@
+# Packaged extensions (build artifacts)
+vscode-extension/*.vsix
+
+# Node modules (if building the extension locally)
+vscode-extension/node_modules/
+vscode-extension/.vscode-test/
+
+# Test log output
+scratch/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.swp
+*.swo
