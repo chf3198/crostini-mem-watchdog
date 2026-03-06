@@ -2,7 +2,7 @@
 
 ## Project Origin & Context
 
-This repo was extracted from `../frankspressurewashing` (a Squarespace website project) after repeated VS Code OOM crashes during Playwright automation sessions. The extraction commit is `8190556` in that repo. **The canonical technical post-mortem** — including the full crash timeline, the Crostini swap investigation, and why earlyoom fails — lives at `../frankspressurewashing/docs/technical/system-stability.md`. Read it before making architectural changes.
+This repo was extracted from a separate private project after repeated VS Code OOM crashes during Playwright automation sessions. **The canonical technical post-mortem** — including the full crash timeline, the Crostini swap investigation, and why earlyoom fails — lives at [docs/technical/system-stability.md](../docs/technical/system-stability.md). Read it before making architectural changes.
 
 **Hardware**: Chromebook, Intel i3-N305, 6.3 GB RAM, ChromeOS Crostini (Debian 12, kernel 6.6.99). No swap visible inside the container (`free -h` shows `Swap: 0B`) — 16 GB zram swap runs at the ChromeOS host layer, transparent to the container kernel. The container OOM killer fires on the container's own RAM view.
 
@@ -32,8 +32,8 @@ vscode-extension/        ← self-contained installable VS Code extension
 
 **Config sourcing pattern:** `mem-watchdog.sh` sources `~/.config/mem-watchdog/config.sh` (if it exists) after its own defaults. `configWriter.js` writes that file from VS Code Settings. This keeps the daemon script itself unmodified at runtime and simplifies upgrade detection.
 
-**Companion scripts** (live in `../frankspressurewashing/scripts/`, not this repo):
-- `mem-status.sh` — memory dashboard (terminal version; superseded by `memWatchdog.showDashboard` command)
+**Companion scripts** (superseded by extension commands, no longer needed):
+- `mem-status.sh` — memory dashboard (superseded by `memWatchdog.showDashboard` command)
 - `playwright-safe-launch.sh` — pre-flight RAM check (superseded by `memWatchdog.preflightCheck` command)
 
 ## Critical Constraints — Never Violate
