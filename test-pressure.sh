@@ -50,8 +50,8 @@ results=()
 RED='\033[0;31m'; GRN='\033[0;32m'; YEL='\033[0;33m'; BLD='\033[1m'; RST='\033[0m'
 
 tee_log() { echo -e "$*" | tee -a "$LOG"; }
-PASS()    { ((pass++)); results+=("  ✅ PASS: $*"); tee_log "  ${GRN}PASS${RST}: $*"; }
-FAIL()    { ((fail++)); results+=("  ❌ FAIL: $*"); tee_log "  ${RED}FAIL${RST}: $*"; }
+PASS()    { ((++pass)); results+=("  ✅ PASS: $*"); tee_log "  ${GRN}PASS${RST}: $*"; }
+FAIL()    { ((++fail)); results+=("  ❌ FAIL: $*"); tee_log "  ${RED}FAIL${RST}: $*"; }
 SKIP()    { results+=("  ⏭  SKIP: $*"); tee_log "  ${YEL}SKIP${RST}: $*"; }
 
 tee_log ""
@@ -232,8 +232,8 @@ else
   bad=0
   for pid in $(ps -C code -o pid= 2>/dev/null); do
     adj=$(cat "/proc/$pid/oom_score_adj" 2>/dev/null || echo "gone")
-    [[ "$adj" == "gone" ]] && continue
-    (( adj > 0 )) && ((bad++))
+    if [[ "$adj" == "gone" ]]; then continue; fi
+    if (( adj > 0 )); then ((bad+=1)); fi
   done
   if (( bad == 0 )); then
     PASS "All live VS Code PIDs have oom_score_adj ≤ 0"
@@ -259,7 +259,126 @@ else
   fi
 fi
 
-# ── SUMMARY ──────────────────────────────────────────────────────────────────
+# ── TEST 4: oom_score_adj set to 1000 on a new chrome-named process ──────────
+# Tests the adjust_oom_scores() path without any memory allocation.
+# The watchdog runs every 2 s; after 5 s (≥2 iterations) it must have
+# condemned the decoy. If the decoy is already killed it means RAM was
+# below the 25% SIGTERM threshold — which is equally valid watchdog behaviour.
+tee_log ""
+tee_log "── Test 4: Watchdog sets oom_score_adj=+1000 on chrome-named process within 5 s"
+
+if $DRY_RUN; then
+  SKIP "dry-run: would start (exec -a chrome sleep 300) and verify oom_score_adj=1000 after 5 s"
+else
+  (exec -a chrome sleep 300) &
+  T4_PID=$!
+  tee_log "  Decoy 'chrome' PID ${T4_PID} started"
+
+  # Wait at least 2 watchdog iterations (2 s each)
+  sleep 5
+
+  t4_adj=$(cat "/proc/${T4_PID}/oom_score_adj" 2>/dev/null || echo "gone")
+
+  if [[ "$t4_adj" == "gone" ]]; then
+    # Watchdog killed the process — RAM was at or below the SIGTERM threshold.
+    # That is correct daemon behaviour; oom_score_adj was certainly set before kill.
+    SKIP "Test 4: Decoy killed by watchdog before adj check (RAM ≤ 25% threshold — expected)"
+  elif [[ "$t4_adj" == "1000" ]]; then
+    PASS "Watchdog set oom_score_adj=1000 on chrome decoy PID ${T4_PID} within 5 s"
+  else
+    FAIL "oom_score_adj=${t4_adj} on chrome decoy — expected 1000 (watchdog adj logic broken?)"
+  fi
+
+  kill "${T4_PID}" 2>/dev/null || true
+  wait "${T4_PID}" 2>/dev/null || true
+fi
+
+# ── TEST 5: Both chrome AND playwright-named processes killed in one crossing ──
+# kill_browsers() fires two independent pkill commands. This test verifies
+# BOTH are sent in a single threshold-crossing event, covering the second pkill
+# pattern that Test 1 never exercises.
+#
+# Conditional: requires MemAvailable < 40% to reach the 25% SIGTERM threshold
+# with an allocation ≤ 1500 MB. SKIPS safely at high RAM (e.g., fresh boot).
+tee_log ""
+tee_log "── Test 5: Both chrome + playwright-named processes killed in one threshold crossing"
+
+# Re-read available RAM — may differ from preflight after Test 1 ran
+t5_avail_kb=$(awk '/^MemAvailable/{print $2; exit}' /proc/meminfo)
+t5_pct=$(( t5_avail_kb * 100 / total_kb ))
+
+if $DRY_RUN; then
+  SKIP "dry-run: would start chrome+playwright decoys and allocate to reach 23% MemAvailable"
+elif (( t5_pct >= 40 )); then
+  SKIP "Test 5: RAM at ${t5_pct}% free — need <40% to reach 25% SIGTERM threshold within the 1500 MB safe allocation budget (close Chrome/MCP tabs and retry)"
+else
+  # Start two decoys with browser-matching command-line names
+  (exec -a chrome sleep 300) &
+  T5_CHROME=$!
+  # 'node playwright' matches pkill -f 'node.*playwright' (argv[0] = "node playwright")
+  (exec -a 'node playwright' sleep 300) &
+  T5_PLAY=$!
+  tee_log "  Chrome decoy:     PID ${T5_CHROME}"
+  tee_log "  Playwright decoy: PID ${T5_PLAY}"
+
+  t5_target_kb=$(( total_kb * 23 / 100 ))
+  t5_alloc_kb=$(( t5_avail_kb - t5_target_kb ))
+  t5_alloc_mb=$(( t5_alloc_kb / 1024 ))
+
+  if (( t5_alloc_mb <= 0 || t5_alloc_mb > 1500 )); then
+    kill "${T5_CHROME}" "${T5_PLAY}" 2>/dev/null || true
+    SKIP "Test 5: Allocation of ${t5_alloc_mb} MB out of safe range — skipping"
+  else
+    tee_log "  Allocating ~${t5_alloc_mb} MB to push MemAvailable to ~23%..."
+
+    python3 -c "
+import time
+mb = ${t5_alloc_mb}
+chunk = 10 * 1024 * 1024
+buf = []
+for i in range(mb // 10):
+    buf.append(bytearray(chunk))
+    buf[-1][0] = 1
+print(f'Allocated {mb} MB', flush=True)
+time.sleep(20)
+print('Releasing', flush=True)
+" &
+    T5_ALLOC=$!
+
+    # Wait up to 25 s for BOTH decoys to be killed
+    waited=0
+    t5_chrome_killed=false
+    t5_play_killed=false
+
+    while (( waited < 25 )); do
+      sleep 1
+      (( ++waited ))
+      kill -0 "${T5_CHROME}" 2>/dev/null || t5_chrome_killed=true
+      kill -0 "${T5_PLAY}"   2>/dev/null || t5_play_killed=true
+      if $t5_chrome_killed && $t5_play_killed; then break; fi
+    done
+
+    kill "${T5_ALLOC}" 2>/dev/null || true
+    wait "${T5_ALLOC}" 2>/dev/null || true
+
+    if $t5_chrome_killed && $t5_play_killed; then
+      PASS "Both chrome and playwright-named decoys killed within ${waited}s"
+    elif $t5_chrome_killed && ! $t5_play_killed; then
+      FAIL "Chrome decoy killed but playwright-named decoy survived — second pkill pattern broken"
+      kill "${T5_PLAY}" 2>/dev/null || true
+    elif ! $t5_chrome_killed && $t5_play_killed; then
+      FAIL "Playwright-named decoy killed but chrome decoy survived — first pkill pattern broken"
+      kill "${T5_CHROME}" 2>/dev/null || true
+    else
+      FAIL "Neither decoy killed within 25s — watchdog did not fire"
+      kill "${T5_CHROME}" "${T5_PLAY}" 2>/dev/null || true
+    fi
+
+    wait "${T5_CHROME}" "${T5_PLAY}" 2>/dev/null || true
+  fi
+fi
+
+
 tee_log ""
 tee_log "════════════════════════════════════════════════════════════════"
 tee_log "RESULTS: ${pass} passed, ${fail} failed — $(date '+%H:%M:%S')"

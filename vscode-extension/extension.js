@@ -184,3 +184,10 @@ function deactivate() {
 }
 
 module.exports = { activate, deactivate };
+
+// ── Test-only exports ─────────────────────────────────────────────────────────
+// Not present in normal operation. Set MEM_WATCHDOG_TEST=1 before requiring
+// this module to expose internal functions for unit tests without calling
+// activate(). The guard prevents any production code path from accessing _test.
+/* c8 ignore next */
+if (process.env.MEM_WATCHDOG_TEST) { module.exports._test = { update, POLL_INTERVAL_MS }; }

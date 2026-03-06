@@ -71,10 +71,26 @@ const mockWorkspace = {
     onDidChangeConfiguration() { return { dispose() {} }; },
 };
 
+// ── ThemeColor and MarkdownString stubs ───────────────────────────────────────
+// extension.js constructs these:
+//   new vscode.ThemeColor('statusBarItem.errorBackground')
+//   new vscode.MarkdownString('...')
+// The stubs preserve the .id / .value so tests can assert on them.
+
+class MockThemeColor {
+    constructor(id) { this.id = id; }
+}
+
+class MockMarkdownString {
+    constructor(value) { this.value = value || ''; }
+}
+
 const mockVscode = {
-    window:    mockWindow,
-    workspace: mockWorkspace,
+    window:         mockWindow,
+    workspace:      mockWorkspace,
     StatusBarAlignment: { Left: 1, Right: 2 },
+    ThemeColor:     MockThemeColor,
+    MarkdownString: MockMarkdownString,
     commands: {
         registerCommand(id, handler) { return { dispose() {} }; },
     },
