@@ -1,12 +1,96 @@
 {
   "name": "mem-watchdog-status",
-  "displayName": "Mem Watchdog Status",
-  "description": "Status bar: mem-watchdog systemd service state + live RAM stats from /proc/meminfo",
-  "version": "0.0.1",
-  "publisher": "local",
+  "displayName": "Mem Watchdog",
+  "description": "Crostini memory watchdog: self-installs daemon, status bar widget, memory dashboard, and Playwright pre-flight check.",
+  "version": "0.1.0",
+  "publisher": "chf3198",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/chf3198/crostini-mem-watchdog.git" },
+  "icon": "icon.png",
+  "galleryBanner": { "color": "#16213e", "theme": "dark" },
   "engines": { "vscode": "^1.74.0" },
   "categories": ["Other"],
+  "keywords": ["memory", "watchdog", "crostini", "chromebook", "oom", "linux"],
+  "extensionKind": ["ui"],
   "activationEvents": ["onStartupFinished"],
   "main": "./extension.js",
-  "contributes": {}
+  "scripts": {
+    "vscode:prepublish": "node scripts/prepare.js",
+    "vscode:uninstall": "node ./lifecycle.js",
+    "build": "node scripts/prepare.js"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "memWatchdog.showDashboard",
+        "title": "Show Memory Dashboard",
+        "category": "Mem Watchdog"
+      },
+      {
+        "command": "memWatchdog.preflightCheck",
+        "title": "Playwright Pre-flight Check",
+        "category": "Mem Watchdog"
+      },
+      {
+        "command": "memWatchdog.killChrome",
+        "title": "Kill Chrome / Playwright Now",
+        "category": "Mem Watchdog"
+      },
+      {
+        "command": "memWatchdog.restartService",
+        "title": "Restart Service",
+        "category": "Mem Watchdog"
+      }
+    ],
+    "configuration": {
+      "title": "Mem Watchdog",
+      "properties": {
+        "memWatchdog.sigtermThresholdPct": {
+          "type": "number",
+          "default": 25,
+          "minimum": 5,
+          "maximum": 50,
+          "scope": "machine",
+          "order": 1,
+          "markdownDescription": "Send `SIGTERM` to Chrome/Playwright when `MemAvailable` drops below this % of total RAM. Default: `25` (~1.6 GB on a 6.3 GB system)."
+        },
+        "memWatchdog.sigkillThresholdPct": {
+          "type": "number",
+          "default": 15,
+          "minimum": 5,
+          "maximum": 40,
+          "scope": "machine",
+          "order": 2,
+          "markdownDescription": "Escalate to `SIGKILL` when `MemAvailable` drops below this %. Must be less than `#memWatchdog.sigtermThresholdPct#`. Default: `15` (~945 MB)."
+        },
+        "memWatchdog.psiThresholdPct": {
+          "type": "number",
+          "default": 25,
+          "minimum": 5,
+          "maximum": 100,
+          "scope": "machine",
+          "order": 3,
+          "markdownDescription": "Send `SIGTERM` on sustained memory stall: PSI `full avg10` exceeds this %. Default: `25`."
+        },
+        "memWatchdog.vscodeRssWarnMB": {
+          "type": "number",
+          "default": 2500,
+          "minimum": 500,
+          "maximum": 8000,
+          "scope": "machine",
+          "order": 4,
+          "markdownDescription": "Warn + `SIGTERM` Chrome when total VS Code RSS exceeds this many MB. Default: `2500` (2.5 GB). Adjust proportionally to your system RAM — see README."
+        },
+        "memWatchdog.vscodeRssEmergencyMB": {
+          "type": "number",
+          "default": 3500,
+          "minimum": 1000,
+          "maximum": 8000,
+          "scope": "machine",
+          "order": 5,
+          "markdownDescription": "Emergency: `SIGKILL` Chrome (or `SIGTERM` highest-RSS ext host if no Chrome) when VS Code RSS exceeds this many MB. Default: `3500` (3.5 GB)."
+        }
+      }
+    }
+  }
 }

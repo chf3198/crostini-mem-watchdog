@@ -5,14 +5,14 @@
 # Runs a finite set of checks, logs results to scripts/scratch/, exits cleanly.
 # NEVER runs indefinitely — every test has an explicit timeout.
 #
-# Usage: ./scripts/test-watchdog.sh
+# Usage: bash test-watchdog.sh
 # ─────────────────────────────────────────────────────────────────────────────
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
-LOG="$REPO/scripts/scratch/watchdog-test-$(date '+%Y%m%d-%H%M%S').log"
-WATCHDOG="$REPO/scripts/mem-watchdog.sh"
+REPO="$(cd "$(dirname "$0")" && pwd)"
+LOG="$REPO/scratch/watchdog-test-$(date '+%Y%m%d-%H%M%S').log"
+WATCHDOG="$REPO/mem-watchdog.sh"
 
-mkdir -p "$REPO/scripts/scratch"
+mkdir -p "$REPO/scratch"
 
 pass=0
 fail=0
@@ -162,14 +162,17 @@ else
   FAIL "No watchdog journal entries in last hour"
 fi
 
-# ── TEST 12: publish script has no /tmp references ───────────────────────────
+# ── TEST 12: watchdog-tray.sh has no /tmp writes (only mkfifo PIPE which is cleaned up) ──
 tee_log ""
-tee_log "── Test 12: publish-to-squarespace.js has no /tmp references"
-pub_tmp=$(grep -c '/tmp/' "$REPO/scripts/publish-to-squarespace.js" 2>/dev/null)
-if [[ "$pub_tmp" -eq 0 ]]; then
-  PASS "No /tmp references in publish-to-squarespace.js"
+tee_log "── Test 12: watchdog-tray.sh uses only a named FIFO (no stray /tmp writes)"
+tray_tmp=$(grep -c 'echo.*>/tmp/\|write.*>/tmp/\|tee.*/tmp/' "$REPO/watchdog-tray.sh" 2>/dev/null)
+tray_tmp=${tray_tmp:-0}
+# watchdog-tray.sh intentionally uses mktemp for a named FIFO (cleaned up on EXIT trap) — that is allowed.
+# The check ensures no uncleaned log/data writes to /tmp were introduced.
+if [[ "$tray_tmp" -eq 0 ]]; then
+  PASS "No stray /tmp data writes in watchdog-tray.sh"
 else
-  FAIL "$pub_tmp /tmp reference(s) still in publish-to-squarespace.js"
+  FAIL "$tray_tmp stray /tmp write(s) found in watchdog-tray.sh"
 fi
 
 # ── SUMMARY ──────────────────────────────────────────────────────────────────

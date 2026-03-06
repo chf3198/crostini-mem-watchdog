@@ -1,0 +1,133 @@
+# Copilot Instructions — crostini-mem-watchdog
+
+## Project Origin & Context
+
+This repo was extracted from `../frankspressurewashing` (a Squarespace website project) after repeated VS Code OOM crashes during Playwright automation sessions. The extraction commit is `8190556` in that repo. **The canonical technical post-mortem** — including the full crash timeline, the Crostini swap investigation, and why earlyoom fails — lives at `../frankspressurewashing/docs/technical/system-stability.md`. Read it before making architectural changes.
+
+**Hardware**: Chromebook, Intel i3-N305, 6.3 GB RAM, ChromeOS Crostini (Debian 12, kernel 6.6.99). No swap visible inside the container (`free -h` shows `Swap: 0B`) — 16 GB zram swap runs at the ChromeOS host layer, transparent to the container kernel. The container OOM killer fires on the container's own RAM view.
+
+## Architecture
+
+```
+mem-watchdog.sh          ← core daemon; single infinite loop, no deps beyond coreutils
+mem-watchdog.service     ← systemd user unit (systemctl --user, NOT system)
+install.sh               ← legacy installer (pre-extension path; still functional)
+test-watchdog.sh         ← 12-test suite; exits 0/1; logs to scratch/
+watchdog-tray.sh         ← optional yad system tray icon (separate from service)
+vscode-extension/        ← self-contained installable VS Code extension
+  extension.js           ← activate(): orchestrates install, config, commands, status bar
+  installer.js           ← hash-based daemon auto-install/upgrade; writes to ~/.local/bin/
+  configWriter.js        ← VS Code settings → ~/.config/mem-watchdog/config.sh
+  commands.js            ← 4 commands: dashboard, preflight, killChrome, restartService
+  lifecycle.js           ← vscode:uninstall hook; stops + disables the service
+  scripts/
+    prepare.js           ← vscode:prepublish: copies mem-watchdog.sh + .service → resources/
+  resources/             ← BUILD ARTIFACT (gitignored); bundled into .vsix by vsce
+    mem-watchdog.sh      ← copy of repo-root daemon (chmod +x)
+    mem-watchdog.service ← copy of repo-root service unit
+  package.json           ← manifest: commands, settings (scope=machine), extensionKind=["ui"]
+```
+
+**The daemon must remain a separate systemd process.** The VS Code JS extension host freezes under OOM pressure — the daemon's independence is the protection. The extension auto-installs the daemon; it does NOT replace it.
+
+**Config sourcing pattern:** `mem-watchdog.sh` sources `~/.config/mem-watchdog/config.sh` (if it exists) after its own defaults. `configWriter.js` writes that file from VS Code Settings. This keeps the daemon script itself unmodified at runtime and simplifies upgrade detection.
+
+**Companion scripts** (live in `../frankspressurewashing/scripts/`, not this repo):
+- `mem-status.sh` — memory dashboard (terminal version; superseded by `memWatchdog.showDashboard` command)
+- `playwright-safe-launch.sh` — pre-flight RAM check (superseded by `memWatchdog.preflightCheck` command)
+
+## Critical Constraints — Never Violate
+
+1. **Never read `SwapFree` from `/proc/meminfo`** — it is `~18.4 exabytes` on Crostini (uint64 overflow sentinel). Use only `MemAvailable` and `MemTotal`.
+2. **Always use `systemctl --user`**, never `sudo systemctl`. The container is non-root (`CapEff=0`).
+3. **No `/tmp` writes in `mem-watchdog.sh`** — Test 9 checks this. Log only via `logger -t mem-watchdog`.
+4. **Bash integer arithmetic only** for threshold comparisons — no `bc`, no floats. PSI values are scaled ×100 (e.g., `psi_x100=345` represents `avg10=3.45`).
+5. **`oom_score_adj`**: VS Code PIDs → `0` (counters Electron's 200–300 default); Chrome/Playwright → `1000`. Non-negative values require no root.
+
+## Kill Hierarchy (in priority order)
+
+| Condition | Action |
+|---|---|
+| `MemAvailable ≤ 15%` | `SIGKILL` Chrome/Playwright |
+| `MemAvailable ≤ 25%` | `SIGTERM` Chrome/Playwright |
+| PSI `full avg10 > 25%` | `SIGTERM` Chrome/Playwright |
+| VS Code RSS ≥ `VSCODE_RSS_EMERG_KB` (3.5 GB) | `SIGKILL` Chrome; if no Chrome → `SIGTERM` highest-RSS `code` PID (extension host) |
+| VS Code RSS ≥ `VSCODE_RSS_WARN_KB` (2.5 GB) | `SIGTERM` Chrome + desktop alert |
+
+## Startup Mode Pattern
+
+When new VS Code PIDs are detected, the daemon switches to 0.5s polling for 90s and drops the RSS emergency threshold to 2.0 GB. This prevents the crash pattern where the extension host spikes 0→4+ GB in under 2 seconds during startup. The state is tracked via `_startup_mode_end` (epoch seconds), `_known_code_pids`, and `_startup_just_triggered`.
+
+## Developer Workflows
+
+```bash
+# Test without killing anything
+./mem-watchdog.sh --dry-run
+
+# Run all 12 validation tests (~3s, exits 0/1) — logs go to scratch/
+bash test-watchdog.sh
+
+# Run live memory pressure tests (requires RAM < 40% free or Chrome tabs open)
+bash test-pressure.sh --dry-run   # preview what would happen
+bash test-pressure.sh             # live: allocates memory, verifies watchdog fires
+
+# Install (copies to ~/.local/bin, enables service)
+bash install.sh [--no-extension] [--dry-run]
+
+# Service management
+systemctl --user status mem-watchdog
+systemctl --user restart mem-watchdog
+journalctl --user -u mem-watchdog -f
+
+# Build VS Code extension (copies daemon files into resources/ then packages)
+cd vscode-extension
+npm run build                          # populate resources/ for local dev/testing
+npm install -g @vscode/vsce && vsce package  # → mem-watchdog-status-0.1.0.vsix
+code --install-extension mem-watchdog-status-0.1.0.vsix
+
+# Adjust thresholds without reinstalling — edit VS Code Settings > Mem Watchdog
+# (configWriter.js writes ~/.config/mem-watchdog/config.sh; daemon sources it on restart)
+```
+
+# Install (copies to ~/.local/bin, enables service)
+bash install.sh [--no-extension] [--dry-run]
+
+# Service management
+systemctl --user status mem-watchdog
+systemctl --user restart mem-watchdog
+journalctl --user -u mem-watchdog -f
+
+# Build VS Code extension from source
+cd vscode-extension && npm install -g @vscode/vsce && vsce package
+code --install-extension mem-watchdog-status-0.0.1.vsix
+```
+
+## Out-of-Band System Config (not installed by install.sh)
+
+Test 4 checks for these — they must be set manually after install:
+
+- **`~/.config/Code/argv.json`**: `{ "js-flags": "--max-old-space-size=2048" }` — caps V8 heap. **Do not set this below 2048**; 512 MB caused GC thrash that *increased* total RSS (confirmed 2026-03-05).
+- **`~/.config/Code/User/settings.json`**: `typescript.tsserver.maxTsServerMemory: 2048`, `files.watcherExclude` covering `node_modules/**`, `telemetry.telemetryLevel: "off"`.
+
+## Threshold Tuning
+
+**Preferred:** VS Code Settings → **Mem Watchdog** (all 5 thresholds). `configWriter.js` writes `~/.config/mem-watchdog/config.sh`; the daemon sources it on next restart.
+
+**Manual fallback:** Top-of-file variables in [mem-watchdog.sh](../mem-watchdog.sh). For 6 GB RAM (default): `VSCODE_RSS_WARN_KB=2500000`, `VSCODE_RSS_EMERG_KB=3500000`. Adjust proportionally — see the RAM table in README.md.
+
+## Logging Convention
+
+All log lines go through `log()`: `logger -t mem-watchdog` (→ journald) + `echo` with timestamp. Action lines are prefixed `ACTION(SIGTERM):` or `ACTION(SIGKILL):`. Desktop notifications use `notify-send` with `DISPLAY=:0` set explicitly (required in Crostini where `$DISPLAY` may be unset in a service context), throttled per-severity via `_last_notify_warn` / `_last_notify_crit` epoch timestamps.
+
+## Test Suite Notes
+
+- Tests 1–12 live in `test-watchdog.sh` at the **repo root** (not `scripts/`).
+- `REPO` is set to the script's own directory — do not add a `..` parent traversal.
+- Test logs write to `scratch/` (gitignored) inside the repo root.
+- Test 12 checks `watchdog-tray.sh` for stray `/tmp` data writes (the `mktemp` FIFO is exempted — it is cleaned up by the EXIT trap).
+- `test-pressure.sh` — live pressure tests using real memory allocation + a cgroup safety ceiling. Uses `sudo -n` (confirmed no password required). Skips safely if insufficient free RAM; run when RAM < 40% free for best coverage.
+
+## Key Reference Documents
+
+- [docs/technical/system-stability.md](../docs/technical/system-stability.md) — crash post-mortem, three OOM pathways, why zram doesn't fix container OOM, V8 GC thrash analysis, cgroup testing technique
+- [docs/workflow/learnings.md](../docs/workflow/learnings.md) — accumulated learnings log; update after every significant discovery

@@ -1,5 +1,6 @@
-# Packaged extensions (build artifacts)
+# Packaged extensions and build artifacts
 vscode-extension/*.vsix
+vscode-extension/resources/
 
 # Node modules (if building the extension locally)
 vscode-extension/node_modules/

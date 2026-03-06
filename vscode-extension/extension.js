@@ -1,11 +1,21 @@
-// extension.js — plain JavaScript VS Code extension, no build step required
-// Monitors: mem-watchdog systemd service state + live RAM from /proc/meminfo
-// Updates: every 2 seconds via setInterval in activate()
+// extension.js — Mem Watchdog VS Code extension entry point
+// ─────────────────────────────────────────────────────────────────────────────
+// On activation:
+//   1. Installs / upgrades the daemon (installer.js)
+//   2. Writes VS Code settings → ~/.config/mem-watchdog/config.sh (configWriter.js)
+//   3. Registers 4 commands (commands.js)
+//   4. Watches for settings changes → rewrites config + restarts daemon
+//   5. Runs the status bar status poller every 2 s (original logic preserved)
+// ─────────────────────────────────────────────────────────────────────────────
 'use strict';
 
-const vscode = require('vscode');
-const { exec } = require('child_process'); // built-in Node — no npm install
-const fs = require('fs');                  // built-in Node — no npm install
+const vscode       = require('vscode');
+const { exec }     = require('child_process');
+const fs           = require('fs');
+
+const installer    = require('./installer');
+const configWriter = require('./configWriter');
+const commands     = require('./commands');
 
 // ── /proc/meminfo reader ──────────────────────────────────────────────────────
 
@@ -105,35 +115,70 @@ function update(item) {
 
 // ── Extension entry points ────────────────────────────────────────────────────
 
-function activate(context) {
-    // createStatusBarItem(id, alignment, priority)
-    //   id        — unique string within this extension
-    //   alignment — StatusBarAlignment.Left (1) or .Right (2)
-    //   priority  — higher = further toward the outer edge of that side
+async function activate(context) {
+    // ── 1. Install / upgrade the daemon ──────────────────────────────────────
+    try {
+        const outcome = await installer.installOrUpgrade(context);
+        if (outcome === 'installed') {
+            vscode.window.showInformationMessage('Mem Watchdog: daemon installed and service started ✓');
+        } else if (outcome === 'upgraded') {
+            vscode.window.showInformationMessage('Mem Watchdog: daemon upgraded and service restarted ✓');
+        }
+        // 'current' → no notification; service is already running correctly
+    } catch (err) {
+        vscode.window.showErrorMessage(`Mem Watchdog: install failed — ${err.message}`);
+    }
+
+    // ── 2. Sync VS Code settings → config file ────────────────────────────────
+    try {
+        configWriter.writeConfig(vscode.workspace.getConfiguration('memWatchdog'));
+    } catch (err) {
+        // Non-fatal; daemon falls back to its built-in defaults
+        console.error('[memWatchdog] configWriter error:', err.message);
+    }
+
+    // ── 3. Register commands ──────────────────────────────────────────────────
+    context.subscriptions.push(
+        vscode.commands.registerCommand('memWatchdog.showDashboard',  commands.showDashboard),
+        vscode.commands.registerCommand('memWatchdog.preflightCheck', commands.preflightCheck),
+        vscode.commands.registerCommand('memWatchdog.killChrome',     commands.killChrome),
+        vscode.commands.registerCommand('memWatchdog.restartService', commands.restartService),
+        { dispose: commands.dispose },
+    );
+
+    // ── 4. Settings change listener ───────────────────────────────────────────
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(e => {
+            if (!e.affectsConfiguration('memWatchdog')) { return; }
+            try {
+                configWriter.writeConfig(vscode.workspace.getConfiguration('memWatchdog'));
+            } catch (err) {
+                console.error('[memWatchdog] configWriter update error:', err.message);
+            }
+            // Restart so the daemon picks up the new config on its next startup
+            exec('systemctl --user restart mem-watchdog 2>/dev/null', () => {});
+        })
+    );
+
+    // ── 5. Status bar ─────────────────────────────────────────────────────────
     const item = vscode.window.createStatusBarItem(
         'mem-watchdog-status',
         vscode.StatusBarAlignment.Left,
         100
     );
-    item.name = 'Mem Watchdog'; // label shown in the status bar right-click menu
-
-    // Show immediately so the item is visible from the first frame
+    item.name    = 'Mem Watchdog';
+    item.command = 'memWatchdog.showDashboard'; // clicking opens dashboard
     item.show();
 
-    // First paint right away, then poll every 2 seconds
     update(item);
     const timer = setInterval(() => update(item), 2000);
 
-    // Push both the status bar item and the timer into subscriptions.
-    // VS Code calls .dispose() on every subscription when the extension
-    // is deactivated — this clears the item and stops the interval.
     context.subscriptions.push(item);
     context.subscriptions.push({ dispose: () => clearInterval(timer) });
 }
 
 function deactivate() {
     // Subscriptions are disposed automatically via context.subscriptions.
-    // Nothing additional required here.
 }
 
 module.exports = { activate, deactivate };

@@ -55,6 +55,16 @@ STARTUP_DURATION=90           # seconds to stay in startup mode after new VS Cod
 STARTUP_RSS_WARN_KB=1500000   # ~1.5 GB — warn threshold in startup mode
 STARTUP_RSS_EMERG_KB=2000000  # ~2.0 GB — emergency threshold in startup mode
 
+# ── User config override — written by the VS Code extension ────────────────────
+# If the Mem Watchdog VS Code extension is installed and has custom thresholds
+# configured via VS Code Settings, it writes them to this file. Sourcing it here
+# overrides the defaults above. Runtime state variables (_startup_*) are set
+# below and cannot be overridden via config.
+# Config path respects XDG_CONFIG_HOME if set (default: ~/.config).
+_WATCHDOG_CFG="${XDG_CONFIG_HOME:-${HOME}/.config}/mem-watchdog/config.sh"
+[[ -f "$_WATCHDOG_CFG" ]] && source "$_WATCHDOG_CFG"
+unset _WATCHDOG_CFG
+
 # ── Startup mode state ───────────────────────────────────────────────────────
 _startup_mode_end=0       # epoch seconds until startup mode expires
 _startup_just_triggered=false  # true for one iteration — skip sleep for instant re-check
