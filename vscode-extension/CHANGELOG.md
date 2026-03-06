@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0] — 2026-03-06
+
+### Added
+- **Unit test suite** — 52 tests across 5 files (`utils.test.js`, `configWriter.test.js`, `commands.test.js`, `installer.test.js`, `extension.test.js`). Zero-install runner via `node:test` built-in; coverage via `c8`.
+- **`extension.test.js` stress tests** — 9 tests covering the status bar state machine (all 5 states), the `_updating` pileup guard under 20 concurrent `update()` calls, and resilience under adverse conditions (`/proc/meminfo` unreadable).
+- **Live pressure suite** (`test-pressure.sh`) expanded to 5 tests: oom_score_adj verification on a real decoy process (unconditional), and dual chrome+playwright kill in one threshold crossing (conditional on RAM < 40% free).
+
+### Changed
+- Test file count now 52 JS + 12 bash = 64 total.
+- All 4 gates must pass before publish: `bash test-watchdog.sh`, `bash -n mem-watchdog.sh`, `shellcheck`, `npm test`.
+
+---
+
 ## [0.2.0] — 2026-03-06
 
 ### Changed

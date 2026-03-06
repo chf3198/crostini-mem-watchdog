@@ -20,6 +20,64 @@
 
 ---
 
+### 2026-03-06 — Pre-publish doc/packaging audit: what vsce auto-excludes
+
+**Context**: Pre-v0.3.0 audit of `.vscodeignore`, documentation, and file health.
+
+**Discovery**: `vsce` has a built-in `defaultIgnore` list that automatically excludes many files from the `.vsix` without needing entries in `.vscodeignore`. Confirmed items auto-excluded: `package-lock.json`, `yarn.lock`, `**/.git/**`, `**/*.vsix`, `.github/`, `.vscode-test/**`, and all `devDependencies`. Items that are NOT auto-excluded and must be manually added: `test/` directories, `publish.sh`, CI scripts.
+
+Before the fix, `vsce ls` showed the `test/` directory (6 files, ~25 KB) and `publish.sh` bundled into every installed extension unnecessarily.
+
+**Application**: When adding new dev-only files/directories, always check `vsce ls` before publishing. The `.vscodeignore` blacklist approach is the right one (whitelist via `files` in `package.json` would conflict — vsce errors if both are present).
+
+---
+
+### 2026-03-06 — Duplicate JSDoc stale block: always delete the old one after editing
+
+**Context**: Reviewing `configWriter.js` pre-publish.
+
+**Discovery**: `configWriter.js` had two consecutive `/** ... */` JSDoc blocks for the same `writeConfig` function — the original single-param version (lacking `@returns`) followed by the updated version (with cross-field validation docs and `@returns`). The old block was never removed when the function signature was extended. This is invisible to `npm test` but confuses IDEs and documentation generators — hover docs show the stale description.
+
+**Application**: When updating a function signature that already has a JSDoc block, delete the old block in the same edit. Never leave two `/**...*/` blocks above one function.
+
+---
+
+### 2026-03-06 — publish.sh PUBLISHER var was misleading (echoed but unused by vsce)
+
+**Context**: Reviewing `publish.sh` pre-publish.
+
+**Discovery**: The script set `PUBLISHER="${VSCE_PUBLISHER:-chf3198}"` from `.env`, echoed it, but never passed it to `vsce publish`. The publisher identity is read from `package.json "publisher"` by `vsce` automatically — the shell variable had no effect on the actual publish command. Worse, `VSCE_PUBLISHER=chf3198` in `.env` was stale (the real publisher is `CurtisFranks` as set in `package.json`). This could mislead an operator checking the script output.
+
+**Fix**: Replaced with `node -e "process.stdout.write(require('./package.json').publisher)"` to read the authoritative value directly from `package.json`.
+
+**Application**: Never maintain a separate publisher variable in shell scripts — it will drift. Read from `package.json` or document that `vsce` handles it automatically.
+
+---
+
+### 2026-03-06 — Unit tests for extension.js: pileup guard is the highest-value test
+
+**Context**: Stress testing the watchdog extension — adding `extension.test.js`.
+
+**Discovery**: The `_updating` pileup guard in `extension.js` is the most operationally critical logic to test: under OOM pressure, `systemctl --user is-active` can take seconds, and the 2-second `setInterval` can stack many concurrent `update()` calls. Each call spawns a `child_process.exec`, consuming ~2 MB RSS per call — exactly the kind of cascade that accelerates OOM under pressure. Testing that 20 concurrent calls produce exactly 1 `sh()` invocation (not 20) is the highest-value assertion in the entire test suite.
+
+The test required a `_test` seam in `extension.js`: `module.exports._test = { update, POLL_INTERVAL_MS }` gated behind `process.env.MEM_WATCHDOG_TEST`. The key insight is that `require.cache` injection is sufficient — no need for a `_setCheckServiceFn` seam if the `sh` mock is injected at the utils module level before `extension.js` is loaded.
+
+**Application**: Any timer-driven function that calls external processes needs a pileup guard and a test that exercises it under concurrent invocations. The `/* c8 ignore next */` annotation on the test-seam line prevents it from appearing as an uncovered branch in coverage reports.
+
+---
+
+### 2026-03-06 — PASS/FAIL macro `set -e` incompatibility: pre-increment vs post-increment
+
+**Context**: Fixing `test-pressure.sh` during stress testing.
+
+**Discovery**: `((pass++))` uses post-increment: it evaluates to the value of `pass` *before* the increment. When `pass=0`, this evaluates to `0` (false in bash arithmetic context), causing `set -e` to exit the script immediately after the first `PASS()` call. The fix is pre-increment: `((++pass))` evaluates to the value *after* incrementing — always ≥ 1 when pass starts at 0. The same issue applies to `fail++`.
+
+Similarly, `[[ "$cond" == "value" ]] && continue` in a `for` loop body — when the condition is false, the `&&` short-circuits to false (exit code 1), triggering `set -e` and aborting the loop. The fix is `if [[ "$cond" == "value" ]]; then continue; fi`.
+
+**Application**: Under `set -e`, never use post-increment (`i++`) for counter variables that start at 0. Never use `[[ condition ]] && statement` in loop bodies — always use `if/then/fi`. Run `bash -x script.sh` to trace failures when `set -e` causes mysterious early exits.
+
+
+
 ### 2026-03-06 — Extension self-contained architecture: config sourcing pattern vs script modification
 
 **Context**: Designing how the VS Code extension should push threshold changes to the running daemon.

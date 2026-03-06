@@ -3,11 +3,17 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Publishes (or version-bumps + publishes) the Mem Watchdog extension.
 #
+# The publisher is read from package.json "publisher" field automatically by
+# vsce — do not pass it on the command line.
+#
 # Usage:
 #   ./publish.sh              # publish current version as-is
-#   ./publish.sh patch        # bump patch (0.1.0 → 0.1.1), then publish
-#   ./publish.sh minor        # bump minor (0.1.0 → 0.2.0), then publish
-#   ./publish.sh major        # bump major (0.1.0 → 1.0.0), then publish
+#   ./publish.sh patch        # bump patch (0.2.0 → 0.2.1), then publish
+#   ./publish.sh minor        # bump minor (0.2.0 → 0.3.0), then publish
+#   ./publish.sh major        # bump major (0.2.0 → 1.0.0), then publish
+#
+# NOTE: vsce publish <bump> also commits a version tag in git. To suppress
+# that behaviour, add --no-git-tag-version.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -31,9 +37,9 @@ if [[ -z "${VSCE_PAT:-}" ]]; then
   exit 1
 fi
 
-# VSCE_PAT is read automatically by vsce publish via env var — no login step needed.
-PUBLISHER="${VSCE_PUBLISHER:-chf3198}"
-echo "[publish] Publisher: $PUBLISHER"
+# Publisher comes from package.json — just confirm it for the operator.
+PUBLISHER=$(node -e "process.stdout.write(require('./package.json').publisher)")
+echo "[publish] Publisher: $PUBLISHER (from package.json)"
 
 # ── Build resources/ ─────────────────────────────────────────────────────────
 echo "[publish] Running npm run build..."

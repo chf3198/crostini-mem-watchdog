@@ -101,8 +101,22 @@ VS Code Extension (this)            Systemd Daemon (independent process)
 • Status bar + 4 commands           • Polls /proc/meminfo + PSI every 2 s
 • Upgrade detection via hash        • Kills Chrome on threshold breach
 • Settings → config sync            • Survives VS Code freezing / crashing
-                                    • oom_score_adj tuning every loop
+• Shared helpers in utils.js        • oom_score_adj tuning every loop
 ```
+
+---
+
+## Development
+
+```bash
+git clone https://github.com/chf3198/crostini-mem-watchdog.git
+cd crostini-mem-watchdog/vscode-extension
+npm run build          # populate resources/ from repo root
+npm test               # 52 JS unit tests via node:test (zero-install)
+npm run test:coverage  # same + c8 V8 coverage report
+```
+
+52 unit tests covering `readMeminfo`/`readPsi`/`sh()`, config validation, command handlers, installer decision logic, and the `update()` state machine + pileup guard.
 
 ---
 
@@ -195,7 +209,7 @@ cd vscode-extension
 npm run build
 npm install -g @vscode/vsce
 vsce package
-code --install-extension mem-watchdog-status-0.2.0.vsix
+code --install-extension mem-watchdog-status-0.3.0.vsix
 ```
 
 Reload the window (`Developer: Reload Window`). The daemon installs and starts automatically on first activation.

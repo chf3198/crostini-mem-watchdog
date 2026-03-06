@@ -2,7 +2,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # test-watchdog.sh — Bounded test suite for mem-watchdog.sh
 #
-# Runs a finite set of checks, logs results to scripts/scratch/, exits cleanly.
+# Runs a finite set of checks, logs results to scratch/, exits cleanly.
 # NEVER runs indefinitely — every test has an explicit timeout.
 #
 # Usage: bash test-watchdog.sh

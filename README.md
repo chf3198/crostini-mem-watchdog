@@ -8,7 +8,8 @@
 [![Installs](https://img.shields.io/visual-studio-marketplace/i/CurtisFranks.mem-watchdog-status?color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=CurtisFranks.mem-watchdog-status)
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ChromeOS%20Crostini-4285f4)](https://chromeos.dev/en/linux)
-[![Tests](https://img.shields.io/badge/tests-12%2F12%20passing-brightgreen)](test-watchdog.sh)
+[![Tests](https://img.shields.io/badge/bash-12%2F12-brightgreen)](test-watchdog.sh)
+[![Tests](https://img.shields.io/badge/js-52%2F52-brightgreen)](vscode-extension/package.json)
 
 *`earlyoom` hard-crashes on Crostini (exit 104, every 3 seconds, zero protection). This replaces it with a VS Code-aware watchdog that kills Chrome before the kernel OOM-kills VS Code.*
 
@@ -97,6 +98,7 @@ crostini-mem-watchdog/
     ├── installer.js             ← SHA-256 hash-based auto-install/upgrade
     ├── configWriter.js          ← VS Code Settings → ~/.config/mem-watchdog/config.sh
     ├── commands.js              ← dashboard, preflight, killChrome, restartService
+    ├── utils.js                 ← readMeminfo(), readPsi(), sh() — shared helpers
     ├── lifecycle.js             ← vscode:uninstall: stop + disable service
     └── scripts/prepare.js       ← vscode:prepublish: bundles daemon files into resources/
 ```

@@ -23,12 +23,6 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.sh');
 
 /**
  * Write (or overwrite) the config file from current VS Code settings.
- *
- * @param {import('vscode').WorkspaceConfiguration} cfg
- *        vscode.workspace.getConfiguration('memWatchdog')
- */
-/**
- * Write (or overwrite) the config file from current VS Code settings.
  * Validates cross-field constraints that the JSON schema cannot enforce:
  *   - sigkillThresholdPct must be strictly less than sigtermThresholdPct
  *   - vscodeRssWarnMB must be strictly less than vscodeRssEmergencyMB
@@ -37,6 +31,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.sh');
  * so the caller can optionally surface a warning to the user.
  *
  * @param {import('vscode').WorkspaceConfiguration} cfg
+ *        vscode.workspace.getConfiguration('memWatchdog')
  * @returns {string[]}  — empty if all values valid; one entry per correction
  */
 function writeConfig(cfg) {

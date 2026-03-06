@@ -1,8 +1,16 @@
 # Files excluded from the .vsix package.
 # NOTE: resources/ is NOT listed here — it IS needed at runtime.
+# NOTE: package-lock.json, *.vsix, and .github/ are excluded automatically
+#       by vsce's built-in defaultIgnore — no need to list them here.
 
 # Build scripts — not needed inside the installed extension
 scripts/
+
+# Publish helper — not needed inside the installed extension
+publish.sh
+
+# Test suite — not needed inside the installed extension
+test/
 
 # Dev tooling
 node_modules/
