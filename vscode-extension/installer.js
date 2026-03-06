@@ -19,7 +19,7 @@ const vscode  = require('vscode');
 const fs      = require('fs');
 const path    = require('path');
 const crypto  = require('crypto');
-const { exec } = require('child_process');
+const { sh }  = require('./utils');
 
 const STATE_HASH_KEY     = 'installedDaemonHash';
 const INSTALL_BIN_DIR    = path.join(process.env.HOME || '/root', '.local',  'bin');
@@ -37,14 +37,6 @@ function sha256(filePath) {
     } catch (_) {
         return null;
     }
-}
-
-function sh(cmd) {
-    return new Promise((resolve) => {
-        exec(cmd, { timeout: 15000 }, (err, stdout, stderr) => {
-            resolve({ ok: !err, stdout: (stdout || '').trim(), stderr: (stderr || '').trim() });
-        });
-    });
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -70,11 +62,17 @@ async function installOrUpgrade(context) {
         return 'current'; // treat as up-to-date so we don't block activation
     }
 
-    const bundledHash    = sha256(bundledSh);
-    const installedHash  = context.globalState.get(STATE_HASH_KEY);
-    const isFirstInstall = !fs.existsSync(INSTALLED_SCRIPT);
+    const bundledHash     = sha256(bundledSh);
+    const installedHash   = context.globalState.get(STATE_HASH_KEY);
+    const installedOnDisk = sha256(INSTALLED_SCRIPT); // null if file missing or unreadable
+    const isFirstInstall  = !fs.existsSync(INSTALLED_SCRIPT);
 
-    if (!isFirstInstall && bundledHash && bundledHash === installedHash) {
+    // Skip reinstall only when: file exists on disk, bundled hash is known,
+    // it matches the stored state hash, AND it matches the actual bytes on disk.
+    // The on-disk check catches corruption or accidental deletion since last activation.
+    if (!isFirstInstall && bundledHash &&
+        bundledHash === installedHash &&
+        bundledHash === installedOnDisk) {
         // Daemon is current — ensure service is running but don't reinstall.
         await ensureRunning();
         return 'current';

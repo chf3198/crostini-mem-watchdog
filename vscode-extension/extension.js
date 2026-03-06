@@ -10,54 +10,38 @@
 'use strict';
 
 const vscode       = require('vscode');
-const { exec }     = require('child_process');
-const fs           = require('fs');
 
 const installer    = require('./installer');
 const configWriter = require('./configWriter');
 const commands     = require('./commands');
+const { readMeminfo, sh } = require('./utils');
 
-// ── /proc/meminfo reader ──────────────────────────────────────────────────────
-
-function readMeminfo() {
-    // Returns { totalKB, availableKB, pct } or null on any read error.
-    // Reads ONLY MemTotal and MemAvailable — these are correct on Crostini
-    // even when SwapFree reports a uint64-overflow bogus value.
-    try {
-        const raw = fs.readFileSync('/proc/meminfo', 'utf8');
-        let totalKB = 0, availableKB = 0;
-        for (const line of raw.split('\n')) {
-            const m = line.match(/^(\w+):\s+(\d+)/);
-            if (!m) continue;
-            if (m[1] === 'MemTotal')     totalKB     = parseInt(m[2], 10);
-            if (m[1] === 'MemAvailable') availableKB = parseInt(m[2], 10);
-        }
-        const pct = totalKB > 0 ? (availableKB / totalKB) * 100 : 0;
-        return { totalKB, availableKB, pct };
-    } catch (_) {
-        return null;
-    }
-}
+// ── Status bar poll interval ──────────────────────────────────────────────────
+// Single source of truth — referenced by setInterval and the tooltip text.
+const POLL_INTERVAL_MS = 2000;
 
 // ── systemd service check ─────────────────────────────────────────────────────
 
-function checkService(callback) {
-    // exec() is async; callback receives the status string.
-    // NOTE: systemctl exits non-zero for non-"active" states, so _err is
-    // intentionally ignored — we read stdout regardless of exit code.
-    exec('systemctl --user is-active mem-watchdog', (_err, stdout) => {
-        callback(stdout.trim() || 'unknown');
-        // Possible values: 'active', 'inactive', 'failed',
-        //                  'activating', 'deactivating', 'unknown'
-    });
+async function checkService() {
+    // systemctl exits non-zero for non-"active" states; sh() handles that
+    // gracefully — stdout still contains the state string regardless.
+    const { stdout } = await sh('systemctl --user is-active mem-watchdog');
+    return stdout || 'unknown';
+    // Possible values: 'active', 'inactive', 'failed',
+    //                  'activating', 'deactivating', 'unknown'
 }
 
 // ── Status bar update ─────────────────────────────────────────────────────────
+// Guard prevents overlapping updates when checkService() is slow under OOM
+// pressure — ensures at most one outstanding systemctl call at any time.
+let _updating = false;
 
-function update(item) {
-    const mem = readMeminfo();
-
-    checkService((svcStatus) => {
+async function update(item) {
+    if (_updating) { return; }
+    _updating = true;
+    try {
+        const mem = readMeminfo();
+        const svcStatus = await checkService();
         const isRunning = svcStatus === 'active';
 
         // ── Background colour ─────────────────────────────────────────────
@@ -105,12 +89,14 @@ function update(item) {
                 `| Available | ${availMB} MB |\n` +
                 `| Total     | ${totalGB} GB |\n` +
                 `| Free %    | ${mem.pct.toFixed(1)}% |\n\n` +
-                `_Polls every 2 s_`
+                `_Polls every ${POLL_INTERVAL_MS / 1000} s_`
             );
         } else {
             item.tooltip = `mem-watchdog: ${svcStatus} — /proc/meminfo unreadable`;
         }
-    });
+    } finally {
+        _updating = false;
+    }
 }
 
 // ── Extension entry points ────────────────────────────────────────────────────
@@ -131,7 +117,12 @@ async function activate(context) {
 
     // ── 2. Sync VS Code settings → config file ────────────────────────────────
     try {
-        configWriter.writeConfig(vscode.workspace.getConfiguration('memWatchdog'));
+        const cfgWarnings = configWriter.writeConfig(vscode.workspace.getConfiguration('memWatchdog'));
+        if (cfgWarnings && cfgWarnings.length > 0) {
+            vscode.window.showWarningMessage(
+                'Mem Watchdog: invalid settings corrected to safe defaults — check Developer Console for details.'
+            );
+        }
     } catch (err) {
         // Non-fatal; daemon falls back to its built-in defaults
         console.error('[memWatchdog] configWriter error:', err.message);
@@ -148,15 +139,26 @@ async function activate(context) {
 
     // ── 4. Settings change listener ───────────────────────────────────────────
     context.subscriptions.push(
-        vscode.workspace.onDidChangeConfiguration(e => {
+        vscode.workspace.onDidChangeConfiguration(async e => {
             if (!e.affectsConfiguration('memWatchdog')) { return; }
+            let cfgWarnings = [];
             try {
-                configWriter.writeConfig(vscode.workspace.getConfiguration('memWatchdog'));
+                cfgWarnings = configWriter.writeConfig(vscode.workspace.getConfiguration('memWatchdog')) || [];
             } catch (err) {
                 console.error('[memWatchdog] configWriter update error:', err.message);
             }
-            // Restart so the daemon picks up the new config on its next startup
-            exec('systemctl --user restart mem-watchdog 2>/dev/null', () => {});
+            if (cfgWarnings.length > 0) {
+                vscode.window.showWarningMessage(
+                    'Mem Watchdog: invalid settings corrected to safe defaults — check Developer Console for details.'
+                );
+            }
+            // Restart so the daemon picks up the new config, then verify it came back up
+            const { ok, stderr } = await sh('systemctl --user restart mem-watchdog 2>&1');
+            if (!ok) {
+                vscode.window.showErrorMessage(
+                    `Mem Watchdog: service restart failed after settings change — ${stderr}`
+                );
+            }
         })
     );
 
@@ -171,7 +173,7 @@ async function activate(context) {
     item.show();
 
     update(item);
-    const timer = setInterval(() => update(item), 2000);
+    const timer = setInterval(() => update(item), POLL_INTERVAL_MS);
 
     context.subscriptions.push(item);
     context.subscriptions.push({ dispose: () => clearInterval(timer) });

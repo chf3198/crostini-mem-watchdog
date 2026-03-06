@@ -12,8 +12,7 @@
 'use strict';
 
 const vscode = require('vscode');
-const { exec } = require('child_process');
-const fs = require('fs');
+const { readMeminfo, readPsi, sh } = require('./utils');
 
 // ── Shared output channel (created lazily) ────────────────────────────────────
 let _channel = null;
@@ -26,45 +25,11 @@ function channel() {
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-function sh(cmd, opts = {}) {
-    return new Promise((resolve) => {
-        exec(cmd, { timeout: 10000, ...opts }, (err, stdout, stderr) => {
-            resolve({ ok: !err, stdout: (stdout || '').trim(), stderr: (stderr || '').trim() });
-        });
-    });
-}
-
-/** Read /proc/meminfo and return parsed key→number(kB) map. */
-function readMeminfo() {
-    try {
-        const raw = fs.readFileSync('/proc/meminfo', 'utf8');
-        const out = {};
-        for (const line of raw.split('\n')) {
-            const m = line.match(/^(\w+):\s+(\d+)/);
-            if (m) { out[m[1]] = parseInt(m[2], 10); }
-        }
-        return out;
-    } catch (_) {
-        return {};
-    }
-}
-
 /** Compute total RSS in kB for all processes matching a name pattern. */
 async function totalRss(pattern) {
     const { stdout } = await sh(`ps -C ${pattern} -o rss= 2>/dev/null || true`);
     if (!stdout) { return 0; }
     return stdout.split('\n').reduce((s, n) => s + (parseInt(n, 10) || 0), 0);
-}
-
-/** Read PSI full avg10 (×100 for integer math). */
-function readPsi() {
-    try {
-        const raw = fs.readFileSync('/proc/pressure/memory', 'utf8');
-        const m = raw.match(/full avg10=([\d.]+)/);
-        return m ? Math.round(parseFloat(m[1]) * 100) : 0;
-    } catch (_) {
-        return 0;
-    }
 }
 
 // ── Command: Show Memory Dashboard ───────────────────────────────────────────
@@ -80,11 +45,11 @@ async function showDashboard() {
 
     // ── RAM summary ───────────────────────────────────────────────────────────
     const mi = readMeminfo();
-    if (mi.MemTotal) {
-        const totalMB = Math.round(mi.MemTotal   / 1024);
-        const availMB = Math.round(mi.MemAvailable / 1024);
+    if (mi && mi.totalKB) {
+        const totalMB = Math.round(mi.totalKB     / 1024);
+        const availMB = Math.round(mi.availableKB / 1024);
         const usedMB  = totalMB - availMB;
-        const pct     = Math.round(availMB * 100 / mi.MemTotal);
+        const pct     = Math.round(mi.pct);
         ch.appendLine('');
         ch.appendLine('  ── System RAM ──');
         ch.appendLine(`  Total:     ${totalMB} MB`);
@@ -152,8 +117,8 @@ async function showDashboard() {
 // ── Command: Playwright Pre-flight Check ─────────────────────────────────────
 
 async function preflightCheck() {
-    const mi      = readMeminfo();
-    const pct     = mi.MemTotal ? Math.round(mi.MemAvailable * 100 / mi.MemTotal) : 0;
+    const mi  = readMeminfo();
+    const pct = mi ? Math.round(mi.pct) : 0;
     const vsRSS   = Math.round(await totalRss('code')    / 1024);
     const { ok: svcOk } = await sh('systemctl --user is-active mem-watchdog 2>/dev/null');
     const chromeRunning  = (await sh("pgrep -fc '(chrome|chromium)' 2>/dev/null || echo 0")).stdout !== '0';
@@ -192,14 +157,14 @@ async function preflightCheck() {
 
 async function killChrome() {
     const results = await Promise.all([
-        sh("pkill -SIGTERM -f '(chrome|chromium)' 2>/dev/null || true"),
-        sh("pkill -SIGTERM -f 'node.*playwright' 2>/dev/null || true"),
+        sh("pkill -SIGTERM -f '(chrome|chromium)' 2>/dev/null"),
+        sh("pkill -SIGTERM -f 'node.*playwright' 2>/dev/null"),
     ]);
 
     const chromeSig  = results[0];
     const playSig    = results[1];
 
-    // pkill exits 1 if no matching processes — that's fine
+    // pkill exits 0 if ≥1 process was signaled, 1 if none matched — ok reflects this
     const chromeKilled = chromeSig.ok;
     const playKilled   = playSig.ok;
 
