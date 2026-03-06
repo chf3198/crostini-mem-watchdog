@@ -6,7 +6,7 @@
 
 [![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/chf3198.mem-watchdog-status?label=VS%20Marketplace&color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=chf3198.mem-watchdog-status)
 [![Installs](https://img.shields.io/visual-studio-marketplace/i/chf3198.mem-watchdog-status?color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=chf3198.mem-watchdog-status)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ChromeOS%20Crostini-4285f4)](https://chromeos.dev/en/linux)
 [![Tests](https://img.shields.io/badge/tests-12%2F12%20passing-brightgreen)](test-watchdog.sh)
 
@@ -181,4 +181,6 @@ Three fixes:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+**[PolyForm Noncommercial 1.0.0](LICENSE)** — free for personal, educational, and non-commercial use.
+
+Commercial use (including internal company tooling) requires a paid license. See [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) or contact [curtisfranks@gmail.com](mailto:curtisfranks@gmail.com).

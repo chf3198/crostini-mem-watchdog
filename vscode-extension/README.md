@@ -195,7 +195,7 @@ cd vscode-extension
 npm run build
 npm install -g @vscode/vsce
 vsce package
-code --install-extension mem-watchdog-status-0.1.0.vsix
+code --install-extension mem-watchdog-status-0.2.0.vsix
 ```
 
 Reload the window (`Developer: Reload Window`). The daemon installs and starts automatically on first activation.
@@ -203,3 +203,9 @@ Reload the window (`Developer: Reload Window`). The daemon installs and starts a
 ## Uninstall
 
 Uninstalling the extension stops and disables the `mem-watchdog` service. The daemon binary at `~/.local/bin/mem-watchdog.sh` is intentionally left in place — remove it manually if desired.
+
+## License
+
+**[PolyForm Noncommercial 1.0.0](https://github.com/chf3198/crostini-mem-watchdog/blob/main/LICENSE)** — free for personal, educational, and non-commercial use.
+
+Commercial use requires a paid license. See [COMMERCIAL-LICENSE.md](https://github.com/chf3198/crostini-mem-watchdog/blob/main/COMMERCIAL-LICENSE.md) or contact [curtisfranks@gmail.com](mailto:curtisfranks@gmail.com).

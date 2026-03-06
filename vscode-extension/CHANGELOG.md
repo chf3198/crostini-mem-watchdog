@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.0] — 2026-03-06
+
+### Changed
+- License migrated from MIT to **PolyForm Noncommercial 1.0.0**. Free for personal, educational, and non-commercial use. Commercial use requires a paid license — see [COMMERCIAL-LICENSE.md](https://github.com/chf3198/crostini-mem-watchdog/blob/main/COMMERCIAL-LICENSE.md) or contact curtisfranks@gmail.com.
+
 ## [0.1.0] — 2026-03-06
 
 Complete rewrite. The extension is now a self-contained installable that bundles and manages the daemon — no separate install script required.
