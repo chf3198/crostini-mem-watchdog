@@ -69,11 +69,13 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
 **EXPLORE**: Read relevant files. No edits. Understand before touching.  
 **PLAN**: Name every file that will change and why. If the change touches >2 files, write the plan before starting.  
 **IMPLEMENT**: Make the change. After every edit to a shell file, run `bash -n <file>` immediately.  
-**GATE**: Both checks must exit 0 — no exceptions, no skips.
+**GATE**: All four checks must exit 0 — no exceptions, no skips.
 
 ```bash
-bash test-watchdog.sh   # 12 tests, ~3s — must exit 0
-bash -n mem-watchdog.sh # syntax check — must exit 0
+bash test-watchdog.sh   # 12 bash tests, ~3s — must exit 0
+bash -n mem-watchdog.sh # bash syntax check — must exit 0
+shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
+cd vscode-extension && npm test   # 43 JS unit tests, ~1s — must exit 0
 ```
 
 **REFLECT**: Read your own diff. Ask aloud: *"What did I not test? What could break under OOM pressure or during VS Code startup?"* Fix those gaps before proceeding.  
@@ -129,6 +131,8 @@ journalctl --user -u mem-watchdog -f
 # Build and publish VS Code extension
 cd vscode-extension
 npm run build                     # populate resources/ for local dev/testing
+npm test                          # 43 JS unit tests via node:test (~1s, exits 0/1)
+npm run test:coverage             # same + c8 V8 coverage report to stdout + lcov
 npx vsce package                  # → mem-watchdog-status-x.y.z.vsix
 VSCE_PAT="..." npx vsce publish --pat "$VSCE_PAT"  # publisher: CurtisFranks
 

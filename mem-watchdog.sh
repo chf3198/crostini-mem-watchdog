@@ -62,6 +62,7 @@ STARTUP_RSS_EMERG_KB=2000000  # ~2.0 GB — emergency threshold in startup mode
 # below and cannot be overridden via config.
 # Config path respects XDG_CONFIG_HOME if set (default: ~/.config).
 _WATCHDOG_CFG="${XDG_CONFIG_HOME:-${HOME}/.config}/mem-watchdog/config.sh"
+# shellcheck source=/dev/null
 [[ -f "$_WATCHDOG_CFG" ]] && source "$_WATCHDOG_CFG"
 unset _WATCHDOG_CFG
 
@@ -179,6 +180,7 @@ adjust_oom_scores() {
         <(echo "$_known_code_pids" | tr ' ' '\n' | grep -v '^$' | sort) \
         <(echo "$current_pids"     | tr ' ' '\n' | grep -v '^$' | sort) | wc -l)
     else
+      # shellcheck disable=SC2126
       new_count=$(echo "$current_pids" | tr ' ' '\n' | grep -v '^$' | wc -l)
     fi
     if (( new_count > 0 )); then

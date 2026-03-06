@@ -38,6 +38,7 @@ run()     {
   if $DRY_RUN; then
     echo "  [dry-run] $*"
   else
+    # shellcheck disable=SC2294
     eval "$@"
   fi
 }
