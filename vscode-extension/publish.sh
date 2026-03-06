@@ -4,7 +4,7 @@
 # Publishes (or version-bumps + publishes) the Mem Watchdog extension.
 #
 # Usage:
-#   ./publish.sh              # publish current version
+#   ./publish.sh              # publish current version as-is
 #   ./publish.sh patch        # bump patch (0.1.0 → 0.1.1), then publish
 #   ./publish.sh minor        # bump minor (0.1.0 → 0.2.0), then publish
 #   ./publish.sh major        # bump major (0.1.0 → 1.0.0), then publish
@@ -31,7 +31,7 @@ if [[ -z "${VSCE_PAT:-}" ]]; then
   exit 1
 fi
 
-# ── Confirm publisher ─────────────────────────────────────────────────────────
+# VSCE_PAT is read automatically by vsce publish via env var — no login step needed.
 PUBLISHER="${VSCE_PUBLISHER:-chf3198}"
 echo "[publish] Publisher: $PUBLISHER"
 
@@ -40,17 +40,17 @@ echo "[publish] Running npm run build..."
 cd "$SCRIPT_DIR"
 npm run build
 
-# ── Login ─────────────────────────────────────────────────────────────────────
-echo "[publish] Logging in as $PUBLISHER..."
-echo "$VSCE_PAT" | vsce login "$PUBLISHER" --pat "$VSCE_PAT"
-
 # ── Publish ───────────────────────────────────────────────────────────────────
 BUMP="${1:-}"
 if [[ -n "$BUMP" ]]; then
   echo "[publish] Bumping version: $BUMP"
-  vsce publish "$BUMP"
+  vsce publish "$BUMP" \
+    --pat "$VSCE_PAT" \
+    --githubBranch main
 else
-  vsce publish
+  vsce publish \
+    --pat "$VSCE_PAT" \
+    --githubBranch main
 fi
 
 echo "[publish] Done."
