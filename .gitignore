@@ -2,6 +2,9 @@
 vscode-extension/*.vsix
 vscode-extension/resources/
 
+# Secrets — never commit
+.env
+
 # Node modules (if building the extension locally)
 vscode-extension/node_modules/
 vscode-extension/.vscode-test/
