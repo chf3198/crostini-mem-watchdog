@@ -24,6 +24,9 @@
 #   - Sets oom_score_adj=0 on VS Code (lowers Electron's default 200-300).
 #   - Sets oom_score_adj=+1000 on Chrome (kernel kills it first).
 #   - Checks every 2 seconds (was 4s — confirmed too slow to catch rapid spike).
+#   - STARTUP MODE: switches to 0.5s checks for 90s when new VS Code PIDs detected.
+#   - STARTUP MODE: proactively SIGTERMs Chrome the moment VS Code starts loading.
+#   - STARTUP MODE: uses 2.0 GB emergency threshold (vs 3.5 GB normal).
 #   - Sends desktop notifications (notify-send) throttled to once per 5 min.
 #   - Logs all actions via systemd journal (logger -t mem-watchdog).
 #
@@ -43,6 +46,19 @@ OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 VSCODE_RSS_EMERG_KB=3500000   # ~3.5 GB — SIGKILL chrome; if no chrome, SIGTERM extension host
 VSCODE_RSS_WARN_KB=2500000    # ~2.5 GB — SIGTERM chrome + desktop alert to restart ext host
 NOTIFY_INTERVAL=300           # seconds between desktop notifications per severity
+
+# ── Startup mode — faster polling + tighter thresholds for 90s after VS Code starts ──
+# Root cause of 2026-03-06 crash: extension host went 0→4.7 GB in <2s during startup.
+# Fix: detect new VS Code PIDs, switch to 0.5s interval, drop emergency threshold to 2 GB.
+STARTUP_INTERVAL=0.5          # seconds between checks during VS Code startup
+STARTUP_DURATION=90           # seconds to stay in startup mode after new VS Code PIDs
+STARTUP_RSS_WARN_KB=1500000   # ~1.5 GB — warn threshold in startup mode
+STARTUP_RSS_EMERG_KB=2000000  # ~2.0 GB — emergency threshold in startup mode
+
+# ── Startup mode state ───────────────────────────────────────────────────────
+_startup_mode_end=0       # epoch seconds until startup mode expires
+_startup_just_triggered=false  # true for one iteration — skip sleep for instant re-check
+_known_code_pids=""       # space-separated sorted PIDs from previous iteration
 
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
@@ -142,6 +158,31 @@ adjust_oom_scores() {
       log "  oom_score_adj=${OOM_CHROME_ADJ} set on Chrome/Playwright PID ${pid}"
     fi
   done
+
+  # ── Detect new VS Code sessions → trigger startup mode ────────────────────
+  local current_pids
+  current_pids=$(ps -C code -o pid= 2>/dev/null | sort | tr '\n' ' ')
+  if [[ -n "$current_pids" && "$current_pids" != "$_known_code_pids" ]]; then
+    local new_count=0
+    if [[ -n "$_known_code_pids" ]]; then
+      new_count=$(comm -13 \
+        <(echo "$_known_code_pids" | tr ' ' '\n' | grep -v '^$' | sort) \
+        <(echo "$current_pids"     | tr ' ' '\n' | grep -v '^$' | sort) | wc -l)
+    else
+      new_count=$(echo "$current_pids" | tr ' ' '\n' | grep -v '^$' | wc -l)
+    fi
+    if (( new_count > 0 )); then
+      _startup_mode_end=$(( $(date +%s) + STARTUP_DURATION ))
+      _startup_just_triggered=true
+      log "VS Code startup: ${new_count} new PIDs — startup mode active for ${STARTUP_DURATION}s (${STARTUP_INTERVAL}s interval, ${STARTUP_RSS_EMERG_KB} kB emerg threshold)"
+      # Pre-emptively SIGTERM Chrome to free memory before extensions load
+      if pgrep -f '(chrome|chromium)' &>/dev/null; then
+        log "  Startup mode: pre-emptively SIGTERMing Chrome to free memory"
+        kill_browsers "TERM" "VS Code startup: freeing memory before extension load"
+      fi
+    fi
+    _known_code_pids="$current_pids"
+  fi
 }
 
 # ── Main loop ────────────────────────────────────────────────────────────────
@@ -151,8 +192,23 @@ $DRY_RUN && log "DRY-RUN mode — no processes will be killed"
 # Apply OOM scores immediately at startup before the first loop iteration
 adjust_oom_scores
 
-while sleep "$INTERVAL"; do
+while true; do
+  # ── Determine effective thresholds and whether we're in startup mode ────────
+  local_now=$(date +%s)
+  if (( local_now < _startup_mode_end )); then
+    in_startup=true
+    eff_warn=$STARTUP_RSS_WARN_KB
+    eff_emerg=$STARTUP_RSS_EMERG_KB
+    eff_interval=$STARTUP_INTERVAL
+  else
+    in_startup=false
+    eff_warn=$VSCODE_RSS_WARN_KB
+    eff_emerg=$VSCODE_RSS_EMERG_KB
+    eff_interval=$INTERVAL
+  fi
+
   # Re-apply OOM scores every loop — catches newly spawned VS Code/Chrome PIDs
+  # (also detects new VS Code sessions and triggers startup mode)
   adjust_oom_scores
 
   # Read MemAvailable and MemTotal.
@@ -186,7 +242,7 @@ while sleep "$INTERVAL"; do
   vscode_rss=$(ps -C code -o rss= 2>/dev/null | awk '{s+=$1} END{print s+0}')
   chrome_running=$(pgrep -f '(chrome|chromium)' 2>/dev/null | head -1)
 
-  if (( vscode_rss >= VSCODE_RSS_EMERG_KB )); then
+  if (( vscode_rss >= eff_emerg )); then
     log "EMERGENCY: VS Code RSS ${vscode_rss} kB (≥3.5 GB) — attempting to save VS Code window"
     notify_desktop "crit" "🚨 VS Code Memory EMERGENCY" \
       "VS Code RSS: $(( vscode_rss / 1024 )) MB — restarting extension host.\nRun: Developer: Restart Extension Host"
@@ -200,7 +256,7 @@ while sleep "$INTERVAL"; do
         $DRY_RUN || kill -TERM "$ext_host_pid" 2>/dev/null
       fi
     fi
-  elif (( vscode_rss >= VSCODE_RSS_WARN_KB )); then
+  elif (( vscode_rss >= eff_warn )); then
     log "WARNING: VS Code RSS ${vscode_rss} kB (≥2.5 GB) — SIGTERMing Chrome, restart ext host soon"
     notify_desktop "warn" "⚠️ VS Code Memory High" \
       "VS Code RSS: $(( vscode_rss / 1024 )) MB — terminating Chrome.\nConsider: Developer: Restart Extension Host"
@@ -226,4 +282,13 @@ while sleep "$INTERVAL"; do
     kill_browsers "TERM" "PSI stall: ${psi_x100}x (${pct}% RAM free)"
   fi
 
+  # ── Adaptive sleep ───────────────────────────────────────────────────────
+  # Skip sleep on the first iteration after startup trigger (immediate re-check).
+  # Use STARTUP_INTERVAL (0.5s) during startup mode, INTERVAL (2s) otherwise.
+  if $in_startup && $_startup_just_triggered; then
+    _startup_just_triggered=false
+    # No sleep — re-check immediately after detecting new VS Code PIDs
+  else
+    sleep "$eff_interval"
+  fi
 done
