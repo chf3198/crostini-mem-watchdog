@@ -4,8 +4,8 @@
 
 **VS Code OOM protection for ChromeOS Crostini**
 
-[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/chf3198.mem-watchdog-status?label=VS%20Marketplace&color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=chf3198.mem-watchdog-status)
-[![Installs](https://img.shields.io/visual-studio-marketplace/i/chf3198.mem-watchdog-status?color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=chf3198.mem-watchdog-status)
+[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/CurtisFranks.mem-watchdog-status?label=VS%20Marketplace&color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=CurtisFranks.mem-watchdog-status)
+[![Installs](https://img.shields.io/visual-studio-marketplace/i/CurtisFranks.mem-watchdog-status?color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=CurtisFranks.mem-watchdog-status)
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ChromeOS%20Crostini-4285f4)](https://chromeos.dev/en/linux)
 [![Tests](https://img.shields.io/badge/tests-12%2F12%20passing-brightgreen)](test-watchdog.sh)
@@ -22,7 +22,7 @@
 **Via VS Code Marketplace** (recommended — auto-installs and manages the daemon):
 
 ```
-ext install chf3198.mem-watchdog-status
+ext install CurtisFranks.mem-watchdog-status
 ```
 
 Or search **"Mem Watchdog"** in the VS Code Extensions panel. The extension installs the systemd daemon automatically on first activation.

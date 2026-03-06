@@ -3,7 +3,7 @@
   "displayName": "Mem Watchdog",
   "description": "Prevents VS Code from being OOM-killed on ChromeOS Crostini — auto-installs a systemd memory watchdog daemon that kills Chrome/Playwright before the kernel kills VS Code.",
   "version": "0.2.0",
-  "publisher": "chf3198",
+  "publisher": "CurtisFranks",
   "license": "PolyForm-Noncommercial-1.0.0",
   "repository": { "type": "git", "url": "https://github.com/chf3198/crostini-mem-watchdog.git" },
   "icon": "icon.png",
