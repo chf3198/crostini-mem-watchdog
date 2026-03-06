@@ -58,7 +58,54 @@ vscode-extension/        ← self-contained installable VS Code extension
 
 When new VS Code PIDs are detected, the daemon switches to 0.5s polling for 90s and drops the RSS emergency threshold to 2.0 GB. This prevents the crash pattern where the extension host spikes 0→4+ GB in under 2 seconds during startup. The state is tracked via `_startup_mode_end` (epoch seconds), `_known_code_pids`, and `_startup_just_triggered`.
 
-## Developer Workflows
+## Agent Workflow — Non-Negotiable Loop
+
+Every change follows these phases in order. **Never blend phases.**
+
+```
+EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
+```
+
+**EXPLORE**: Read relevant files. No edits. Understand before touching.  
+**PLAN**: Name every file that will change and why. If the change touches >2 files, write the plan before starting.  
+**IMPLEMENT**: Make the change. After every edit to a shell file, run `bash -n <file>` immediately.  
+**GATE**: Both checks must exit 0 — no exceptions, no skips.
+
+```bash
+bash test-watchdog.sh   # 12 tests, ~3s — must exit 0
+bash -n mem-watchdog.sh # syntax check — must exit 0
+```
+
+**REFLECT**: Read your own diff. Ask aloud: *"What did I not test? What could break under OOM pressure or during VS Code startup?"* Fix those gaps before proceeding.  
+**COMMIT**: One logical change per commit. See format below.
+
+### Gate Failures
+
+| Situation | Required action |
+|---|---|
+| `test-watchdog.sh` exits non-zero | Fix root cause. NEVER use `\|\| true`, skip flags, or `exit 0` overrides. |
+| A previously passing test now fails | Your change broke it — fix the change, not the test. |
+| You cannot write a test for the change | State why explicitly in the commit message body. |
+| Diff touches two unrelated concerns | Split into two commits before pushing. |
+
+### Commit Format
+
+```
+type(scope): imperative description
+
+Why this change was needed — the specific crash, failure mode, or test that exposed it.
+Reference: docs/technical/system-stability.md §N if relevant.
+```
+
+Valid types: `fix` `feat` `refactor` `test` `chore` `docs`  
+Valid scopes: `daemon` `extension` `installer` `config` `tests` `tray`
+
+### The 4-C Rule
+
+> **Code → Critique → Correct → Commit**  
+> Never go directly Code → Commit. The Critique step is not optional.
+
+## Developer Reference
 
 ```bash
 # Test without killing anything
@@ -68,7 +115,7 @@ When new VS Code PIDs are detected, the daemon switches to 0.5s polling for 90s 
 bash test-watchdog.sh
 
 # Run live memory pressure tests (requires RAM < 40% free or Chrome tabs open)
-bash test-pressure.sh --dry-run   # preview what would happen
+bash test-pressure.sh --dry-run   # preview
 bash test-pressure.sh             # live: allocates memory, verifies watchdog fires
 
 # Install (copies to ~/.local/bin, enables service)
@@ -79,27 +126,14 @@ systemctl --user status mem-watchdog
 systemctl --user restart mem-watchdog
 journalctl --user -u mem-watchdog -f
 
-# Build VS Code extension (copies daemon files into resources/ then packages)
+# Build and publish VS Code extension
 cd vscode-extension
-npm run build                          # populate resources/ for local dev/testing
-npm install -g @vscode/vsce && vsce package  # → mem-watchdog-status-0.1.0.vsix
-code --install-extension mem-watchdog-status-0.1.0.vsix
+npm run build                     # populate resources/ for local dev/testing
+npx vsce package                  # → mem-watchdog-status-x.y.z.vsix
+VSCE_PAT="..." npx vsce publish --pat "$VSCE_PAT"  # publisher: CurtisFranks
 
-# Adjust thresholds without reinstalling — edit VS Code Settings > Mem Watchdog
-# (configWriter.js writes ~/.config/mem-watchdog/config.sh; daemon sources it on restart)
-```
-
-# Install (copies to ~/.local/bin, enables service)
-bash install.sh [--no-extension] [--dry-run]
-
-# Service management
-systemctl --user status mem-watchdog
-systemctl --user restart mem-watchdog
-journalctl --user -u mem-watchdog -f
-
-# Build VS Code extension from source
-cd vscode-extension && npm install -g @vscode/vsce && vsce package
-code --install-extension mem-watchdog-status-0.0.1.vsix
+# Adjust thresholds without reinstalling
+# VS Code Settings → Mem Watchdog (configWriter.js writes ~/.config/mem-watchdog/config.sh)
 ```
 
 ## Out-of-Band System Config (not installed by install.sh)
