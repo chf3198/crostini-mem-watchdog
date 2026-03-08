@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.1] — 2026-03-07
+
+### Fixed
+- **Daemon startup-mode debounce** — `STARTUP_DEBOUNCE=300` prevents startup mode from re-triggering within 5 minutes of the last activation. Without this guard, VS Code language servers (TypeScript, ESLint, GitLens workers) spawning new `code` PIDs during normal development caused the daemon to trigger startup mode **567 times in a single day**, keeping it at 0.5 s polling continuously and sending spurious pre-emptive Chrome SIGTERMs throughout the work session.
+- **Daemon SIGTERM trap** — `systemctl stop/restart mem-watchdog` was taking the full 90 s systemd default before the forced SIGKILL. Root cause: the foreground `sleep "$interval"` deferred bash's SIGTERM trap until the subprocess exited. Fix: added `_sleep_pid` + `trap 'kill "$_sleep_pid"; exit 0' TERM INT` and changed sleep to `sleep & wait $!` so the `wait` builtin (which IS interruptible) processes signals immediately.
+- **Service `TimeoutStopSec=10`** — belt-and-suspenders limit so the daemon is force-killed in 10 s rather than 90 s if the trap somehow doesn't fire.
+
+### Changed
+- `readMeminfo()` — replaced `split('\n')` + per-line regex loop with two anchored `/m` multiline regex matches. **~30× faster** (156 ms vs 4 795 ms per 500k calls), **12× less heap** per call (29 vs 349 bytes). Reduces V8 GC pressure during 0.5 s startup-mode polling. All 16 `readMeminfo` unit tests continue to pass unchanged.
+- Tooltip construction and IPC update now skipped when `svcStatus`, `pct%`, and `availMB` are unchanged — `_lastTooltipKey` cache prevents redundant `MarkdownString` allocations and renderer IPC round-trips on every 2 s tick during a healthy, stable session.
+
+### Tests
+- 52 → **54** JS unit tests: added `describe('update() — tooltip IPC cache')` with cache-hit and cache-miss tests; `resetTooltipCache()` exposed via `module._test` seam for deterministic per-test isolation.
+
+---
+
 ## [0.3.0] — 2026-03-06
 
 ### Added

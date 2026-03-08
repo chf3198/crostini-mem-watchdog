@@ -20,6 +20,12 @@ const { readMeminfo, sh } = require('./utils');
 // Single source of truth — referenced by setInterval and the tooltip text.
 const POLL_INTERVAL_MS = 2000;
 
+// ── Tooltip IPC cache ─────────────────────────────────────────────────────────
+// Assigning item.tooltip triggers an IPC round-trip to the VS Code renderer
+// on every tick, even when the content is identical. This key prevents
+// redundant MarkdownString construction and IPC when nothing has changed.
+let _lastTooltipKey = '';
+
 // ── systemd service check ─────────────────────────────────────────────────────
 
 async function checkService() {
@@ -80,19 +86,27 @@ async function update(item) {
         }
 
         // ── Tooltip with detail table ─────────────────────────────────────
-        if (mem) {
-            const availMB = Math.round(mem.availableKB / 1024);
-            const totalGB = (mem.totalKB / 1024 / 1024).toFixed(1);
-            item.tooltip = new vscode.MarkdownString(
-                `**mem-watchdog** \`${svcStatus}\`\n\n` +
-                `| | |\n|:---|---:|\n` +
-                `| Available | ${availMB} MB |\n` +
-                `| Total     | ${totalGB} GB |\n` +
-                `| Free %    | ${mem.pct.toFixed(1)}% |\n\n` +
-                `_Polls every ${POLL_INTERVAL_MS / 1000} s_`
-            );
-        } else {
-            item.tooltip = `mem-watchdog: ${svcStatus} — /proc/meminfo unreadable`;
+        // Key encodes all visible values; tooltip is only rebuilt (and the IPC
+        // round-trip to the renderer only fired) when something actually changed.
+        const tooltipKey = mem
+            ? `${svcStatus}|${mem.pct.toFixed(0)}|${Math.round(mem.availableKB / 1024)}`
+            : `${svcStatus}|null`;
+        if (tooltipKey !== _lastTooltipKey) {
+            _lastTooltipKey = tooltipKey;
+            if (mem) {
+                const availMB = Math.round(mem.availableKB / 1024);
+                const totalGB = (mem.totalKB / 1024 / 1024).toFixed(1);
+                item.tooltip = new vscode.MarkdownString(
+                    `**mem-watchdog** \`${svcStatus}\`\n\n` +
+                    `| | |\n|:---|---:|\n` +
+                    `| Available | ${availMB} MB |\n` +
+                    `| Total     | ${totalGB} GB |\n` +
+                    `| Free %    | ${mem.pct.toFixed(1)}% |\n\n` +
+                    `_Polls every ${POLL_INTERVAL_MS / 1000} s_`
+                );
+            } else {
+                item.tooltip = `mem-watchdog: ${svcStatus} — /proc/meminfo unreadable`;
+            }
         }
     } finally {
         _updating = false;
@@ -190,4 +204,4 @@ module.exports = { activate, deactivate };
 // this module to expose internal functions for unit tests without calling
 // activate(). The guard prevents any production code path from accessing _test.
 /* c8 ignore next */
-if (process.env.MEM_WATCHDOG_TEST) { module.exports._test = { update, POLL_INTERVAL_MS }; }
+if (process.env.MEM_WATCHDOG_TEST) { module.exports._test = { update, POLL_INTERVAL_MS, resetTooltipCache: () => { _lastTooltipKey = ''; } }; }

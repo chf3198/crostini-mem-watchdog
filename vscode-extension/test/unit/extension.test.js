@@ -72,7 +72,7 @@ require.cache[utilsAbsPath] = {
 // ── Step 3: set env var, require extension with _test hook ────────────────────
 process.env.MEM_WATCHDOG_TEST = '1';
 const ext = require('../../extension');
-const { update, POLL_INTERVAL_MS } = ext._test;
+const { update, POLL_INTERVAL_MS, resetTooltipCache } = ext._test;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -229,5 +229,35 @@ describe('update() — resilience under adverse conditions', () => {
         // ("Polls every 2 s") diverge from reality.
         assert.equal(POLL_INTERVAL_MS, 2000,
             'JS poll interval must match daemon INTERVAL=2; update both together');
+    });
+});
+
+// ── Tooltip cache ─────────────────────────────────────────────────────────────
+// Assigning item.tooltip every 2 s triggers an IPC round-trip to the renderer
+// even when the content is unchanged (VS Code does not diff MarkdownString
+// objects). The _lastTooltipKey cache prevents this when pct and svcStatus
+// are stable, which is the common case on a healthy system.
+
+describe('update() — tooltip IPC cache', () => {
+    beforeEach(() => { resetState(); resetTooltipCache(); });
+
+    test('cache-hit: tooltip object is NOT replaced on second call with same values', async () => {
+        const item = makeItem();
+        await update(item);
+        const firstTooltip = item.tooltip;
+        assert.ok(firstTooltip, 'first call must set tooltip');
+        await update(item);
+        assert.strictEqual(item.tooltip, firstTooltip,
+            'tooltip must not be recreated when svcStatus and pct are unchanged (IPC cache)');
+    });
+
+    test('cache-miss: tooltip IS replaced when pct changes by ≥ 1%', async () => {
+        const item = makeItem();
+        await update(item);                               // pct = 62 → key set
+        const firstTooltip = item.tooltip;
+        resetState({ meminfo: { totalKB: 6440000, availableKB: 2000000, pct: 31 } });
+        await update(item);                               // pct = 31 → different key
+        assert.notStrictEqual(item.tooltip, firstTooltip,
+            'tooltip must be recreated when pct crosses a 1%-rounding boundary');
     });
 });
