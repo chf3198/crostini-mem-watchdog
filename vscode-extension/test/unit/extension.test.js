@@ -27,6 +27,7 @@
 
 const { test, describe, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
+const { performance } = require('node:perf_hooks');
 const path   = require('path');
 
 // ── Step 1: mock 'vscode' ─────────────────────────────────────────────────────
@@ -81,7 +82,7 @@ require.cache[utilsAbsPath] = {
 // ── Step 3: set env var, require extension with _test hook ────────────────────
 process.env.MEM_WATCHDOG_TEST = '1';
 const ext = require('../../extension');
-const { update, POLL_INTERVAL_MS, resetStateCache } = ext._test;
+const { update, POLL_INTERVAL_MS, resetStateCache, resetStats, getStats } = ext._test;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -184,7 +185,7 @@ describe('update() — status bar state machine', () => {
 // called EXACTLY ONCE. All other N-1 callers must bail at `if (_updating) return;`.
 
 describe('update() — _updating pileup guard', () => {
-    beforeEach(() => { resetState(); resetStateCache(); });
+    beforeEach(() => { resetState(); resetStateCache(); resetStats(); });
 
     test('20 concurrent calls: checkServiceStatus() called exactly 1 time (guard blocks 19)', async () => {
         // 50 ms simulates a slow service check (e.g., exec() fallback under pressure).
@@ -192,13 +193,35 @@ describe('update() — _updating pileup guard', () => {
         resetState({ shDelay: 50 });
         const item = makeItem();
 
+        const memBefore  = process.memoryUsage();
+        const t0         = performance.now();
+
         await Promise.all(
             Array.from({ length: 20 }, () => update(item))
+        );
+
+        const elapsed_ms = performance.now() - t0;
+        const memAfter   = process.memoryUsage();
+        const s          = getStats();
+
+        // Logged with [stress:] prefix for easy grep/post-analysis
+        console.log(
+            `  [stress:pileup-20] elapsed=${elapsed_ms.toFixed(1)}ms` +
+            ` | check=${mockState.checkCallCount}/20 dropped=${s.dropped}` +
+            ` | cache miss=${s.cacheMisses} hit=${s.cacheHits}` +
+            ` | heap Δ=${((memAfter.heapUsed - memBefore.heapUsed) / 1024).toFixed(0)}KB` +
+            ` | rss Δ=${((memAfter.rss - memBefore.rss) / 1024).toFixed(0)}KB`
         );
 
         assert.equal(
             mockState.checkCallCount, 1,
             `pileup guard failed: checkServiceStatus() was called ${mockState.checkCallCount} times for 20 concurrent update() calls (expected 1)`
+        );
+        // Verify exactly 19 calls were silently dropped — confirming the guard
+        // fires and does not allow duplicate work under concurrent timer callbacks.
+        assert.equal(
+            s.dropped, 19,
+            `pileup guard dropped ${s.dropped} calls for 20 concurrent invocations — expected exactly 19 blocked`
         );
     });
 
@@ -208,13 +231,33 @@ describe('update() — _updating pileup guard', () => {
         resetState();
         const item = makeItem();
 
+        const memBefore  = process.memoryUsage();
+        const t0         = performance.now();
+
         for (let i = 0; i < 5; i++) {
             await update(item);
         }
 
+        const elapsed_ms = performance.now() - t0;
+        const memAfter   = process.memoryUsage();
+        const s          = getStats();
+
+        console.log(
+            `  [stress:sequential-5] elapsed=${elapsed_ms.toFixed(1)}ms` +
+            ` | check=${mockState.checkCallCount}/5 dropped=${s.dropped}` +
+            ` | cache miss=${s.cacheMisses} hit=${s.cacheHits}` +
+            ` | heap Δ=${((memAfter.heapUsed - memBefore.heapUsed) / 1024).toFixed(0)}KB`
+        );
+
         assert.equal(
             mockState.checkCallCount, 5,
             `guard did not reset: checkServiceStatus() called ${mockState.checkCallCount} times for 5 sequential calls (expected 5)`
+        );
+        // Verify zero dropped — sequential calls must never hit the guard
+        // (each call fully resolves before the next starts).
+        assert.equal(
+            s.dropped, 0,
+            `sequential calls must not be dropped; got ${s.dropped} dropped (guard did not reset after each call?)`
         );
     });
 });

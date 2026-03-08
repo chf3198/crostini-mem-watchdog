@@ -33,8 +33,16 @@ let _lastStateKey = '';
 // pressure — ensures at most one outstanding systemctl call at any time.
 let _updating = false;
 
+// ── Per-update efficiency counters ────────────────────────────────────────────
+// Always maintained (3 integer increments per call, nanosecond cost each).
+// Exposed via module._test.getStats() in MEM_WATCHDOG_TEST mode.
+//   dropped:     calls rejected by the _updating pileup guard
+//   cacheHits:   times stateKey matched → all 4 StatusBarItem IPC calls skipped
+//   cacheMisses: times stateKey differed → full IPC round-trip fired
+const _stats = { dropped: 0, cacheHits: 0, cacheMisses: 0 };
+
 async function update(item) {
-    if (_updating) { return; }
+    if (_updating) { _stats.dropped++; return; }
     _updating = true;
     try {
         const mem        = readMeminfo();
@@ -50,6 +58,7 @@ async function update(item) {
             : `${svcStatus}|null`;
 
         if (stateKey !== _lastStateKey) {
+            _stats.cacheMisses++;
             _lastStateKey = stateKey;
 
             // ── Background colour ─────────────────────────────────────────
@@ -102,6 +111,8 @@ async function update(item) {
             } else {
                 item.tooltip = `mem-watchdog: ${svcStatus} — /proc/meminfo unreadable`;
             }
+        } else {
+            _stats.cacheHits++;
         }
     } finally {
         _updating = false;
@@ -199,4 +210,12 @@ module.exports = { activate, deactivate };
 // this module to expose internal functions for unit tests without calling
 // activate(). The guard prevents any production code path from accessing _test.
 /* c8 ignore next */
-if (process.env.MEM_WATCHDOG_TEST) { module.exports._test = { update, POLL_INTERVAL_MS, resetStateCache: () => { _lastStateKey = ''; } }; }
+if (process.env.MEM_WATCHDOG_TEST) {
+    module.exports._test = {
+        update,
+        POLL_INTERVAL_MS,
+        resetStateCache: () => { _lastStateKey = ''; },
+        resetStats:      () => { _stats.dropped = 0; _stats.cacheHits = 0; _stats.cacheMisses = 0; },
+        getStats:        () => ({ dropped: _stats.dropped, cacheHits: _stats.cacheHits, cacheMisses: _stats.cacheMisses }),
+    };
+}

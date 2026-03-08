@@ -48,7 +48,8 @@
     "vscode:uninstall": "node ./lifecycle.js",
     "build": "node scripts/prepare.js",
     "test": "node --test 'test/unit/*.test.js'",
-    "test:coverage": "c8 --reporter=text --reporter=lcov --exclude='test/**' --exclude='scripts/**' --exclude='node_modules/**' node --test 'test/unit/*.test.js'"
+    "test:coverage": "c8 --reporter=text --reporter=lcov --exclude='test/**' --exclude='scripts/**' --exclude='node_modules/**' node --test 'test/unit/*.test.js'",
+    "test:stress": "node --expose-gc test/stress/update-stress.js"
   },
   "contributes": {
     "commands": [

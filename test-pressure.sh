@@ -134,9 +134,63 @@ else
   tee_log "  ✓ Ceiling set: $((safety_ceiling_bytes / 1024 / 1024)) MB (90% of total RAM — watchdog fires at 75% utilization, well before this)"
 fi
 
-# ── TEST 1: SIGTERM threshold (MemAvailable ≤ 25%) ───────────────────────────
+# ── Structured snapshot for post-analysis ─────────────────────────────────────────
+# Usage: snapshot "label"
+# Writes one human-readable line to tee_log (grep/awk parseable) AND one JSON
+# object to $SNAP_JSON (newline-delimited, jq-friendly) for post-analysis.
+# Requires $CGRP and $total_kb (set before the tests begin).
+
+SNAP_JSON="$REPO/scratch/pressure-snaps-$(date '+%Y%m%d-%H%M%S').jsonl"
+
+snapshot() {
+  local label="${1:-snap}"
+  local ts avail_kb avail_pct free_kb dirty_kb psi_full psi_some
+  local vscode_rss vscode_npids wd_pid wd_rss wd_cpu cgrp_used_mb cgrp_limit_mb
+
+  ts=$(date +%s)
+  avail_kb=$(awk '/^MemAvailable/{print $2; exit}' /proc/meminfo)
+  free_kb=$( awk '/^MemFree/{print $2; exit}'      /proc/meminfo)
+  dirty_kb=$(awk '/^Dirty/{print $2; exit}'         /proc/meminfo)
+  avail_pct=$(( avail_kb * 100 / total_kb ))
+
+  # PSI: fraction of time all tasks / any task stalled on memory (10 s window)
+  psi_full=$(awk '/^full/{for(i=1;i<=NF;i++) if($i~/^avg10=/) {
+    sub("avg10=","",$i); printf "%.2f",$i; exit}}' /proc/pressure/memory 2>/dev/null || echo "n/a")
+  psi_some=$(awk '/^some/{for(i=1;i<=NF;i++) if($i~/^avg10=/) {
+    sub("avg10=","",$i); printf "%.2f",$i; exit}}' /proc/pressure/memory 2>/dev/null || echo "n/a")
+
+  # VS Code aggregate RSS and PID count
+  vscode_rss=$(ps -C code -o rss= 2>/dev/null | awk '{s+=$1} END{print s+0}')
+  vscode_npids=$(ps -C code -o pid= 2>/dev/null | wc -l | tr -d ' ')
+
+  # Watchdog daemon RSS (%cpu from ps reflects the last scheduler quantum)
+  wd_pid=$(systemctl --user show mem-watchdog -p MainPID --value 2>/dev/null | tr -d ' ' || echo 0)
+  if [[ -n "$wd_pid" && "$wd_pid" != "0" ]]; then
+    wd_rss=$(ps -p "$wd_pid" -o rss=  2>/dev/null | tr -d ' ' || echo 0)
+    wd_cpu=$(ps -p "$wd_pid" -o %cpu= 2>/dev/null | tr -d ' ' || echo 0.0)
+  else
+    wd_rss=0; wd_cpu=0.0
+  fi
+
+  # Cgroup memory usage vs the safety ceiling we installed above
+  cgrp_used_mb=$((  $(cat "$CGRP/memory.usage_in_bytes"  2>/dev/null || echo 0) / 1024 / 1024 ))
+  cgrp_limit_mb=$(( $(cat "$CGRP/memory.limit_in_bytes" 2>/dev/null || echo 0) / 1024 / 1024 ))
+
+  # Human-readable line (each field is key=value separated by | for easy grep/awk)
+  tee_log "  [snap:${label}] ts=${ts} | avail=${avail_pct}%/${avail_kb}kB | free=${free_kb}kB | dirty=${dirty_kb}kB | psi_full=${psi_full} psi_some=${psi_some} | vscode=${vscode_rss}kB/${vscode_npids}pids | wd=${wd_rss}kB/${wd_cpu}%cpu | cgroup=${cgrp_used_mb}MB/${cgrp_limit_mb}MB"
+
+  # JSON line for structured post-processing (jq, Python pandas, etc.)
+  printf '{"label":"%s","ts":%s,"avail_pct":%d,"avail_kb":%d,"free_kb":%d,"dirty_kb":%d,"psi_full":"%s","psi_some":"%s","vscode_rss_kb":%d,"vscode_npids":%d,"wd_rss_kb":%d,"wd_cpu":"%s","cgroup_used_mb":%d,"cgroup_limit_mb":%d}\n' \
+    "$label" "$ts" "$avail_pct" "$avail_kb" "$free_kb" "$dirty_kb" \
+    "$psi_full" "$psi_some" "$vscode_rss" "$vscode_npids" \
+    "$wd_rss" "$wd_cpu" "$cgrp_used_mb" "$cgrp_limit_mb" >> "$SNAP_JSON"
+}
+
+# ── TEST 1: SIGTERM threshold (MemAvailable ≤ 25%) ─────────────────────────────────
 tee_log ""
 tee_log "── Test 1: Watchdog SIGTERMs process named 'chrome' when RAM ≤ 25%"
+snapshot "suite-start"
+tee_log "  Snapshot log: $SNAP_JSON"
 
 # Start a decoy process named "chrome" using exec -a
 # It just sleeps — the watchdog will kill it on the name match
@@ -162,7 +216,7 @@ else
     kill "$DECOY_PID" 2>/dev/null || true
   else
     tee_log "  Allocating ~${alloc_mb} MB to push MemAvailable to ~${target_avail_pct}%..."
-
+      snapshot "t1-pre-alloc"
     if (( alloc_mb > 1500 )); then
       kill "$DECOY_PID" 2>/dev/null || true
       SKIP "Needs ${alloc_mb} MB allocation to reach threshold from ${avail_pct}% free — too large for a live VS Code session. Close Chrome/MCP browser tabs first, or run when RAM is tighter (avail < 40%)."
@@ -183,17 +237,27 @@ print('Releasing', flush=True)
 " &
       ALLOC_PID=$!
 
-      # Wait up to 20s for watchdog to fire
+      # Wait up to 20s for watchdog to fire; sample MemAvailable every second
+      # so the descent curve is available in the log for latency post-analysis.
       waited=0
       killed=false
+      t_alloc_start=$(date +%s)
+      t_kill_detected=0
+      avail_curve=()
       while (( waited < 20 )); do
         sleep 1
         (( ++waited ))
+        cur_avail=$(awk '/^MemAvailable/{print $2; exit}' /proc/meminfo)
+        cur_pct=$(( cur_avail * 100 / total_kb ))
+        avail_curve+=("${waited}s:${cur_pct}%/${cur_avail}kB")
         if ! kill -0 "$DECOY_PID" 2>/dev/null; then
+          t_kill_detected=$(date +%s)
           killed=true
           break
         fi
       done
+      tee_log "  [avail-curve:t1] ${avail_curve[*]}"
+      (( t_kill_detected > 0 )) && tee_log "  [kill-latency:t1] $(( t_kill_detected - t_alloc_start ))s from allocation start to decoy death"
 
       # Kill allocator regardless
       kill "$ALLOC_PID" 2>/dev/null || true
@@ -202,6 +266,10 @@ print('Releasing', flush=True)
       if $killed; then
         # Verify it was the watchdog that killed it (check journal)
         sleep 1  # give journald a moment to flush
+        snapshot "t1-post-kill"
+        tee_log "  [watchdog-journal:t1] last 5 entries:"
+        journalctl --user -u mem-watchdog --since "30 seconds ago" --no-pager -q 2>/dev/null \
+          | tail -5 | while IFS= read -r jline; do tee_log "    $jline"; done
         if [[ -n "$JOURNAL_CURSOR" ]]; then
           journal_hit=$(journalctl --user -u mem-watchdog --after-cursor="$JOURNAL_CURSOR" --no-pager -q 2>/dev/null | grep -c 'SIGTERM\|Chromium' || echo 0)
         else
@@ -229,6 +297,7 @@ if $DRY_RUN; then
   SKIP "dry-run: would verify oom_score_adj=0 on all code PIDs after Test 1"
 else
   sleep 2  # let watchdog's adjust_oom_scores loop run
+  snapshot "t2-oom-adj"
   bad=0
   for pid in $(ps -C code -o pid= 2>/dev/null); do
     adj=$(cat "/proc/$pid/oom_score_adj" 2>/dev/null || echo "gone")
@@ -250,6 +319,7 @@ if $DRY_RUN; then
   SKIP "dry-run: would verify MemAvailable rises after chrome kill"
 else
   sleep 3
+  snapshot "t3-recovery"
   post_avail_kb=$(awk '/^MemAvailable/{print $2; exit}' /proc/meminfo)
   post_pct=$(( post_avail_kb * 100 / total_kb ))
   if (( post_pct > avail_pct - 10 )); then
@@ -273,9 +343,11 @@ else
   (exec -a chrome sleep 300) &
   T4_PID=$!
   tee_log "  Decoy 'chrome' PID ${T4_PID} started"
+  snapshot "t4-start"
 
   # Wait at least 2 watchdog iterations (2 s each)
   sleep 5
+  snapshot "t4-adj-check"
 
   t4_adj=$(cat "/proc/${T4_PID}/oom_score_adj" 2>/dev/null || echo "gone")
 
@@ -330,6 +402,7 @@ else
     SKIP "Test 5: Allocation of ${t5_alloc_mb} MB out of safe range — skipping"
   else
     tee_log "  Allocating ~${t5_alloc_mb} MB to push MemAvailable to ~23%..."
+    snapshot "t5-pre-alloc"
 
     python3 -c "
 import time
@@ -345,23 +418,34 @@ print('Releasing', flush=True)
 " &
     T5_ALLOC=$!
 
-    # Wait up to 25 s for BOTH decoys to be killed
+    # Wait up to 25 s for BOTH decoys to be killed; sample MemAvailable curve
     waited=0
     t5_chrome_killed=false
     t5_play_killed=false
-
+    t5_alloc_start=$(date +%s)
+    t5_kill_detected=0
+    t5_avail_curve=()
     while (( waited < 25 )); do
       sleep 1
       (( ++waited ))
+      cur_avail=$(awk '/^MemAvailable/{print $2; exit}' /proc/meminfo)
+      cur_pct=$(( cur_avail * 100 / total_kb ))
+      t5_avail_curve+=("${waited}s:${cur_pct}%")
       kill -0 "${T5_CHROME}" 2>/dev/null || t5_chrome_killed=true
       kill -0 "${T5_PLAY}"   2>/dev/null || t5_play_killed=true
-      if $t5_chrome_killed && $t5_play_killed; then break; fi
+      if $t5_chrome_killed && $t5_play_killed; then
+        t5_kill_detected=$(date +%s)
+        break
+      fi
     done
+    tee_log "  [avail-curve:t5] ${t5_avail_curve[*]}"
+    (( t5_kill_detected > 0 )) && tee_log "  [kill-latency:t5] $(( t5_kill_detected - t5_alloc_start ))s from allocation start to both processes dead"
 
     kill "${T5_ALLOC}" 2>/dev/null || true
     wait "${T5_ALLOC}" 2>/dev/null || true
 
     if $t5_chrome_killed && $t5_play_killed; then
+      snapshot "t5-post-kill"
       PASS "Both chrome and playwright-named decoys killed within ${waited}s"
     elif $t5_chrome_killed && ! $t5_play_killed; then
       FAIL "Chrome decoy killed but playwright-named decoy survived — second pkill pattern broken"
@@ -386,5 +470,7 @@ tee_log "═══════════════════════�
 for r in "${results[@]}"; do tee_log "$r"; done
 tee_log ""
 tee_log "Full log: $LOG"
+snapshot "suite-end"
+tee_log "  Snapshots JSON: $SNAP_JSON"
 
 exit $(( fail > 0 ? 1 : 0 ))
