@@ -20,6 +20,62 @@
 
 ---
 
+### 2026-03-07 — Startup mode debounce: language servers trigger PID detection
+
+**Context**: Forensic investigation after reported VS Code crash. Journal showed 567 "startup mode active" entries in 24 hours.
+
+**Discovery**: VS Code spawns new `code` subprocesses throughout normal development — TypeScript language servers, ESLint workers, GitLens index workers, etc. Each new PID triggered `adjust_oom_scores()` to fire startup mode (0.5 s polling + pre-emptive Chrome SIGTERM). With frequent language server spawning, the daemon was in perpetual startup mode:
+- 0.5 s polling all day = 4× more CPU and `ps`/`pgrep` fork calls than 2 s polling
+- Spurious Chrome SIGTERMs during active work sessions
+- Journal flooded with "startup mode active" entries masking real events
+
+Root cause: no debounce between startup mode activations. The 90 s window would expire, a language server would spawn, immediately triggering a new 90 s window.
+
+**Fix**: `STARTUP_DEBOUNCE=300` — startup mode can only fire once per 5 minutes regardless of how many new `code` PIDs appear. Language servers persist after first spawn, so the debounce has no real-world effect on genuine VS Code startup protection.
+
+**Application**: Any PID-detection loop that triggers mode switches needs a minimum activation interval. The "new PID" signal is too broad — it fires for subprocesses and workers, not just for new application windows.
+
+---
+
+### 2026-03-07 — Foreground `sleep` in bash daemons defers SIGTERM traps
+
+**Context**: `systemctl stop mem-watchdog` was waiting the full 90 s systemd default before issuing SIGKILL. Journal showed `State 'final-sigterm' timed out. Killing.`
+
+**Discovery**: When bash executes a foreground external command (`sleep 2`), SIGTERM is deferred until the subprocess exits. A `trap '...' TERM` handler doesn't fire until `sleep` finishes — up to 2 s normal, 0.5 s in startup mode. This hit systemd's default `TimeoutStopSec=90` on service restart.
+
+**Fix** (canonical interruptible pattern):
+```bash
+_sleep_pid=''
+trap '[[ -n "${_sleep_pid:-}" ]] && kill "$_sleep_pid" 2>/dev/null; exit 0' TERM INT
+
+# In the main loop:
+sleep "$eff_interval" & _sleep_pid=$!
+wait "$_sleep_pid" || true
+```
+`wait` is a shell builtin — bash processes signals during `wait` immediately. When SIGTERM fires, `wait` returns, the trap kills the background sleep, and `exit 0` terminates cleanly within milliseconds.
+
+Also added `TimeoutStopSec=10` to the service unit as belt-and-suspenders.
+
+**Application**: Any long-running bash loop that sleeps must use `sleep & wait $!` + a trap that kills `$_sleep_pid`. Never use foreground `sleep` in a daemon. Always set `TimeoutStopSec` to a reasonable value in the service unit.
+
+---
+
+### 2026-03-07 — readMeminfo split+loop is 30× slower than two /m regex
+
+**Context**: bench_meminfo.js benchmark run during memory usage analysis.
+
+**Discovery**: The original `readMeminfo()` split every `/proc/meminfo` line and matched a general regex against each:
+- **Method A** (split+loop): 4 795 ms / 500k calls = 9.59 µs/call, 349 bytes heap/call
+- **Method B** (two `/m` regex): 156 ms / 500k calls = 0.31 µs/call, 29 bytes heap/call
+
+30× faster, 12× less heap. At 2 s polling this is negligible for latency but during startup mode (0.5 s) the GC pressure difference is meaningful. Method B is also cleaner to read.
+
+**The D (indexOf + trimStart) approach had a bug**: `indexOf('MemTotal:')` matches at position 0 (start of file, no leading `\n`), but the implementation had `indexOf('\nMemTotal:')` which fails for the first field. Method B avoids this entirely with anchored `^` + `/m` flag.
+
+**Application**: Prefer two targeted anchored `/m` regex over split+iterate for `/proc/meminfo` parsing. The `^` anchor with `/m` is the key — it anchors to the start of any line in the multiline string, preventing false matches inside numeric value fields.
+
+---
+
 ### 2026-03-06 — Pre-publish doc/packaging audit: what vsce auto-excludes
 
 **Context**: Pre-v0.3.0 audit of `.vscodeignore`, documentation, and file health.

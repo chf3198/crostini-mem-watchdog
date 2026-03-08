@@ -56,7 +56,11 @@ vscode-extension/        ← self-contained installable VS Code extension
 
 ## Startup Mode Pattern
 
-When new VS Code PIDs are detected, the daemon switches to 0.5s polling for 90s and drops the RSS emergency threshold to 2.0 GB. This prevents the crash pattern where the extension host spikes 0→4+ GB in under 2 seconds during startup. The state is tracked via `_startup_mode_end` (epoch seconds), `_known_code_pids`, and `_startup_just_triggered`.
+When new VS Code PIDs are detected, the daemon switches to 0.5s polling for 90s and drops the RSS emergency threshold to 2.0 GB. This prevents the crash pattern where the extension host spikes 0→4+ GB in under 2 seconds during startup. The state is tracked via `_startup_mode_end` (epoch seconds), `_known_code_pids`, `_startup_just_triggered`, and `_last_startup_trigger`.
+
+**Debounce**: `STARTUP_DEBOUNCE=300` prevents re-triggering within 5 minutes. Without this guard, VS Code language servers (TypeScript, ESLint, GitLens workers) spawn new `code` PIDs throughout normal development — observed to trigger startup mode 567 times in a single day, keeping the daemon at 0.5 s polling continuously and sending spurious pre-emptive Chrome SIGTERMs.
+
+**Interruptible sleep**: the main loop uses `sleep "$eff_interval" & _sleep_pid=$!; wait "$_sleep_pid"` with `trap 'kill "$_sleep_pid"; exit 0' TERM INT` so SIGTERM from `systemctl stop` fires immediately rather than waiting up to 2 s for the foreground sleep subprocess.
 
 ## Agent Workflow — Non-Negotiable Loop
 
@@ -75,7 +79,7 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
 bash test-watchdog.sh   # 12 bash tests, ~3s — must exit 0
 bash -n mem-watchdog.sh # bash syntax check — must exit 0
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
-cd vscode-extension && npm test   # 52 JS unit tests, ~1s — must exit 0
+cd vscode-extension && npm test   # 54 JS unit tests, ~1s — must exit 0
 ```
 
 **REFLECT**: Read your own diff. Ask aloud: *"What did I not test? What could break under OOM pressure or during VS Code startup?"* Fix those gaps before proceeding.  

@@ -54,6 +54,11 @@ STARTUP_INTERVAL=0.5          # seconds between checks during VS Code startup
 STARTUP_DURATION=90           # seconds to stay in startup mode after new VS Code PIDs
 STARTUP_RSS_WARN_KB=1500000   # ~1.5 GB — warn threshold in startup mode
 STARTUP_RSS_EMERG_KB=2000000  # ~2.0 GB — emergency threshold in startup mode
+STARTUP_DEBOUNCE=300          # minimum seconds between startup mode activations
+                              # VS Code language servers (TS, ESLint, GitLens workers) spawn
+                              # new code PIDs throughout normal development. Without this guard
+                              # the daemon triggered startup mode 567 times in a single day,
+                              # keeping it at 0.5 s polling continuously.
 
 # ── User config override — written by the VS Code extension ────────────────────
 # If the Mem Watchdog VS Code extension is installed and has custom thresholds
@@ -67,9 +72,10 @@ _WATCHDOG_CFG="${XDG_CONFIG_HOME:-${HOME}/.config}/mem-watchdog/config.sh"
 unset _WATCHDOG_CFG
 
 # ── Startup mode state ───────────────────────────────────────────────────────
-_startup_mode_end=0       # epoch seconds until startup mode expires
-_startup_just_triggered=false  # true for one iteration — skip sleep for instant re-check
-_known_code_pids=""       # space-separated sorted PIDs from previous iteration
+_startup_mode_end=0           # epoch seconds until startup mode expires
+_startup_just_triggered=false # true for one iteration — skip sleep for instant re-check
+_known_code_pids=""           # space-separated sorted PIDs from previous iteration
+_last_startup_trigger=0       # epoch seconds of last activation (debounce state)
 
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
@@ -184,13 +190,24 @@ adjust_oom_scores() {
       new_count=$(echo "$current_pids" | tr ' ' '\n' | grep -v '^$' | wc -l)
     fi
     if (( new_count > 0 )); then
-      _startup_mode_end=$(( $(date +%s) + STARTUP_DURATION ))
-      _startup_just_triggered=true
-      log "VS Code startup: ${new_count} new PIDs — startup mode active for ${STARTUP_DURATION}s (${STARTUP_INTERVAL}s interval, ${STARTUP_RSS_EMERG_KB} kB emerg threshold)"
-      # Pre-emptively SIGTERM Chrome to free memory before extensions load
-      if pgrep -f '(chrome|chromium)' &>/dev/null; then
-        log "  Startup mode: pre-emptively SIGTERMing Chrome to free memory"
-        kill_browsers "TERM" "VS Code startup: freeing memory before extension load"
+      local now
+      now=$(date +%s)
+      # Debounce: only activate startup mode if STARTUP_DEBOUNCE seconds have
+      # elapsed since the last trigger. VS Code language servers and extension
+      # workers (TypeScript, ESLint, GitLens) spawn new `code` PIDs throughout
+      # normal development. Without this guard, startup mode triggered 567 times
+      # in a single day, keeping the daemon at 0.5 s polling continuously and
+      # sending spurious pre-emptive Chrome SIGTERMs throughout the work session.
+      if (( now - _last_startup_trigger >= STARTUP_DEBOUNCE )); then
+        _last_startup_trigger=$now
+        _startup_mode_end=$(( now + STARTUP_DURATION ))
+        _startup_just_triggered=true
+        log "VS Code startup: ${new_count} new PIDs — startup mode active for ${STARTUP_DURATION}s (${STARTUP_INTERVAL}s interval, ${STARTUP_RSS_EMERG_KB} kB emerg threshold)"
+        # Pre-emptively SIGTERM Chrome to free memory before extensions load
+        if pgrep -f '(chrome|chromium)' &>/dev/null; then
+          log "  Startup mode: pre-emptively SIGTERMing Chrome to free memory"
+          kill_browsers "TERM" "VS Code startup: freeing memory before extension load"
+        fi
       fi
     fi
     _known_code_pids="$current_pids"
@@ -198,6 +215,14 @@ adjust_oom_scores() {
 }
 
 # ── Main loop ────────────────────────────────────────────────────────────────
+# ── SIGTERM / SIGINT trap ─────────────────────────────────────────────────────
+# Without this, systemd's SIGTERM to the main bash process is deferred until
+# the foreground `sleep` subprocess finishes (up to 2 s / 0.5 s). The `wait`
+# builtin IS interruptible — signals fire immediately when using `sleep & wait`.
+# Kills the pending sleep pid (if any) so it doesn't linger as an orphan.
+_sleep_pid=''
+trap '[[ -n "${_sleep_pid:-}" ]] && kill "$_sleep_pid" 2>/dev/null; log "Stopping (signal received)"; exit 0' TERM INT
+
 log "Started (SIGTERM ≤${SIGTERM_THRESHOLD}%, SIGKILL ≤${SIGKILL_THRESHOLD}%, PSI >${PSI_THRESHOLD}%, oom_adj code=${OOM_VSCODE_ADJ} chrome=+${OOM_CHROME_ADJ})"
 $DRY_RUN && log "DRY-RUN mode — no processes will be killed"
 
@@ -297,10 +322,14 @@ while true; do
   # ── Adaptive sleep ───────────────────────────────────────────────────────
   # Skip sleep on the first iteration after startup trigger (immediate re-check).
   # Use STARTUP_INTERVAL (0.5s) during startup mode, INTERVAL (2s) otherwise.
+  # `sleep & wait $!` makes the sleep interruptible: bash processes signals
+  # immediately during `wait` (a builtin), whereas a foreground `sleep` defers
+  # traps until the subprocess exits — causing up to 2 s shutdown delay.
   if $in_startup && $_startup_just_triggered; then
     _startup_just_triggered=false
     # No sleep — re-check immediately after detecting new VS Code PIDs
   else
-    sleep "$eff_interval"
+    sleep "$eff_interval" & _sleep_pid=$!
+    wait "$_sleep_pid" || true
   fi
 done
