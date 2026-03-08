@@ -11,8 +11,12 @@
 - `readMeminfo()` — replaced `split('\n')` + per-line regex loop with two anchored `/m` multiline regex matches. **~30× faster** (156 ms vs 4 795 ms per 500k calls), **12× less heap** per call (29 vs 349 bytes). Reduces V8 GC pressure during 0.5 s startup-mode polling. All 16 `readMeminfo` unit tests continue to pass unchanged.
 - Tooltip construction and IPC update now skipped when `svcStatus`, `pct%`, and `availMB` are unchanged — `_lastTooltipKey` cache prevents redundant `MarkdownString` allocations and renderer IPC round-trips on every 2 s tick during a healthy, stable session.
 
+### Performance
+- **Zero-fork service status check** (`checkServiceStatus()` in `utils.js`) — replaces the `exec('systemctl --user is-active')` shell-out in the hot path with a direct `fs.readFileSync` of the systemd cgroup virtual file (`/sys/fs/cgroup/systemd/.../mem-watchdog.service/cgroup.procs`). Benchmarks on this hardware: `exec()` = 8.7 ms/call, 308 KB heap Δ/100 calls; `cgroup.procs` read = 14.5 µs/call, ~42 KB heap Δ/100 calls. **~600× faster**, daily CPU cost drops from 375 ms to <1 ms at 43,200 calls/day (2 s polling). Critically, `fork()` failures under `ENOMEM` are eliminated — the exec path becomes unreachable precisely when memory pressure is highest. Falls back to `sh('systemctl --user is-active')` on non-cgroup-v1 or non-systemd environments. Cgroup path is derived once at module load from `/proc/self/cgroup`.
+- `_lastStateKey` unified cache — the separate `_lastTooltipKey` cache has been merged into `_lastStateKey`, which now gates **all four** `StatusBarItem` assignments (text, color, backgroundColor, tooltip) in a single `if (stateKey !== _lastStateKey)` block, eliminating redundant IPC for any field on a stable-state tick.
+
 ### Tests
-- 52 → **54** JS unit tests: added `describe('update() — tooltip IPC cache')` with cache-hit and cache-miss tests; `resetTooltipCache()` exposed via `module._test` seam for deterministic per-test isolation.
+- 52 → **54** JS unit tests: added `describe('update() — tooltip IPC cache')` with cache-hit and cache-miss tests; `resetStateCache()` exposed via `module._test` seam (renamed from `resetTooltipCache`) for deterministic per-test isolation. Pileup-guard tests updated to count `checkServiceStatus()` calls (via `checkCallCount`) instead of `sh()` calls.
 
 ---
 

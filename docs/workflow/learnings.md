@@ -20,7 +20,32 @@
 
 ---
 
-### 2026-03-07 — Startup mode debounce: language servers trigger PID detection
+### 2026-03-07 — Zero-fork service status: cgroup.procs vs exec() benchmark
+
+**Context**: Deep memory usage analysis of the VS Code extension. Looking for ways to reduce CPU and heap pressure from the `update()` hot path, which runs every 2 s (0.5 s in startup mode).
+
+**Discovery**: The status check `exec('systemctl --user is-active mem-watchdog')` cost measured on this hardware:
+- **exec() (current)**: 8.7 ms/call avg, ~308 KB heap Δ per 100 calls — and `fork()` can fail with `ENOMEM` under extreme OOM, making the check unreachable exactly when it matters most
+- **`cgroup.procs` read**: 14.5 µs/call, ~42 KB heap Δ per 100 calls — 600× faster, pure `fs.readFileSync`, zero forks
+- **`/proc/PID/cmdline` access**: 2.02 µs/call — fastest, but requires PID refresh when service restarts
+
+`cgroup.procs` is the correct choice: it survives service restarts without PID tracking, and if the file exists and is non-empty (has PIDs) the service is active; ENOENT means inactive.
+
+The **path derivation** is the tricky part. The extension process runs inside a Chromium scope cgroup: `/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.chromium.Chromium-NNN.scope`. Naively stripping the last segment gives the wrong path. The correct anchor is `/app.slice` — the mem-watchdog service lives at that same level:
+```
+/sys/fs/cgroup/systemd
+  + rel.slice(0, rel.indexOf('/app.slice') + '/app.slice'.length)
+  + '/mem-watchdog.service/cgroup.procs'
+```
+This path is derived once at module load from `/proc/self/cgroup` and cached in `_cgroupPath`. The fallback to `sh()` handles non-cgroup-v1 or remote extension host environments.
+
+Daily cost comparison at 43,200 calls/day (2 s polling): exec = 375 ms CPU, cgroup = <1 ms CPU.
+
+**Application**: Any extension hot-path that polls system state should prefer direct procfs/cgroupfs reads over `exec()`. The `fork()` failure risk under OOM is not hypothetical — it's the exact failure mode a memory watchdog must be resilient to. Always derive and validate the cgroup path at startup so the path resolution cost is paid once.
+
+---
+
+
 
 **Context**: Forensic investigation after reported VS Code crash. Journal showed 567 "startup mode active" entries in 24 hours.
 

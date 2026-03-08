@@ -14,28 +14,19 @@ const vscode       = require('vscode');
 const installer    = require('./installer');
 const configWriter = require('./configWriter');
 const commands     = require('./commands');
-const { readMeminfo, sh } = require('./utils');
+const { readMeminfo, sh, checkServiceStatus } = require('./utils');
 
 // ── Status bar poll interval ──────────────────────────────────────────────────
 // Single source of truth — referenced by setInterval and the tooltip text.
 const POLL_INTERVAL_MS = 2000;
 
-// ── Tooltip IPC cache ─────────────────────────────────────────────────────────
-// Assigning item.tooltip triggers an IPC round-trip to the VS Code renderer
-// on every tick, even when the content is identical. This key prevents
-// redundant MarkdownString construction and IPC when nothing has changed.
-let _lastTooltipKey = '';
-
-// ── systemd service check ─────────────────────────────────────────────────────
-
-async function checkService() {
-    // systemctl exits non-zero for non-"active" states; sh() handles that
-    // gracefully — stdout still contains the state string regardless.
-    const { stdout } = await sh('systemctl --user is-active mem-watchdog');
-    return stdout || 'unknown';
-    // Possible values: 'active', 'inactive', 'failed',
-    //                  'activating', 'deactivating', 'unknown'
-}
+// ── Full status bar state cache ──────────────────────────────────────────────
+// Key encodes all visible output (svcStatus + rounded pct% + availMB).
+// When stable, skips ALL four StatusBarItem property assignments and their
+// IPC round-trips to the renderer. VS Code coalesces same-tick assignments
+// into one $setEntry call but serialises it regardless of value equality.
+// At 2 s intervals this prevents ~43 000 redundant IPC calls per idle day.
+let _lastStateKey = '';
 
 // ── Status bar update ─────────────────────────────────────────────────────────
 // Guard prevents overlapping updates when checkService() is slow under OOM
@@ -46,53 +37,57 @@ async function update(item) {
     if (_updating) { return; }
     _updating = true;
     try {
-        const mem = readMeminfo();
-        const svcStatus = await checkService();
-        const isRunning = svcStatus === 'active';
+        const mem        = readMeminfo();
+        const svcStatus  = await checkServiceStatus();
+        const isRunning  = svcStatus === 'active';
 
-        // ── Background colour ─────────────────────────────────────────────
-        // IMPORTANT: VS Code only supports two ThemeColor strings for
-        // StatusBarItem.backgroundColor — no others will have any effect:
-        //   'statusBarItem.errorBackground'   → red   (critical)
-        //   'statusBarItem.warningBackground' → amber  (warning)
-        // For the healthy/"green" state, set backgroundColor = undefined
-        // and tint the foreground text/icon with item.color instead.
-
-        if (!isRunning) {
-            // ─ RED: service is not running — most urgent ─
-            item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-            item.color = undefined;
-            item.text = `$(error) watchdog: ${svcStatus}`;
-
-        } else if (!mem || mem.pct < 20) {
-            // ─ RED: RAM critically low (< 20% free) ─
-            item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-            item.color = undefined;
-            item.text = mem
-                ? `$(flame) RAM ${mem.pct.toFixed(0)}% free`
-                : `$(error) meminfo err`;
-
-        } else if (mem.pct < 35) {
-            // ─ YELLOW: RAM under pressure (20–35% free) ─
-            item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-            item.color = undefined;
-            item.text = `$(warning) RAM ${mem.pct.toFixed(0)}% free`;
-
-        } else {
-            // ─ GREEN (foreground tint): healthy (> 35% free) ─
-            item.backgroundColor = undefined; // clear any previous red/yellow
-            item.color = new vscode.ThemeColor('testing.iconPassed'); // green in all built-in themes
-            item.text = `$(check) RAM ${mem.pct.toFixed(0)}% free`;
-        }
-
-        // ── Tooltip with detail table ─────────────────────────────────────
-        // Key encodes all visible values; tooltip is only rebuilt (and the IPC
-        // round-trip to the renderer only fired) when something actually changed.
-        const tooltipKey = mem
+        // ── Full state cache — skip all IPC when nothing has changed ──────
+        // Covers text, color, backgroundColor, and tooltip in one guard.
+        // Same-tick assignments are coalesced by VS Code into one $setEntry
+        // call; this cache prevents that call entirely during stable periods.
+        const stateKey = mem
             ? `${svcStatus}|${mem.pct.toFixed(0)}|${Math.round(mem.availableKB / 1024)}`
             : `${svcStatus}|null`;
-        if (tooltipKey !== _lastTooltipKey) {
-            _lastTooltipKey = tooltipKey;
+
+        if (stateKey !== _lastStateKey) {
+            _lastStateKey = stateKey;
+
+            // ── Background colour ─────────────────────────────────────────
+            // IMPORTANT: VS Code only supports two ThemeColor strings for
+            // StatusBarItem.backgroundColor — no others will have any effect:
+            //   'statusBarItem.errorBackground'   → red   (critical)
+            //   'statusBarItem.warningBackground' → amber  (warning)
+            // For the healthy/"green" state, set backgroundColor = undefined
+            // and tint the foreground text/icon with item.color instead.
+
+            if (!isRunning) {
+                // ─ RED: service is not running — most urgent ─
+                item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+                item.color = undefined;
+                item.text = `$(error) watchdog: ${svcStatus}`;
+
+            } else if (!mem || mem.pct < 20) {
+                // ─ RED: RAM critically low (< 20% free) ─
+                item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+                item.color = undefined;
+                item.text = mem
+                    ? `$(flame) RAM ${mem.pct.toFixed(0)}% free`
+                    : `$(error) meminfo err`;
+
+            } else if (mem.pct < 35) {
+                // ─ YELLOW: RAM under pressure (20–35% free) ─
+                item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+                item.color = undefined;
+                item.text = `$(warning) RAM ${mem.pct.toFixed(0)}% free`;
+
+            } else {
+                // ─ GREEN (foreground tint): healthy (> 35% free) ─
+                item.backgroundColor = undefined; // clear any previous red/yellow
+                item.color = new vscode.ThemeColor('testing.iconPassed'); // green in all built-in themes
+                item.text = `$(check) RAM ${mem.pct.toFixed(0)}% free`;
+            }
+
+            // ── Tooltip with detail table ─────────────────────────────────
             if (mem) {
                 const availMB = Math.round(mem.availableKB / 1024);
                 const totalGB = (mem.totalKB / 1024 / 1024).toFixed(1);
@@ -204,4 +199,4 @@ module.exports = { activate, deactivate };
 // this module to expose internal functions for unit tests without calling
 // activate(). The guard prevents any production code path from accessing _test.
 /* c8 ignore next */
-if (process.env.MEM_WATCHDOG_TEST) { module.exports._test = { update, POLL_INTERVAL_MS, resetTooltipCache: () => { _lastTooltipKey = ''; } }; }
+if (process.env.MEM_WATCHDOG_TEST) { module.exports._test = { update, POLL_INTERVAL_MS, resetStateCache: () => { _lastStateKey = ''; } }; }

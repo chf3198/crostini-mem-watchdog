@@ -44,8 +44,9 @@ const utilsAbsPath = path.resolve(__dirname, '../../utils.js');
 const mockState = {
     meminfo:     { totalKB: 6440000, availableKB: 4000000, pct: 62 }, // healthy default
     svcStatus:   'active',
-    shDelay:     0,      // ms to delay each sh() call (simulates slow systemctl)
-    shCallCount: 0,      // incremented by mockSh — read by pileup-guard tests
+    shDelay:     0,      // ms to delay each sh() / checkServiceStatus() call
+    shCallCount: 0,      // incremented by mockSh (fallback exec path)
+    checkCallCount: 0,   // incremented by mockCheckServiceStatus (cgroup.procs hot path)
 };
 
 const mockReadMeminfo = () => mockState.meminfo;   // returns null | {totalKB,availableKB,pct}
@@ -55,8 +56,6 @@ async function mockSh(/* cmd */) {
         await new Promise(r => setTimeout(r, mockState.shDelay));
     }
     mockState.shCallCount++;
-    // checkService() calls sh('systemctl --user is-active mem-watchdog')
-    // and returns stdout directly.  ok=true means exit 0.
     return {
         ok:     mockState.svcStatus === 'active',
         stdout: mockState.svcStatus,
@@ -64,17 +63,27 @@ async function mockSh(/* cmd */) {
     };
 }
 
+// checkServiceStatus() replaces checkService() + exec on the hot path.
+// The mock mirrors shDelay so pileup-guard tests can still simulate slow checks.
+async function mockCheckServiceStatus() {
+    if (mockState.shDelay > 0) {
+        await new Promise(r => setTimeout(r, mockState.shDelay));
+    }
+    mockState.checkCallCount++;
+    return mockState.svcStatus;
+}
+
 require.cache[utilsAbsPath] = {
     id: utilsAbsPath, filename: utilsAbsPath, loaded: true, paths: [],
-    exports: { readMeminfo: mockReadMeminfo, sh: mockSh },
+    exports: { readMeminfo: mockReadMeminfo, sh: mockSh, checkServiceStatus: mockCheckServiceStatus },
 };
 
 // ── Step 3: set env var, require extension with _test hook ────────────────────
 process.env.MEM_WATCHDOG_TEST = '1';
 const ext = require('../../extension');
-const { update, POLL_INTERVAL_MS, resetTooltipCache } = ext._test;
+const { update, POLL_INTERVAL_MS, resetStateCache } = ext._test;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 // Plain object that mimics the StatusBarItem properties update() writes to.
 // ThemeColor instances land on .backgroundColor / .color — tests inspect .id.
@@ -84,10 +93,11 @@ function makeItem() {
 
 function resetState(overrides = {}) {
     Object.assign(mockState, {
-        meminfo:     { totalKB: 6440000, availableKB: 4000000, pct: 62 },
-        svcStatus:   'active',
-        shDelay:     0,
-        shCallCount: 0,
+        meminfo:        { totalKB: 6440000, availableKB: 4000000, pct: 62 },
+        svcStatus:      'active',
+        shDelay:        0,
+        shCallCount:    0,
+        checkCallCount: 0,
     }, overrides);
 }
 
@@ -97,7 +107,7 @@ function resetState(overrides = {}) {
 // a confusing status bar colour in the wild.
 
 describe('update() — status bar state machine', () => {
-    beforeEach(() => resetState());
+    beforeEach(() => { resetState(); resetStateCache(); });
 
     test('healthy (pct > 35, service active): green tint, check icon, NO errorBackground', async () => {
         resetState({ meminfo: { totalKB: 6440000, availableKB: 4000000, pct: 62 } });
@@ -165,19 +175,19 @@ describe('update() — status bar state machine', () => {
 });
 
 // ── Pileup guard ──────────────────────────────────────────────────────────────
-// This is the OOM-pressure safety test. Under memory pressure, systemctl can
-// stall for 500 ms+. Without the _updating guard, a 2 s timer firing 10 times
-// would spawn 10 concurrent `systemctl --user is-active` processes, consuming
-// another ~5 MB RSS each and potentially cascading the OOM condition.
+// This is the OOM-pressure safety test. Under memory pressure, the service
+// check (checkServiceStatus) can stall for 500 ms+ in the exec() fallback.
+// Without the _updating guard, a 2 s timer would stack up dozens of concurrent
+// service checks, each consuming extra RSS.
 //
-// Critical invariant: for N concurrent update() calls, sh() is called EXACTLY
-// ONCE. All other N-1 callers must bail at `if (_updating) return;`.
+// Critical invariant: for N concurrent update() calls, checkServiceStatus() is
+// called EXACTLY ONCE. All other N-1 callers must bail at `if (_updating) return;`.
 
 describe('update() — _updating pileup guard', () => {
-    beforeEach(() => resetState());
+    beforeEach(() => { resetState(); resetStateCache(); });
 
-    test('20 concurrent calls: sh() called exactly 1 time (guard blocks 19)', async () => {
-        // 50 ms simulates a slow systemctl under memory pressure.
+    test('20 concurrent calls: checkServiceStatus() called exactly 1 time (guard blocks 19)', async () => {
+        // 50 ms simulates a slow service check (e.g., exec() fallback under pressure).
         // All 20 calls are queued before the event loop can return from the first.
         resetState({ shDelay: 50 });
         const item = makeItem();
@@ -187,12 +197,12 @@ describe('update() — _updating pileup guard', () => {
         );
 
         assert.equal(
-            mockState.shCallCount, 1,
-            `pileup guard failed: sh() was called ${mockState.shCallCount} times for 20 concurrent update() calls (expected 1)`
+            mockState.checkCallCount, 1,
+            `pileup guard failed: checkServiceStatus() was called ${mockState.checkCallCount} times for 20 concurrent update() calls (expected 1)`
         );
     });
 
-    test('5 sequential calls (awaited): guard resets — sh() called 5 times', async () => {
+    test('5 sequential calls (awaited): guard resets — checkServiceStatus() called 5 times', async () => {
         // Verifies the guard self-resets in finally{}.
         // If _updating were never cleared, all calls after the first would drop.
         resetState();
@@ -203,8 +213,8 @@ describe('update() — _updating pileup guard', () => {
         }
 
         assert.equal(
-            mockState.shCallCount, 5,
-            `guard did not reset: sh() called ${mockState.shCallCount} times for 5 sequential calls (expected 5)`
+            mockState.checkCallCount, 5,
+            `guard did not reset: checkServiceStatus() called ${mockState.checkCallCount} times for 5 sequential calls (expected 5)`
         );
     });
 });
@@ -212,7 +222,7 @@ describe('update() — _updating pileup guard', () => {
 // ── Resilience ────────────────────────────────────────────────────────────────
 
 describe('update() — resilience under adverse conditions', () => {
-    beforeEach(() => resetState());
+    beforeEach(() => { resetState(); resetStateCache(); });
 
     test('does not throw when readMeminfo() returns null — /proc/meminfo ENOENT', async () => {
         resetState({ meminfo: null });
@@ -239,7 +249,7 @@ describe('update() — resilience under adverse conditions', () => {
 // are stable, which is the common case on a healthy system.
 
 describe('update() — tooltip IPC cache', () => {
-    beforeEach(() => { resetState(); resetTooltipCache(); });
+    beforeEach(() => { resetState(); resetStateCache(); });
 
     test('cache-hit: tooltip object is NOT replaced on second call with same values', async () => {
         const item = makeItem();
