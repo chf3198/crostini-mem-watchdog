@@ -38,9 +38,34 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd)"
 LOG="$REPO/scratch/pressure-test-$(date '+%Y%m%d-%H%M%S').log"
 mkdir -p "$REPO/scratch"
-# Prune test logs older than 7 days — scratch/ accumulates per-run timestamped
-# log and JSONL snapshot files; cap growth without manual housekeeping.
-find "$REPO/scratch" -maxdepth 1 \( -name '*.log' -o -name '*.jsonl' \) -mtime +7 -delete 2>/dev/null || true
+
+# ── scratch/ automatic pruning ───────────────────────────────────────────────
+# Two-tier policy: count-based (same-day sprint protection) + age-based
+# (30-day backstop). Uses -mmin instead of -mtime to avoid the floor-division
+# gotcha where "-mtime +7" actually means files older than 8 days (POSIX).
+prune_scratch() {
+  local pattern="$1"  # glob, e.g. 'pressure-test-*.log'
+  local keep="$2"     # count: keep N newest matching files
+  local age_min="$3"  # age: delete files older than N minutes
+  local dir="$REPO/scratch"
+
+  local all_files
+  all_files=$(find "$dir" -maxdepth 1 -name "$pattern" -printf '%T@ %p\n' 2>/dev/null \
+    | sort -rn | awk '{print $2}')
+  local count
+  count=$(echo "$all_files" | grep -c . 2>/dev/null || echo 0)
+  if (( count > keep )); then
+    echo "$all_files" | tail -n +$(( keep + 1 )) | xargs -r rm -f 2>/dev/null || true
+  fi
+
+  find "$dir" -maxdepth 1 -name "$pattern" -mmin "+${age_min}" -delete 2>/dev/null || true
+}
+
+# Keep 5 newest of each pressure-test file type; delete any older than 30 days
+prune_scratch 'pressure-test-*.log'   5  43200
+prune_scratch 'pressure-snaps-*.jsonl' 5 43200
+# stress-*.json files written by test/stress/update-stress.js
+prune_scratch 'stress-*.json'          5  43200
 
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true

@@ -357,3 +357,32 @@ Writing to `memory.limit_in_bytes` artificially constrains the hard memory limit
 | `--max-old-space-size=2048` | Gives V8 breathing room; reduces overall RSS vs 512 MB cap |
 | Playwright headless | Saves ~800 MB per automation run (no GPU compositor) |
 | 16 GB ChromeOS zram | Addresses host-level pressure (Pathway #2 only) |
+
+---
+
+### 2026-03-08 — Log system design: five gaps in the initial journald configuration
+
+**Context**: Deep research into optimal log system design for low-resource environments, applied to the full logging stack (journald, per-unit service settings, scratch/ test logs, tmpfiles.d).
+
+**Discovery — five specific gaps:**
+
+1. **File-level journald controls were absent.** `SystemMaxUse=100M` caps total size but without `SystemMaxFileSize` and `SystemMaxFiles`, the defaults are `SystemMaxFileSize=12.5M` (1/8 of SystemMaxUse) and `SystemMaxFiles=100` — allowing 100 archives × 12.5 MB = 1.25 GB before the total cap activates. Added `SystemMaxFileSize=16M` and `SystemMaxFiles=5`, producing at most 5 + 1 files × 16 MB = 96 MB maximum.
+
+2. **`SystemKeepFree` was missing.** journald does not back off automatically when disk is nearly full unless `SystemKeepFree` is set. On a constrained Crostini container approaching storage limits, journald would continue writing until the filesystem is full. Added `SystemKeepFree=500M`.
+
+3. **`LogRateLimitBurst=100` on the service unit was wrong in two ways.** First, when the burst limit is hit, journald drops ALL subsequent messages in that interval — including CRIT/EMERG priority lines. There are no priority exemptions from rate limiting. Second, the daemon is architecturally self-rate-limiting (it only logs on kill events and threshold crossings, never on every poll cycle), so a burst cap adds risk without any correctness benefit. Changed to `LogRateLimitBurst=0` (disabled at the unit level). The system-wide `RateLimitBurst=500` in journald.conf provides sufficient protection against other runaway services.
+
+4. **`find -mtime +N` has a floor-division precision bug.** `find -mtime +7` means files older than **8 days** (POSIX: floor((now - mtime) / 86400) > 7). A day-long development sprint can accumulate dozens of files before the age limit activates — age-only limiting is insufficient. Fixed by: (a) replacing `-mtime` with `-mmin +43200` (exact 30-day precision), and (b) adding count-based pruning using `find … -printf '%T@ %p\n' | sort -rn` to keep the N newest files — protects against same-day accumulation regardless of age.
+
+5. **journald vacuum doesn't work without `--rotate` first.** `journalctl --vacuum-size` and `--vacuum-time` only remove *archived* journal files. The active `.journal` file is never touched. Without calling `journalctl --rotate` first to archive the active file, a `--vacuum-size=95M` call on a 260 MB journal would free zero bytes. Added `journalctl --rotate && journalctl --vacuum-size=95M --vacuum-time=3d` immediately after installing the drop-in.
+
+**Bonus discovery — tmpfiles.d `e` type for persistent daily cleanup:**
+`systemd-tmpfiles-clean.service` runs daily via the user systemd session (present on Crostini/Debian 12 by default). The `e` directive type adjusts an existing directory by removing files matching the age criterion. Using `m:30d` (modification-time-only prefix) prevents directory reads from resetting the age clock. This provides a persistent backstop independent of whether tests are run, installed to `~/.config/user-tmpfiles.d/mem-watchdog-scratch.conf` by `install.sh`.
+
+**Application**: For any log system on a constrained host:
+- Always set both `SystemMaxUse` AND `SystemMaxFileSize`+`SystemMaxFiles` — total cap and per-file rotation cadence are independent knobs.
+- Always set `SystemKeepFree` — journald does not self-throttle under disk pressure otherwise.
+- Use `LogRateLimitBurst=0` for self-rate-limiting services where missing a CRIT message is worse than a brief flood.
+- Use `-mmin` not `-mtime` in `find` for time-based file management.
+- Count-based pruning (`sort | tail -n +N+1 | xargs rm`) is the right first tier; age-based is the backstop second tier.
+- Always `journalctl --rotate` before `--vacuum-*` — vacuum only touches archived files.

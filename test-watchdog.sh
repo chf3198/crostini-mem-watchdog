@@ -13,9 +13,34 @@ LOG="$REPO/scratch/watchdog-test-$(date '+%Y%m%d-%H%M%S').log"
 WATCHDOG="$REPO/mem-watchdog.sh"
 
 mkdir -p "$REPO/scratch"
-# Prune test logs older than 7 days — scratch/ is gitignored and accumulates
-# one timestamped file per run; cap growth without manual housekeeping.
-find "$REPO/scratch" -maxdepth 1 -name '*.log' -mtime +7 -delete 2>/dev/null || true
+
+# ── scratch/ automatic pruning ───────────────────────────────────────────────
+# Two-tier policy: count-based (same-day sprint protection) + age-based
+# (30-day backstop). Uses -mmin instead of -mtime to avoid the floor-division
+# gotcha where "-mtime +7" actually means files older than 8 days (POSIX).
+# Runs silently — never fails a test run on a fresh clone.
+prune_scratch() {
+  local pattern="$1"  # glob, e.g. 'watchdog-test-*.log'
+  local keep="$2"     # count: keep N newest matching files
+  local age_min="$3"  # age: delete files older than N minutes
+  local dir="$REPO/scratch"
+
+  # Count-based: keep only the newest $keep files of this pattern
+  local all_files
+  all_files=$(find "$dir" -maxdepth 1 -name "$pattern" -printf '%T@ %p\n' 2>/dev/null \
+    | sort -rn | awk '{print $2}')
+  local count
+  count=$(echo "$all_files" | grep -c . 2>/dev/null || echo 0)
+  if (( count > keep )); then
+    echo "$all_files" | tail -n +$(( keep + 1 )) | xargs -r rm -f 2>/dev/null || true
+  fi
+
+  # Age-based: delete anything older than $age_min minutes regardless of count
+  find "$dir" -maxdepth 1 -name "$pattern" -mmin "+${age_min}" -delete 2>/dev/null || true
+}
+
+# Keep 20 newest watchdog logs; delete any older than 30 days (43200 min)
+prune_scratch 'watchdog-test-*.log' 20 43200
 
 pass=0
 fail=0
