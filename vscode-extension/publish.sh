@@ -18,17 +18,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-ENV_FILE="$REPO_ROOT/.env"
+ENV_FILE="$SCRIPT_DIR/.env"
 
-# ── Load credentials ──────────────────────────────────────────────────────────
+# ── Load credentials ────────────────────────────────────────────────────────────
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "ERROR: $ENV_FILE not found. Create it from the .env template." >&2
+  echo "ERROR: $ENV_FILE not found. Create vscode-extension/.env with VSCE_PAT=<token>." >&2
   exit 1
 fi
 
 set -a
-# shellcheck source=../.env
+# shellcheck source=.env
 source "$ENV_FILE"
 set +a
 

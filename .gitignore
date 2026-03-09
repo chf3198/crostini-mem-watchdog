@@ -4,6 +4,7 @@ vscode-extension/resources/
 
 # Secrets — never commit
 .env
+vscode-extension/.env
 
 # Node modules (if building the extension locally)
 vscode-extension/node_modules/
