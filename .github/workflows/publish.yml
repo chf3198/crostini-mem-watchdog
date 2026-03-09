@@ -33,7 +33,7 @@ jobs:
     permissions:
       contents: read   # checkout only; vsce uses VSCE_PAT secret, not GITHUB_TOKEN
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-node@v4
         with:
