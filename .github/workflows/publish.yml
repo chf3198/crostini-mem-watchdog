@@ -21,10 +21,17 @@ on:
     tags:
       - 'v*'
 
+# Least-privilege: publish job only needs to read source and call vsce with
+# the VSCE_PAT secret. No GITHUB_TOKEN write access required.
+permissions:
+  contents: read
+
 jobs:
   publish:
     name: Publish to VS Code Marketplace
     runs-on: ubuntu-latest
+    permissions:
+      contents: read   # checkout only; vsce uses VSCE_PAT secret, not GITHUB_TOKEN
     steps:
       - uses: actions/checkout@v4
 

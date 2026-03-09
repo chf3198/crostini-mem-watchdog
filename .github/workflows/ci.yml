@@ -25,11 +25,18 @@ on:
   pull_request:
     branches: [main]
 
+# Least-privilege default: all jobs get read-only GITHUB_TOKEN.
+# Individual jobs override only the scopes they actually need.
+permissions:
+  contents: read
+
 jobs:
   # ── Job 1: Daemon static analysis ────────────────────────────────────────
   lint-daemon:
     name: Daemon — bash -n + shellcheck
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +53,8 @@ jobs:
   test-extension:
     name: Extension — node:test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -76,6 +85,9 @@ jobs:
     needs: [lint-daemon, test-extension]
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      actions: write   # required by actions/upload-artifact@v4
     steps:
       - uses: actions/checkout@v4
 
@@ -103,3 +115,22 @@ jobs:
           name: vsix-pr-${{ github.event.pull_request.number }}
           path: vscode-extension/*.vsix
           retention-days: 14
+
+  # ── Job 4: Dependency review — PR only ──────────────────────────────────────
+  # Compares the dependency tree before and after the PR and fails if any
+  # newly introduced package has a known CVE. Uses the GitHub Advisory Database.
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write   # allows posting a summary comment on the PR
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
+          comment-summary-in-pr: always

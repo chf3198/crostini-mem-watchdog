@@ -4,7 +4,23 @@ vscode-extension/resources/
 
 # Secrets — never commit
 .env
+.env.local
+.env.*.local
 vscode-extension/.env
+vscode-extension/.env.local
+# (vscode-extension/.env.example IS committed — it is a safe template)
+
+# Private keys, certificates, credential files
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+id_rsa
+id_ed25519
+id_ecdsa
+*.secret
 
 # Node modules (if building the extension locally)
 vscode-extension/node_modules/
