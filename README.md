@@ -9,7 +9,7 @@
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ChromeOS%20Crostini-4285f4)](https://chromeos.dev/en/linux)
 [![Tests](https://img.shields.io/badge/bash-12%2F12-brightgreen)](test-watchdog.sh)
-[![Tests](https://img.shields.io/badge/js-52%2F52-brightgreen)](vscode-extension/package.json)
+[![Tests](https://img.shields.io/badge/js-54%2F54-brightgreen)](vscode-extension/package.json)
 
 *`earlyoom` hard-crashes on Crostini (exit 104, every 3 seconds, zero protection). This replaces it with a VS Code-aware watchdog that kills Chrome before the kernel OOM-kills VS Code.*
 

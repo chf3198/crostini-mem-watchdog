@@ -17,6 +17,10 @@
 
 ### Tests
 - 52 → **54** JS unit tests: added `describe('update() — tooltip IPC cache')` with cache-hit and cache-miss tests; `resetStateCache()` exposed via `module._test` seam (renamed from `resetTooltipCache`) for deterministic per-test isolation. Pileup-guard tests updated to count `checkServiceStatus()` calls (via `checkCallCount`) instead of `sh()` calls.
+- `_stats = { dropped, cacheHits, cacheMisses }` — three integer counters added to `extension.js`, incremented on every `update()` tick. Exposed via `_test.getStats()` / `_test.resetStats()` for assertion in pileup tests (`dropped===19` under 20 concurrent calls). Allocation cost is three integer increments per call — zero heap.
+- `test/stress/update-stress.js` added (`npm run test:stress`) — 6 scenarios: stable-state, state-toggling, all-UI-states, pileup-50 ms, pileup-200 ms, warm-2000. Measures event-loop latency via `monitorEventLoopDelay({ resolution: 1 })`, heap usage via `process.memoryUsage()`, and pileup guard efficiency. JSON report written to `scratch/stress-TIMESTAMP.json`.
+- **Zero-fork `snapshot()`** in `test-pressure.sh` — redesigned from ~190 forks per checkpoint to 1 amortized fork (`WD_PID` resolved once at test-suite start via `systemctl`). `$EPOCHSECONDS` (bash 5.0+ built-in, zero syscall) replaces `date +%s`; `/proc/[0-9]*/status` glob + `while IFS= read` loop replaces `ps -C code | awk | wc | tr` pipeline forks; `read -r < /proc/…/file` replaces all `cat` subshell forks. `wd_cpu_ticks` (sum of `utime+stime` fields from `/proc/$WD_PID/stat`) replaces the `ps %cpu` snapshot — the raw tick count is diffable across intervals to compute interval CPU rate.
+- `monitorEventLoopDelay` resolution lowered 5 ms → 1 ms; `Number.isFinite()` NaN guards added to all histogram percentile reads — prevents `NaN` in JSON output when the histogram has not yet accumulated samples during warm-up. Confirmed: `monitorEventLoopDelay` uses a `uv_timer_t` on the main V8 thread (not a Worker) — its RSS is accounted within the main process heap.
 
 ---
 

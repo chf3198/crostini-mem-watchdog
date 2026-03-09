@@ -45,7 +45,7 @@ Daily cost comparison at 43,200 calls/day (2 s polling): exec = 375 ms CPU, cgro
 
 ---
 
-
+### 2026-03-07 — Startup mode debounce: 567 activations/day from language server PIDs
 
 **Context**: Forensic investigation after reported VS Code crash. Journal showed 567 "startup mode active" entries in 24 hours.
 
@@ -312,6 +312,24 @@ Writing to `memory.limit_in_bytes` artificially constrains the hard memory limit
 - Test 12 checked `$REPO/scripts/publish-to-squarespace.js` which doesn't exist in this repo; empty `grep -c` returns `0` which passes the `-eq 0` test silently
 
 **Application**: `REPO` must be `$(dirname "$0")` not `$(dirname "$0")/..`. Tests 10 and 12 were fixed in commit after extraction. When moving scripts between repos, always grep for hardcoded paths.
+
+---
+
+---
+
+### 2026-03-07 — Zero-fork bash patterns for OOM-resilient test instrumentation
+
+**Context**: `test-pressure.sh` `snapshot()` function was calling ~190 external processes per checkpoint (date, ps, awk, wc, cat, tr, systemctl). Under real OOM pressure, each fork risks `ENOMEM`, defeating the purpose of a memory pressure test's instrumentation.
+
+**Discovery**:
+- **`$EPOCHSECONDS`** (bash 5.0+) is a magic variable maintained by bash itself — zero syscall, zero fork. Replaces `$(date +%s)` entirely.
+- **`/proc/[0-9]*/status` glob** inside a `for f in ...` loop reads all process status files directly in bash with `while IFS= read -r line < "$f"` — replaces the entire `ps -C code | awk | wc -l | tr` pipeline. Zero forks, no page cache pressure.
+- **`read -r < /proc/$PID/stat`** replaces `cat /proc/$PID/stat` — avoids the subshell fork for single-file reads.
+- **`wd_cpu_ticks`** = sum of `utime` + `stime` fields (fields 14 and 15) from `/proc/$WD_PID/stat` — a raw tick count that is diffable across intervals to compute interval CPU rate, replacing the `ps %cpu` snapshot which is a non-monotonic instantaneous estimate.
+- **`monitorEventLoopDelay`** (Node.js `perf_hooks`) uses a `uv_timer_t` on the main V8 thread, not a Worker thread. Its RSS cost is part of the main process heap. `Number.isFinite()` guards are required on all histogram percentile reads — the histogram returns `NaN` until at least one sample has been recorded.
+- **Result**: `WD_PID` resolved once at test-suite start (one `systemctl` call); all subsequent per-checkpoint reads are pure procfs with no external processes.
+
+**Application**: In any bash script that runs under the conditions it is monitoring (memory pressure, CPU saturation), replace all `$(command)` substitutions with direct `/proc` reads and bash built-ins. The `$EPOCHSECONDS` + `read -r < /proc/file` + glob-loop pattern covers the majority of system-state queries with zero forks.
 
 ---
 

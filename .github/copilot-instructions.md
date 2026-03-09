@@ -135,8 +135,9 @@ journalctl --user -u mem-watchdog -f
 # Build and publish VS Code extension
 cd vscode-extension
 npm run build                     # populate resources/ for local dev/testing
-npm test                          # 52 JS unit tests via node:test (~1s, exits 0/1)
+npm test                          # 54 JS unit tests via node:test (~1s, exits 0/1)
 npm run test:coverage             # same + c8 V8 coverage report to stdout + lcov
+npm run test:stress               # 6 stress scenarios: pileup guard, EL lag, heap usage
 npx vsce package                  # → mem-watchdog-status-x.y.z.vsix
 VSCE_PAT="..." npx vsce publish --pat "$VSCE_PAT"  # publisher: CurtisFranks
 
