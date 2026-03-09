@@ -6,6 +6,22 @@
 
 ---
 
+## Kill Hierarchy
+
+The daemon acts on these conditions (checked every 2 seconds):
+
+| Condition | Action |
+|---|---|
+| `MemAvailable ≤ 15%` (~945 MB on 6 GB) | `SIGKILL` Chrome / Playwright |
+| `MemAvailable ≤ 25%` (~1.6 GB on 6 GB) | `SIGTERM` Chrome / Playwright |
+| PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall) |
+| VS Code RSS > 2.5 GB | `SIGTERM` Chrome + desktop notification |
+| VS Code RSS > 3.5 GB | `SIGKILL` Chrome; if no Chrome → `SIGTERM` the highest-RSS extension host process to save the VS Code window |
+
+**Startup mode:** when new VS Code PIDs appear, the daemon switches to **0.5 s polling for 90 s** and drops the RSS emergency threshold to 2.0 GB — catching the extension-host spike that caused the crash this tool was built to prevent (0 → 4 GB RSS in under 2 seconds during startup).
+
+---
+
 ## Status Bar
 
 A live memory indicator in the bottom bar updates every 2 seconds:
@@ -31,34 +47,6 @@ Access all commands via `Ctrl+Shift+P` → **Mem Watchdog:**
 | **Playwright Pre-flight Check** | Pass/fail modal: RAM%, VS Code RSS, Chrome presence, watchdog state. Offers "Kill Chrome Now" inline if Chrome is running. |
 | **Kill Chrome / Playwright Now** | Immediately sends `SIGTERM` to all `chrome`, `chromium`, and `node.*playwright` processes |
 | **Restart Service** | `systemctl --user restart mem-watchdog` with live status feedback |
-
----
-
-## Self-Installing Daemon
-
-On first VS Code activation, the extension automatically:
-
-1. Copies the bundled `mem-watchdog.sh` to `~/.local/bin/`
-2. Installs `mem-watchdog.service` to `~/.config/systemd/user/`
-3. Runs `systemctl --user enable --now mem-watchdog`
-
-On subsequent activations, a **SHA-256 hash comparison** detects whether the bundled daemon version differs from what's installed — upgrading silently only when needed.
-
----
-
-## Kill Hierarchy
-
-The daemon acts on these conditions (checked every 2 seconds):
-
-| Condition | Action |
-|---|---|
-| `MemAvailable ≤ 15%` (~945 MB on 6 GB) | `SIGKILL` Chrome / Playwright |
-| `MemAvailable ≤ 25%` (~1.6 GB on 6 GB) | `SIGTERM` Chrome / Playwright |
-| PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall) |
-| VS Code RSS > 2.5 GB | `SIGTERM` Chrome + desktop notification |
-| VS Code RSS > 3.5 GB | `SIGKILL` Chrome; if no Chrome → `SIGTERM` the highest-RSS extension host process to save the VS Code window |
-
-**Startup mode:** when new VS Code PIDs appear, the daemon switches to **0.5 s polling for 90 s** and drops the RSS emergency threshold to 2.0 GB — catching the extension-host spike that caused the crash this tool was built to prevent (0 → 4 GB RSS in under 2 seconds during startup).
 
 ---
 
@@ -101,36 +89,19 @@ VS Code Extension (this)            Systemd Daemon (independent process)
 • Status bar + 4 commands           • Polls /proc/meminfo + PSI every 2 s
 • Upgrade detection via hash        • Kills Chrome on threshold breach
 • Settings → config sync            • Survives VS Code freezing / crashing
-• Zero-fork cgroup.procs check      • oom_score_adj tuning every loop
+• OOM-resilient service monitoring  • oom_score_adj tuning every loop
 ```
 
 ---
 
 ## How It Works
 
-On every VS Code startup:
-1. The bundled `mem-watchdog.sh` is SHA-256 compared to the installed version. If different, it is upgraded and the service is restarted.
-2. VS Code Settings are written to `~/.config/mem-watchdog/config.sh`. The daemon sources this file at startup so thresholds take effect without reinstalling.
-3. OOM scores are adjusted: `oom_score_adj=0` for VS Code, `oom_score_adj=1000` for Chrome (kernel kills it first).
+On every VS Code activation:
+1. The bundled `mem-watchdog.sh` is SHA-256 compared to the installed version. If different, it is upgraded and the service is restarted automatically.
+2. VS Code Settings are written to `~/.config/mem-watchdog/config.sh`. The daemon sources this file so threshold changes take effect on the next restart — without reinstalling.
+3. OOM scores are tuned: `oom_score_adj=0` for VS Code (counters Electron's default 200–300), `oom_score_adj=1000` for Chrome (kernel kills it first, no root required).
 
-**Startup mode:** When new VS Code PIDs are detected, the daemon switches to **0.5 s polling for 90 s** and drops the RSS emergency threshold to 2.0 GB — catching the extension-host spike that caused the crash this tool was built to prevent (0 → 4 GB RSS in under 2 seconds during startup).
-
-**Service status checks** use a direct `fs.readFileSync` of the systemd cgroup virtual file (`cgroup.procs`) rather than `exec('systemctl --user is-active')` — ~600× faster and resilient to `fork()` failures under `ENOMEM` pressure, which is exactly when the check matters most.
-
----
-
-## Development
-
-```bash
-git clone https://github.com/chf3198/crostini-mem-watchdog.git
-cd crostini-mem-watchdog/vscode-extension
-npm run build          # populate resources/ from repo root
-npm test               # 54 JS unit tests via node:test (zero-install)
-npm run test:coverage  # same + c8 V8 coverage report
-npm run test:stress    # stress scenarios: pileup guard, EL lag, heap usage
-```
-
-54 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()`, config validation, command handlers, installer decision logic, and the `update()` state machine + pileup guard.
+The extension is OOM-resilient by design: it reads kernel virtual files directly rather than spawning processes that could themselves fail under `ENOMEM` — the exact condition it is monitoring.
 
 ---
 
@@ -168,3 +139,18 @@ Removing the extension stops and disables the `mem-watchdog` service. The daemon
 **[PolyForm Noncommercial 1.0.0](https://github.com/chf3198/crostini-mem-watchdog/blob/main/LICENSE)** — free for personal, educational, and non-commercial use.
 
 Commercial use requires a paid license. See [COMMERCIAL-LICENSE.md](https://github.com/chf3198/crostini-mem-watchdog/blob/main/COMMERCIAL-LICENSE.md) or contact [curtisfranks@gmail.com](mailto:curtisfranks@gmail.com).
+
+---
+
+## Contributing
+
+```bash
+git clone https://github.com/chf3198/crostini-mem-watchdog.git
+cd crostini-mem-watchdog/vscode-extension
+npm run build          # populate resources/ from repo root
+npm test               # 54 JS unit tests via node:test (zero-install)
+npm run test:coverage  # same + c8 V8 coverage report
+npm run test:stress    # stress scenarios: pileup guard, EL lag, heap usage
+```
+
+54 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()`, config validation, command handlers, installer decision logic, and the `update()` state machine + pileup guard.

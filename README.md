@@ -98,7 +98,7 @@ crostini-mem-watchdog/
     ├── installer.js             ← SHA-256 hash-based auto-install/upgrade
     ├── configWriter.js          ← VS Code Settings → ~/.config/mem-watchdog/config.sh
     ├── commands.js              ← dashboard, preflight, killChrome, restartService
-    ├── utils.js                 ← readMeminfo(), readPsi(), sh() — shared helpers
+    ├── utils.js                 ← readMeminfo(), readPsi(), sh(), checkServiceStatus() — shared helpers
     ├── lifecycle.js             ← vscode:uninstall: stop + disable service
     └── scripts/prepare.js       ← vscode:prepublish: bundles daemon files into resources/
 ```
@@ -140,14 +140,17 @@ crostini-mem-watchdog/
 
 ## Validation
 
+All 4 gates must pass before any change is published:
+
 ```bash
-bash test-watchdog.sh
+bash test-watchdog.sh              # 12 bash tests (~3 s) — service, OOM scores, PSI, SwapFree safety, SIGTERM
+cd vscode-extension && npm test    # 54 JS unit tests (~1 s) — extension state machine, pileup guard, utils
+bash -n mem-watchdog.sh            # bash syntax check
+shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
 ```
 
-12 tests, ~3 seconds, exits 0/1. Verifies the service, OOM scores, V8 heap cap, PSI reads, SwapFree safety, no `/tmp` writes, SIGTERM behaviour, and journald output.
-
 ```bash
-bash test-pressure.sh    # live: allocates memory, verifies watchdog fires
+bash test-pressure.sh    # live: allocates memory, verifies watchdog fires (requires < 40% RAM free)
 ```
 
 ---
