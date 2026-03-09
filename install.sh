@@ -81,7 +81,22 @@ run "systemctl --user daemon-reload"
 run "systemctl --user enable mem-watchdog"
 run "systemctl --user restart mem-watchdog"
 info "Service enabled and started"
-
+# ── Step 3b: Journal size limits (optional, requires sudo) ───────────────────
+# Default journald has no size cap; confirmed 260 MB after ~3 days on this
+# system. Sets SystemMaxUse=100M, RuntimeMaxUse=30M, MaxRetentionSec=2weeks.
+JOURNALD_DROPIN="/etc/systemd/journald.conf.d/50-size-limits.conf"
+if ! $DRY_RUN && sudo -n true 2>/dev/null && [[ ! -f "$JOURNALD_DROPIN" ]]; then
+  echo "Step 3b — Journal size limits (sudo available)"
+  sudo mkdir -p /etc/systemd/journald.conf.d
+  sudo cp "${SCRIPT_DIR}/journald-limits.conf" "$JOURNALD_DROPIN"
+  sudo systemctl restart systemd-journald 2>/dev/null || true
+  info "journald size limits installed → ${JOURNALD_DROPIN}"
+elif [[ -f "$JOURNALD_DROPIN" ]]; then
+  info "journald size limits already installed (${JOURNALD_DROPIN})"
+else
+  warning "Skipping journald limits — sudo not available or dry-run"
+  warning "To apply manually: sudo mkdir -p /etc/systemd/journald.conf.d && sudo cp '${SCRIPT_DIR}/journald-limits.conf' '${JOURNALD_DROPIN}'"
+fi
 if ! $DRY_RUN; then
   sleep 1
   if systemctl --user is-active --quiet mem-watchdog; then

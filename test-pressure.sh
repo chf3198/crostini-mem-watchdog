@@ -38,6 +38,9 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd)"
 LOG="$REPO/scratch/pressure-test-$(date '+%Y%m%d-%H%M%S').log"
 mkdir -p "$REPO/scratch"
+# Prune test logs older than 7 days — scratch/ accumulates per-run timestamped
+# log and JSONL snapshot files; cap growth without manual housekeeping.
+find "$REPO/scratch" -maxdepth 1 \( -name '*.log' -o -name '*.jsonl' \) -mtime +7 -delete 2>/dev/null || true
 
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true

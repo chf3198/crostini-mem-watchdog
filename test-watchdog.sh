@@ -13,6 +13,9 @@ LOG="$REPO/scratch/watchdog-test-$(date '+%Y%m%d-%H%M%S').log"
 WATCHDOG="$REPO/mem-watchdog.sh"
 
 mkdir -p "$REPO/scratch"
+# Prune test logs older than 7 days — scratch/ is gitignored and accumulates
+# one timestamped file per run; cap growth without manual housekeeping.
+find "$REPO/scratch" -maxdepth 1 -name '*.log' -mtime +7 -delete 2>/dev/null || true
 
 pass=0
 fail=0
