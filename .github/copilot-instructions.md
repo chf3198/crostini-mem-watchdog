@@ -62,6 +62,26 @@ When new VS Code PIDs are detected, the daemon switches to 0.5s polling for 90s 
 
 **Interruptible sleep**: the main loop uses `sleep "$eff_interval" & _sleep_pid=$!; wait "$_sleep_pid"` with `trap 'kill "$_sleep_pid"; exit 0' TERM INT` so SIGTERM from `systemctl stop` fires immediately rather than waiting up to 2 s for the foreground sleep subprocess.
 
+## Client Interaction Boundaries — Non-Negotiable
+
+**The client performs UAT only.** All technical work is the agent's sole responsibility.
+
+**The agent NEVER asks the client to:**
+- Run any shell command, git command, or terminal instruction
+- Configure credentials, authentication, or git settings
+- Perform any git operation (branch, commit, merge, push, rebase)
+- Interpret error output or diagnose failures
+- Manually edit files or configs
+
+**When blocked by a technical hurdle, the agent must:**
+1. Exhaust all programmatic workarounds before surfacing anything to the client
+2. If an **external security authorization** is genuinely required (the one known case is GitHub's `workflow` OAuth scope — required to push `.github/workflows/` files, enforced at every GitHub API layer with no programmatic bypass), the agent frames it as a single browser action: *"Please visit [URL] in your browser and enter the code [CODE] shown in the terminal to authorize CI/CD push access."* This is equivalent to clicking "Authorize" on any OAuth app — not technical work.
+3. After the client completes any browser authorization, the agent resumes and finishes all remaining work without further client input.
+
+**Git operations are entirely the agent's responsibility:** branch creation, commits, merges, rebases, conflict resolution, push retries, and credential scope management. A push failure is an agent problem to solve, not a client task.
+
+---
+
 ## Agent Workflow — Non-Negotiable Loop
 
 Every change follows these phases in order. **Never blend phases.**
