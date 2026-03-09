@@ -17,13 +17,14 @@ RestartSec=5
 TimeoutStopSec=10
 StandardOutput=journal
 StandardError=journal
-# Rate-limit journald writes from this service.
-# Allows 100 log entries per 30-second window — sufficient for normal operation
-# (daemon logs only on action events, not every poll cycle) while preventing
-# a flood during startup mode (0.5 s polling × 90 s = up to 180 cycles where
-# OOM score adjustments for new PIDs can each emit a log line).
-LogRateLimitIntervalSec=30s
-LogRateLimitBurst=100
+# Rate limiting: DISABLED at the per-unit level (LogRateLimitBurst=0).
+# The daemon is architecturally self-rate-limiting — it logs only on action
+# events (SIGTERM/SIGKILL, threshold crossings, startup mode activation), never
+# on every 2s/0.5s poll cycle. A per-unit burst cap would risk silently dropping
+# CRIT-priority kill-action log lines during an OOM cascade — the exact moment
+# log integrity matters most. The system-wide cap in journald-limits.conf
+# (RateLimitBurst=500/30s) is sufficient protection against runaway services.
+LogRateLimitBurst=0
 
 [Install]
 WantedBy=default.target
