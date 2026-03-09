@@ -19,4 +19,4 @@ node_modules/
 .vscodeignore
 
 # Scratch benchmarks — not needed inside the installed extension
-bench_*.js
+test/bench/
