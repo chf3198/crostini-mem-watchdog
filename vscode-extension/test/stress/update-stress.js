@@ -140,13 +140,16 @@ async function runScenario(cfg) {
     const v8Before  = v8.getHeapStatistics();
 
     // ── Event-loop lag histogram (sequential only) ────────────────────────────
-    // monitorEventLoopDelay measures the gap between when a timer fires and when
-    // the JS callback runs. Large values indicate synchronous code blocking the
-    // event loop (e.g., a slow readFileSync or a tight computation loop).
-    // Not meaningful for concurrent scenarios where the async awaits dominate.
+    // monitorEventLoopDelay uses a uv_timer_t on the main event loop — no OS
+    // thread, no Worker (confirmed: process.getActiveResourcesInfo() shows a
+    // 'Timeout', not a 'Worker'). RSS is part of the main process heap.
+    // At resolution=1ms, detects synchronous blocking events ≥ 1 ms.
+    // A value of 0 means "no blocking detected at this resolution" — not
+    // "zero overhead". Sub-ms operations won't accumulate lag.
+    // Not enabled for concurrent scenarios (async awaits are the dominant cost).
     let hist = null;
     if (!concurrent) {
-        hist = monitorEventLoopDelay({ resolution: 5 }); // 5 ms resolution
+        hist = monitorEventLoopDelay({ resolution: 1 });
         hist.enable();
     }
 
@@ -206,9 +209,11 @@ async function runScenario(cfg) {
         native_contexts:     v8After.number_of_native_contexts,
         detached_contexts:   v8After.number_of_detached_contexts,
         // Event-loop lag (sequential scenarios only)
-        el_max_lag_ms:       hist ? +(hist.max    / 1e6).toFixed(3) : null,
-        el_mean_lag_ms:      hist ? +(hist.mean   / 1e6).toFixed(3) : null,
-        el_p99_lag_ms:       hist ? +(hist.percentile(99) / 1e6).toFixed(3) : null,
+        // NaN occurs when no histogram samples were recorded (all ops completed
+        // before the 1 ms resolution timer fired). Treat as 0 — no lag detected.
+        el_max_lag_ms:       hist ? (Number.isFinite(hist.max)              ? +(hist.max                  / 1e6).toFixed(3) : 0) : null,
+        el_mean_lag_ms:      hist ? (Number.isFinite(hist.mean)             ? +(hist.mean                 / 1e6).toFixed(3) : 0) : null,
+        el_p99_lag_ms:       hist ? (Number.isFinite(hist.percentile(99))   ? +(hist.percentile(99)       / 1e6).toFixed(3) : 0) : null,
     };
 
     return result;

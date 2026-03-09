@@ -138,57 +138,110 @@ fi
 # Usage: snapshot "label"
 # Writes one human-readable line to tee_log (grep/awk parseable) AND one JSON
 # object to $SNAP_JSON (newline-delimited, jq-friendly) for post-analysis.
-# Requires $CGRP and $total_kb (set before the tests begin).
+# Requires $CGRP, $total_kb, and $WD_PID (set once before the tests begin).
 
 SNAP_JSON="$REPO/scratch/pressure-snaps-$(date '+%Y%m%d-%H%M%S').jsonl"
 
 snapshot() {
   local label="${1:-snap}"
+  # shellcheck disable=SC2034  # _u absorbs trailing unit fields ("kB") — intentional discard
   local ts avail_kb avail_pct free_kb dirty_kb psi_full psi_some
-  local vscode_rss vscode_npids wd_pid wd_rss wd_cpu cgrp_used_mb cgrp_limit_mb
+  local vscode_rss vscode_npids wd_rss wd_cpu_ticks cgrp_used_mb cgrp_limit_mb
+  local _sk _sv _u _sf _pline _stat_raw
+  local -a _stat_fields
 
-  ts=$(date +%s)
-  avail_kb=$(awk '/^MemAvailable/{print $2; exit}' /proc/meminfo)
-  free_kb=$( awk '/^MemFree/{print $2; exit}'      /proc/meminfo)
-  dirty_kb=$(awk '/^Dirty/{print $2; exit}'         /proc/meminfo)
+  # ── Timestamp — $EPOCHSECONDS: bash 5.0+ magic variable, zero fork, zero syscall ──
+  ts=$EPOCHSECONDS
+
+  # ── Memory fields — one pass through /proc/meminfo (zero fork, no page cache) ──
+  # IFS=$':\t ' splits both /proc/meminfo ("Key:   value kB") and
+  # /proc/PID/status ("Key:\tvalue kB") cleanly without forking awk.
+  # Break at Dirty — it is the last field we need and appears after
+  # MemFree and MemAvailable in all Linux kernel versions.
+  avail_kb=0; free_kb=0; dirty_kb=0
+  while IFS=$':\t ' read -r _sk _sv _u; do
+    case "$_sk" in
+      MemAvailable) avail_kb=$_sv ;;
+      MemFree)      free_kb=$_sv  ;;
+      Dirty)        dirty_kb=$_sv; break ;;
+    esac
+  done < /proc/meminfo
   avail_pct=$(( avail_kb * 100 / total_kb ))
 
-  # PSI: fraction of time all tasks / any task stalled on memory (10 s window)
-  psi_full=$(awk '/^full/{for(i=1;i<=NF;i++) if($i~/^avg10=/) {
-    sub("avg10=","",$i); printf "%.2f",$i; exit}}' /proc/pressure/memory 2>/dev/null || echo "n/a")
-  psi_some=$(awk '/^some/{for(i=1;i<=NF;i++) if($i~/^avg10=/) {
-    sub("avg10=","",$i); printf "%.2f",$i; exit}}' /proc/pressure/memory 2>/dev/null || echo "n/a")
+  # ── PSI — one pass through /proc/pressure/memory (zero fork, no page cache) ──
+  # "full avg10=X.XX avg60=..." — strip everything before avg10= then after first space.
+  psi_full="n/a"; psi_some="n/a"
+  while IFS= read -r _pline; do
+    case "$_pline" in
+      full*)  psi_full="${_pline#*avg10=}"; psi_full="${psi_full%% *}" ;;
+      some*)  psi_some="${_pline#*avg10=}"; psi_some="${psi_some%% *}" ;;
+    esac
+  done < /proc/pressure/memory 2>/dev/null || true
 
-  # VS Code aggregate RSS and PID count
-  vscode_rss=$(ps -C code -o rss= 2>/dev/null | awk '{s+=$1} END{print s+0}')
-  vscode_npids=$(ps -C code -o pid= 2>/dev/null | wc -l | tr -d ' ')
+  # ── VS Code aggregate RSS + PID count — /proc/*/status iteration (zero fork) ──
+  # Glob uses opendir+readdir inside bash (no fork, no page cache).
+  # Non-code procs: reads only Name (first line) then breaks — minimal I/O.
+  # Code procs: reads ~22 lines to reach VmRSS.
+  vscode_rss=0; vscode_npids=0
+  for _sf in /proc/[0-9]*/status; do
+    [[ -r "$_sf" ]] || continue
+    while IFS=$':\t ' read -r _sk _sv _u; do
+      case "$_sk" in
+        Name)  [[ "$_sv" == "code" ]] || break ;;
+        VmRSS) (( vscode_rss += _sv )); (( ++vscode_npids )); break ;;
+      esac
+    done < "$_sf" 2>/dev/null
+  done
 
-  # Watchdog daemon RSS (%cpu from ps reflects the last scheduler quantum)
-  wd_pid=$(systemctl --user show mem-watchdog -p MainPID --value 2>/dev/null | tr -d ' ' || echo 0)
-  if [[ -n "$wd_pid" && "$wd_pid" != "0" ]]; then
-    wd_rss=$(ps -p "$wd_pid" -o rss=  2>/dev/null | tr -d ' ' || echo 0)
-    wd_cpu=$(ps -p "$wd_pid" -o %cpu= 2>/dev/null | tr -d ' ' || echo 0.0)
-  else
-    wd_rss=0; wd_cpu=0.0
+  # ── Watchdog RSS — /proc/$WD_PID/status (zero fork) ──────────────────────────
+  wd_rss=0
+  if [[ "$WD_PID" != "0" && -r "/proc/$WD_PID/status" ]]; then
+    while IFS=$':\t ' read -r _sk _sv _u; do
+      [[ "$_sk" == "VmRSS" ]] && { wd_rss=$_sv; break; }
+    done < "/proc/$WD_PID/status"
   fi
 
-  # Cgroup memory usage vs the safety ceiling we installed above
-  cgrp_used_mb=$((  $(cat "$CGRP/memory.usage_in_bytes"  2>/dev/null || echo 0) / 1024 / 1024 ))
-  cgrp_limit_mb=$(( $(cat "$CGRP/memory.limit_in_bytes" 2>/dev/null || echo 0) / 1024 / 1024 ))
+  # ── Watchdog lifetime CPU ticks — /proc/$WD_PID/stat (zero fork) ─────────────
+  # utime+stime in CLK_TCK units (100/s on Linux). Diff across two snapshots:
+  #   cpu_seconds = (ticks_b - ticks_a) / 100 / (ts_b - ts_a)
+  # More useful than a single %%cpu snapshot for measuring daemon CPU budget.
+  wd_cpu_ticks=0
+  if [[ "$WD_PID" != "0" && -r "/proc/$WD_PID/stat" ]]; then
+    read -r _stat_raw < "/proc/$WD_PID/stat" 2>/dev/null || _stat_raw=""
+    if [[ -n "$_stat_raw" ]]; then
+      # ## removes the LONGEST prefix matching "*) " — handles spaces in comm.
+      _stat_raw="${_stat_raw##*) }"
+      read -r -a _stat_fields <<< "$_stat_raw"
+      # After stripping "pid (comm) ": state=0 ppid=1 ... utime=11 stime=12
+      wd_cpu_ticks=$(( ${_stat_fields[11]:-0} + ${_stat_fields[12]:-0} ))
+    fi
+  fi
 
-  # Human-readable line (each field is key=value separated by | for easy grep/awk)
-  tee_log "  [snap:${label}] ts=${ts} | avail=${avail_pct}%/${avail_kb}kB | free=${free_kb}kB | dirty=${dirty_kb}kB | psi_full=${psi_full} psi_some=${psi_some} | vscode=${vscode_rss}kB/${vscode_npids}pids | wd=${wd_rss}kB/${wd_cpu}%cpu | cgroup=${cgrp_used_mb}MB/${cgrp_limit_mb}MB"
+  # ── Cgroup accounting — direct procfs reads (zero fork) ──────────────────────
+  cgrp_used_mb=0; cgrp_limit_mb=0
+  { read -r _sv < "$CGRP/memory.usage_in_bytes"  2>/dev/null && cgrp_used_mb=$(( _sv / 1024 / 1024 ));  } || true
+  { read -r _sv < "$CGRP/memory.limit_in_bytes"  2>/dev/null && cgrp_limit_mb=$(( _sv / 1024 / 1024 )); } || true
 
-  # JSON line for structured post-processing (jq, Python pandas, etc.)
-  printf '{"label":"%s","ts":%s,"avail_pct":%d,"avail_kb":%d,"free_kb":%d,"dirty_kb":%d,"psi_full":"%s","psi_some":"%s","vscode_rss_kb":%d,"vscode_npids":%d,"wd_rss_kb":%d,"wd_cpu":"%s","cgroup_used_mb":%d,"cgroup_limit_mb":%d}\n' \
+  # ── Human-readable log line (printf is a bash builtin — zero fork) ───────────
+  tee_log "  [snap:${label}] ts=${ts} | avail=${avail_pct}%/${avail_kb}kB | free=${free_kb}kB | dirty=${dirty_kb}kB | psi_full=${psi_full} psi_some=${psi_some} | vscode=${vscode_rss}kB/${vscode_npids}pids | wd_rss=${wd_rss}kB wd_cputicks=${wd_cpu_ticks} | cgroup=${cgrp_used_mb}MB/${cgrp_limit_mb}MB"
+
+  # ── JSON line for jq / pandas post-analysis (printf builtin — zero fork) ─────
+  printf '{"label":"%s","ts":%s,"avail_pct":%d,"avail_kb":%d,"free_kb":%d,"dirty_kb":%d,"psi_full":"%s","psi_some":"%s","vscode_rss_kb":%d,"vscode_npids":%d,"wd_rss_kb":%d,"wd_cpu_ticks":%d,"cgroup_used_mb":%d,"cgroup_limit_mb":%d}\n' \
     "$label" "$ts" "$avail_pct" "$avail_kb" "$free_kb" "$dirty_kb" \
     "$psi_full" "$psi_some" "$vscode_rss" "$vscode_npids" \
-    "$wd_rss" "$wd_cpu" "$cgrp_used_mb" "$cgrp_limit_mb" >> "$SNAP_JSON"
+    "$wd_rss" "$wd_cpu_ticks" "$cgrp_used_mb" "$cgrp_limit_mb" >> "$SNAP_JSON"
 }
 
 # ── TEST 1: SIGTERM threshold (MemAvailable ≤ 25%) ─────────────────────────────────
 tee_log ""
 tee_log "── Test 1: Watchdog SIGTERMs process named 'chrome' when RAM ≤ 25%"
+# Resolve watchdog MainPID once — the ONE unavoidable fork in the snapshot path.
+# Amortized across all 10 snapshot() calls. PID is stable for the ~60 s test
+# duration; the service is not restarted between tests.
+WD_PID=$(systemctl --user show mem-watchdog -p MainPID --value 2>/dev/null)
+WD_PID="${WD_PID//[[:space:]]/}"   # strip whitespace — bash parameter expansion, no tr fork
+[[ -z "$WD_PID" ]] && WD_PID=0
+
 snapshot "suite-start"
 tee_log "  Snapshot log: $SNAP_JSON"
 
@@ -241,17 +294,21 @@ print('Releasing', flush=True)
       # so the descent curve is available in the log for latency post-analysis.
       waited=0
       killed=false
-      t_alloc_start=$(date +%s)
+      t_alloc_start=$EPOCHSECONDS    # bash 5.0+ magic var — zero fork, zero syscall
       t_kill_detected=0
       avail_curve=()
       while (( waited < 20 )); do
         sleep 1
         (( ++waited ))
-        cur_avail=$(awk '/^MemAvailable/{print $2; exit}' /proc/meminfo)
+        # Zero-fork MemAvailable read — bash builtin while+read, no awk fork
+        cur_avail=0
+        while IFS=$':\t ' read -r _mk _mv _; do
+          [[ "$_mk" == "MemAvailable" ]] && { cur_avail=$_mv; break; }
+        done < /proc/meminfo
         cur_pct=$(( cur_avail * 100 / total_kb ))
         avail_curve+=("${waited}s:${cur_pct}%/${cur_avail}kB")
         if ! kill -0 "$DECOY_PID" 2>/dev/null; then
-          t_kill_detected=$(date +%s)
+          t_kill_detected=$EPOCHSECONDS
           killed=true
           break
         fi
@@ -320,7 +377,10 @@ if $DRY_RUN; then
 else
   sleep 3
   snapshot "t3-recovery"
-  post_avail_kb=$(awk '/^MemAvailable/{print $2; exit}' /proc/meminfo)
+  post_avail_kb=0
+  while IFS=$':\t ' read -r _mk _mv _; do
+    [[ "$_mk" == "MemAvailable" ]] && { post_avail_kb=$_mv; break; }
+  done < /proc/meminfo
   post_pct=$(( post_avail_kb * 100 / total_kb ))
   if (( post_pct > avail_pct - 10 )); then
     PASS "MemAvailable recovered to ${post_pct}% (was ${avail_pct}% pre-test)"
@@ -376,7 +436,10 @@ tee_log ""
 tee_log "── Test 5: Both chrome + playwright-named processes killed in one threshold crossing"
 
 # Re-read available RAM — may differ from preflight after Test 1 ran
-t5_avail_kb=$(awk '/^MemAvailable/{print $2; exit}' /proc/meminfo)
+t5_avail_kb=0
+while IFS=$':\t ' read -r _mk _mv _; do
+  [[ "$_mk" == "MemAvailable" ]] && { t5_avail_kb=$_mv; break; }
+done < /proc/meminfo
 t5_pct=$(( t5_avail_kb * 100 / total_kb ))
 
 if $DRY_RUN; then
@@ -422,19 +485,23 @@ print('Releasing', flush=True)
     waited=0
     t5_chrome_killed=false
     t5_play_killed=false
-    t5_alloc_start=$(date +%s)
+    t5_alloc_start=$EPOCHSECONDS    # bash 5.0+ magic var — zero fork, zero syscall
     t5_kill_detected=0
     t5_avail_curve=()
     while (( waited < 25 )); do
       sleep 1
       (( ++waited ))
-      cur_avail=$(awk '/^MemAvailable/{print $2; exit}' /proc/meminfo)
+      # Zero-fork MemAvailable read — bash builtin while+read, no awk fork
+      cur_avail=0
+      while IFS=$':\t ' read -r _mk _mv _; do
+        [[ "$_mk" == "MemAvailable" ]] && { cur_avail=$_mv; break; }
+      done < /proc/meminfo
       cur_pct=$(( cur_avail * 100 / total_kb ))
       t5_avail_curve+=("${waited}s:${cur_pct}%")
       kill -0 "${T5_CHROME}" 2>/dev/null || t5_chrome_killed=true
       kill -0 "${T5_PLAY}"   2>/dev/null || t5_play_killed=true
       if $t5_chrome_killed && $t5_play_killed; then
-        t5_kill_detected=$(date +%s)
+        t5_kill_detected=$EPOCHSECONDS
         break
       fi
     done
