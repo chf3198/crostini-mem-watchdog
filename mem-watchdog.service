@@ -17,6 +17,13 @@ RestartSec=5
 TimeoutStopSec=10
 StandardOutput=journal
 StandardError=journal
+# Rate-limit journald writes from this service.
+# Allows 100 log entries per 30-second window — sufficient for normal operation
+# (daemon logs only on action events, not every poll cycle) while preventing
+# a flood during startup mode (0.5 s polling × 90 s = up to 180 cycles where
+# OOM score adjustments for new PIDs can each emit a log line).
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
 
 [Install]
 WantedBy=default.target
