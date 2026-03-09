@@ -1,0 +1,7 @@
+# Code Owners
+
+# All files — maintainer review required on every PR
+* @chf3198
+
+# CI/CD workflows — extra caution: changes here can expose VSCE_PAT
+.github/workflows/ @chf3198
