@@ -1,0 +1,105 @@
+# .github/workflows/ci.yml
+# ──────────────────────────────────────────────────────────────────────────────
+# CI — runs on every push to main and on every pull request targeting main.
+#
+# Job topology:
+#   lint-daemon   — bash -n syntax check + shellcheck (static; fast)
+#   test-extension — npm test on Node 18/20/22 matrix (~1 s each)
+#   package       — vsce package + upload .vsix artifact (PR only)
+#
+# NOTE: test-watchdog.sh is intentionally NOT run here.
+# It is a live integration test that requires an active systemd user session,
+# a running mem-watchdog service, and VS Code installed — none of which are
+# available on a GitHub Actions runner. Run it manually before pushing:
+#
+#   bash test-watchdog.sh   # on your Crostini machine
+#
+# The CI gate covers: daemon syntax, shellcheck, and all 54 JS unit tests.
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Job 1: Daemon static analysis ────────────────────────────────────────
+  lint-daemon:
+    name: Daemon — bash -n + shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash syntax check
+        run: bash -n mem-watchdog.sh
+
+      - name: shellcheck
+        run: |
+          sudo apt-get install -y shellcheck -q
+          shellcheck --shell=bash -e SC1091,SC2317 \
+            mem-watchdog.sh watchdog-tray.sh install.sh
+
+  # ── Job 2: Extension unit tests (Node matrix) ────────────────────────────
+  test-extension:
+    name: Extension — node:test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+        working-directory: vscode-extension
+
+      - name: npm test (54 unit tests)
+        run: npm test
+        working-directory: vscode-extension
+
+  # ── Job 3: vsce package — PR artifact upload ────────────────────────────
+  # Builds the .vsix and uploads it as a PR artifact so reviewers can
+  # install and test the exact version before merging.
+  # Skipped on push to main (publish.yml handles tagged releases).
+  package:
+    name: Extension — vsce package
+    needs: [lint-daemon, test-extension]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+        working-directory: vscode-extension
+
+      - name: Build resources
+        run: npm run build
+        working-directory: vscode-extension
+
+      - name: vsce package
+        run: npx --yes @vscode/vsce package --no-dependencies
+        working-directory: vscode-extension
+
+      - name: Upload .vsix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-pr-${{ github.event.pull_request.number }}
+          path: vscode-extension/*.vsix
+          retention-days: 14
