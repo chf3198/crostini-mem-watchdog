@@ -102,3 +102,46 @@ These are acknowledged design constraints, not vulnerabilities:
   [PolyForm Noncommercial](../LICENSE). If you are deploying this in a commercial
   context and discover a security issue, please report it via the email above.
   Commercial licensing enquiries can be directed to the same address.
+
+---
+
+## GitHub Security Features
+
+The following GitHub-native security tooling is configured or available for this repo.
+
+### Enabled via repository files
+
+| Feature | Config file | What it does |
+|---|---|---|
+| **CI gate** | `.github/workflows/ci.yml` | Runs shellcheck + 54 unit tests on every PR |
+| **Dependency Review** | `.github/workflows/ci.yml` (job: `dependency-review`) | Blocks PRs that introduce deps with CVEs ≥ moderate severity |
+| **Dependabot version updates** | `.github/dependabot.yml` | Weekly PRs to keep `npm` devDeps and GitHub Actions current |
+| **Least-privilege Actions** | Both workflow files | `permissions: contents: read` globally; jobs override only what they need |
+
+### Requires one-time activation in GitHub Settings
+
+Navigate to **Settings → Security → Code security and analysis**:
+
+| Feature | What to enable | Why |
+|---|---|---|
+| **Dependabot security updates** | Toggle on | Auto-PRs for CVEs in current deps (separate from version updates) |
+| **Secret scanning** | Toggle on | Scans all commits and branches for leaked API keys, tokens, PATs |
+| **Push protection** | Toggle on (under Secret scanning) | Blocks pushes that contain known secret patterns _before_ they land in history |
+
+Navigate to **Settings → Branches → Add branch protection rule** for `main`:
+
+| Setting | Value | Why |
+|---|---|---|
+| Require a pull request before merging | ✅ | Ensures CI runs before anything reaches main |
+| Require status checks to pass | ✅ `CI / Daemon`, `CI / Extension (18/20/22)` | Gate suite must be green |
+| Require branches to be up to date | ✅ | Prevents merging on stale base |
+| Do not allow bypassing the above settings | ✅ | Applies to administrators too |
+| Allow force pushes | ❌ | Prevents history rewriting on main |
+| Allow deletions | ❌ | Prevents accidental main deletion |
+
+### Credential management
+
+- `VSCE_PAT` (Azure DevOps PAT): stored in **GitHub → Settings → Secrets → Actions**.
+  Rotate at: `https://dev.azure.com` → User Settings → Personal Access Tokens.
+  Scope required: `Marketplace → Manage`. Never put in any tracked file.
+- See `vscode-extension/.env.example` for the expected local credential format.

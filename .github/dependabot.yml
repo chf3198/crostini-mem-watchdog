@@ -1,0 +1,52 @@
+# .github/dependabot.yml
+# ──────────────────────────────────────────────────────────────────────────────
+# Dependabot configuration — keeps npm dependencies and GitHub Actions up to date.
+#
+# Dependabot opens PRs automatically when:
+#   • A new version of a devDependency is available (npm)
+#   • A GitHub Actions action has a new major/minor release (github-actions)
+#
+# Security updates (for CVEs in existing deps) are enabled separately in:
+#   GitHub → Settings → Security → Code security → Dependabot security updates
+# ──────────────────────────────────────────────────────────────────────────────
+
+version: 2
+
+updates:
+  # ── npm: vscode-extension devDependencies ──────────────────────────────────
+  - package-ecosystem: "npm"
+    directory: "/vscode-extension"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Chicago"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "automated"
+    commit-message:
+      prefix: "chore(deps)"
+    # Only update devDependencies — this extension has no prod deps
+    groups:
+      dev-tooling:
+        patterns:
+          - "@vscode/vsce"
+          - "c8"
+          - "@vscode/test-electron"
+
+  # ── GitHub Actions ─────────────────────────────────────────────────────────
+  # Keeps actions/checkout, actions/setup-node, etc. on their latest releases.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Chicago"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "automated"
+    commit-message:
+      prefix: "chore(actions)"
