@@ -1,0 +1,26 @@
+root = true
+
+[*]
+indent_style = space
+indent_size = 2
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+# Shell scripts use tabs (bash heredocs and POSIX convention)
+[*.sh]
+indent_style = tab
+indent_size = 4
+
+# Makefiles require tabs
+[Makefile]
+indent_style = tab
+
+# YAML: 2-space indent (already matches [*] but explicit for clarity)
+[*.{yml,yaml}]
+indent_size = 2
+
+# Markdown: trailing whitespace is intentional (line breaks) — don't trim
+[*.md]
+trim_trailing_whitespace = false
