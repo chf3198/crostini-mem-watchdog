@@ -1,6 +1,16 @@
 ## What does this PR do?
 
-<!-- One sentence description. Reference the issue if applicable: Fixes #N -->
+<!-- One sentence description. -->
+
+## Closes
+<!-- Required — no orphan PRs. Every PR must trace to an issue. -->
+Closes #
+
+## Tracking
+<!-- Required before merge -->
+- [ ] Milestone assigned
+- [ ] Labels applied: `priority:*` + at least one domain label (`policy` / `psi` / `cgroup` / `oom` / `testing` / `research` / `crostini`)
+- [ ] Commit messages follow `type(scope): description` convention
 
 ## Motivation
 
