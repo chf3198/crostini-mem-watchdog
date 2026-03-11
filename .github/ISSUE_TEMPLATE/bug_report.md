@@ -2,7 +2,7 @@
 name: Bug report
 about: Something isn't working as expected in the daemon or extension
 title: "[Bug] "
-labels: bug
+labels: bug,type: bug-fix
 assignees: chf3198
 ---
 
@@ -32,6 +32,7 @@ assignees: chf3198
 ## Journal output
 
 Paste the last 50 lines from the watchdog journal. Run:
+
 ```bash
 journalctl --user -u mem-watchdog --since "1 hour ago" --no-pager
 ```
@@ -48,6 +49,7 @@ journalctl --user -u mem-watchdog --since "1 hour ago" --no-pager
 ## Memory snapshot at time of issue
 
 Paste the output of:
+
 ```bash
 free -h && echo "---" && ps -C code -o pid=,rss=,comm= | sort -k2 -rn | head -10
 ```

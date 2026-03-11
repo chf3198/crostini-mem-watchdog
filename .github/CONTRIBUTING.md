@@ -33,8 +33,8 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
 - **IMPLEMENT**: Make the change. After every edit to a shell file, run
   `bash -n <file>` immediately.
 - **GATE**: All four checks must exit 0 — no exceptions, no skips.
-- **REFLECT**: Read your own diff. Ask: *"What did I not test? What could break
-  under OOM pressure or during VS Code startup?"* Fix those gaps.
+- **REFLECT**: Read your own diff. Ask: _"What did I not test? What could break
+  under OOM pressure or during VS Code startup?"_ Fix those gaps.
 - **COMMIT**: One logical change per commit (see format below).
 
 ---
@@ -95,12 +95,12 @@ Reference: docs/technical/system-stability.md §N if relevant.
 
 ### Gate Failures
 
-| Situation | Required action |
-|---|---|
-| `test-watchdog.sh` exits non-zero | Fix root cause. NEVER use `\|\| true`, skip flags, or `exit 0` overrides. |
-| A previously passing test now fails | Your change broke it — fix the change, not the test. |
-| You cannot write a test for the change | State why explicitly in the commit message body. |
-| Diff touches two unrelated concerns | Split into two commits before pushing. |
+| Situation                              | Required action                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------- |
+| `test-watchdog.sh` exits non-zero      | Fix root cause. NEVER use `\|\| true`, skip flags, or `exit 0` overrides. |
+| A previously passing test now fails    | Your change broke it — fix the change, not the test.                      |
+| You cannot write a test for the change | State why explicitly in the commit message body.                          |
+| Diff touches two unrelated concerns    | Split into two commits before pushing.                                    |
 
 ---
 
@@ -198,3 +198,32 @@ npx vsce package                  # → mem-watchdog-status-x.y.z.vsix
 
 Issues labelled `good first issue` are a good starting point if you're new to
 the codebase.
+
+---
+
+## Repository Admin Process (Issue-First, Public by Default)
+
+To keep contribution history auditable for visitors, all work must be tracked through GitHub Issues + Milestones + Project.
+
+### Ticket taxonomy (required)
+
+- `type: epic` — multi-issue initiatives spanning milestones
+- `type: research` — investigation, benchmarking, architecture validation
+- `type: task` — implementation or documentation work item
+- `type: bug-fix` — defect, regression, or reliability correction
+
+### Additional labels (required)
+
+- Exactly one priority label: `priority: critical|high|medium|low`
+- At least one domain label: `policy|psi|cgroup|oom|crostini|testing|performance|research`
+
+### Lifecycle (required)
+
+1. Create/choose issue
+2. Assign labels + milestone
+3. Link to project board
+4. Implement on topic branch
+5. Open PR with `Closes #N`
+6. Merge only after gate suite + checklist complete
+
+No direct work on `main` without a linked issue.

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Roadmap Project
+    url: https://github.com/users/chf3198/projects/2
+    about: View active epics, tasks, research, and bug-fix work.
+  - name: Milestones
+    url: https://github.com/chf3198/crostini-mem-watchdog/milestones
+    about: Review release targets and completion progress.
