@@ -22,6 +22,14 @@ Any visitor should be able to answer:
 5. Implement on a topic branch.
 6. Open PR with `Closes #N`.
 7. Merge only after gates and checklist pass.
+8. Release/publish only after explicit client UAT PASS.
+
+## Client role boundary
+
+- Client participates only in:
+  - design consultation
+  - UAT
+- All technical execution remains agent/contributor responsibility.
 
 ## Branch policy
 
@@ -46,6 +54,7 @@ Examples:
 - Milestone
 - Labels
 - Gate suite results (`test-watchdog`, `bash -n`, `shellcheck`, `npm test`)
+- Client UAT PASS recorded before release/publish
 
 ## Project references
 

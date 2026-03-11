@@ -15,6 +15,7 @@ Closes #
 - [ ] Milestone assigned
 - [ ] Labels applied: one taxonomy label (`type: epic|research|task|bug-fix`) + `priority:*` + at least one domain label (`policy` / `psi` / `cgroup` / `oom` / `testing` / `research` / `crostini`)
 - [ ] Commit messages follow `type(scope): description` convention
+- [ ] Client UAT requirement acknowledged: release is blocked until client confirms UAT pass
 
 ## Motivation
 
@@ -46,3 +47,9 @@ did you not exercise? This is required — "everything" is not an acceptable ans
 
 <!-- Following the 4-C rule (Code → Critique → Correct → Commit): what did your
 self-review catch, and what did you fix as a result? -->
+
+## Client UAT (required before release)
+
+- [ ] Client consultation completed if design-impacting
+- [ ] Client UAT executed
+- [ ] Client UAT result: PASS (required before release tag/publish)

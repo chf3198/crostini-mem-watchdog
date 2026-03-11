@@ -195,6 +195,7 @@ npx vsce package                  # → mem-watchdog-status-x.y.z.vsix
 4. Run the full gate suite. All four checks must exit 0.
 5. Open a PR against `main`. The PR template checklist will guide you through
    the remaining steps.
+6. Before release/publish, obtain explicit client UAT pass confirmation.
 
 Issues labelled `good first issue` are a good starting point if you're new to
 the codebase.
@@ -225,5 +226,12 @@ To keep contribution history auditable for visitors, all work must be tracked th
 4. Implement on topic branch
 5. Open PR with `Closes #N`
 6. Merge only after gate suite + checklist complete
+7. Release/publish only after client UAT pass is explicitly recorded
 
 No direct work on `main` without a linked issue.
+
+### Client involvement boundary (required)
+
+- Client responsibilities: design consultations and UAT only.
+- Agent responsibilities: implementation, debugging, testing, ticketing, PRs, merges, release preparation.
+- Never request routine technical execution from the client.
