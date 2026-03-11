@@ -40,14 +40,10 @@ cd crostini-mem-watchdog && bash install.sh
 
 This repository uses a public issue-first workflow so visitors can audit all work history end-to-end.
 
-- **Roadmap board (GitHub Project):** https://github.com/users/chf3198/projects/2
-- **Milestones:** v0.3.0 (Staged PSI), v0.4.0 (cgroup v2), v0.5.0 (Franks stress harness), v1.0.0 (stable)
-- **Issue taxonomy:** `type: epic`, `type: research`, `type: task`, `type: bug-fix`
-- **Priority labels:** `priority: critical|high|medium|low`
-- **Domain labels:** `policy`, `psi`, `cgroup`, `oom`, `crostini`, `testing`, `performance`, `research`
 
 Every pull request must include `Closes #N`, milestone assignment, and label coverage so contribution lineage is always visible.
-
+Release/publish gate: client UAT PASS is mandatory before release.
+Client involvement is limited to design consultation and UAT.
 ---
 
 ## The Problem
