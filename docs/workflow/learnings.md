@@ -386,3 +386,21 @@ Writing to `memory.limit_in_bytes` artificially constrains the hard memory limit
 - Use `-mmin` not `-mtime` in `find` for time-based file management.
 - Count-based pruning (`sort | tail -n +N+1 | xargs rm`) is the right first tier; age-based is the backstop second tier.
 - Always `journalctl --rotate` before `--vacuum-*` — vacuum only touches archived files.
+
+---
+
+### 2026-03-11 — Public contribution lineage requires explicit ticket taxonomy, not just labels
+**Context**: The repository had strong coding and test discipline, but visitor-visible contribution flow was incomplete. Existing workflow artifacts (labels, milestones, project) were present, yet issue intake and PR governance did not force consistent category visibility across Epic/Research/Task/Bug-fix.
+
+**Discovery**:
+1. **Project board + milestones alone are insufficient for auditability.** Without explicit type labels and templates, issue intent drifts and the history reads as a flat list of enhancements.
+2. **PR linkage must require taxonomy, not only priority/domain labels.** Requiring `Closes #N` is necessary but not enough; contributor history still becomes ambiguous unless each issue declares its work class.
+3. **Issue template UX is the primary enforcement point for public visitors.** `ISSUE_TEMPLATE/config.yml` with `blank_issues_enabled: false` ensures every new ticket enters the same structured flow.
+4. **Epics must exist as first-class tickets** (not just milestone names) to keep parent/child lineage visible directly in issue history and project views.
+
+**Application**:
+- Added issue templates for `type: epic`, `type: research`, `type: task`, `type: bug-fix`.
+- Added/normalized type labels in the repository and backfilled active issues.
+- Created explicit milestone epics (#17, #18, #19) and linked them to project tracking.
+- Updated PR checklist and contributor docs to require taxonomy + milestone + label coverage for every PR.
+- Added `docs/workflow/repo-admin-playbook.md` as the canonical admin process for repository transparency.
