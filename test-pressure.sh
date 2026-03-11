@@ -52,8 +52,12 @@ prune_scratch() {
   local all_files
   all_files=$(find "$dir" -maxdepth 1 -name "$pattern" -printf '%T@ %p\n' 2>/dev/null \
     | sort -rn | awk '{print $2}')
-  local count
-  count=$(echo "$all_files" | grep -c . 2>/dev/null || echo 0)
+  local count=0 _line
+  if [[ -n "$all_files" ]]; then
+    while IFS= read -r _line; do
+      [[ -n "$_line" ]] && (( ++count ))
+    done <<< "$all_files"
+  fi
   if (( count > keep )); then
     echo "$all_files" | tail -n +$(( keep + 1 )) | xargs -r rm -f 2>/dev/null || true
   fi
@@ -75,7 +79,7 @@ fail=0
 results=()
 
 # ── Colour codes ─────────────────────────────────────────────────────────────
-RED='\033[0;31m'; GRN='\033[0;32m'; YEL='\033[0;33m'; BLD='\033[1m'; RST='\033[0m'
+RED='\033[0;31m'; GRN='\033[0;32m'; YEL='\033[0;33m'; RST='\033[0m'
 
 tee_log() { echo -e "$*" | tee -a "$LOG"; }
 PASS()    { ((++pass)); results+=("  ✅ PASS: $*"); tee_log "  ${GRN}PASS${RST}: $*"; }
@@ -146,7 +150,7 @@ ORIG_LIMIT=$(cat "$CGRP/memory.limit_in_bytes")
 # This keeps the hard cgroup OOM wall above VS Code's footprint (~2.5 GB) but
 # still prevents runaway allocations from consuming the last 10% (~630 MB).
 # The watchdog's 25% SIGTERM threshold fires at 75% utilization — well before the ceiling.
-safety_ceiling_bytes=$(( total_kb * 90 / 100 * 1024 ))
+safety_ceiling_bytes=$(( total_kb * 90 * 1024 / 100 ))
 
 cleanup_cgroup() {
   tee_log ""
