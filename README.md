@@ -11,10 +11,9 @@
 [![Tests](https://img.shields.io/badge/bash-12%2F12-brightgreen)](test-watchdog.sh)
 [![Tests](https://img.shields.io/badge/js-54%2F54-brightgreen)](vscode-extension/package.json)
 
-*`earlyoom` hard-crashes on Crostini (exit 104, every 3 seconds, zero protection). This replaces it with a VS Code-aware watchdog that kills Chrome before the kernel OOM-kills VS Code.*
+_`earlyoom` hard-crashes on Crostini (exit 104, every 3 seconds, zero protection). This replaces it with a VS Code-aware watchdog that kills Chrome before the kernel OOM-kills VS Code._
 
 </div>
-
 
 ---
 
@@ -37,17 +36,31 @@ cd crostini-mem-watchdog && bash install.sh
 
 ---
 
+## 📌 Project Management & Contribution Traceability
+
+This repository uses a public issue-first workflow so visitors can audit all work history end-to-end.
+
+- **Roadmap board (GitHub Project):** https://github.com/users/chf3198/projects/2
+- **Milestones:** v0.3.0 (Staged PSI), v0.4.0 (cgroup v2), v0.5.0 (Franks stress harness), v1.0.0 (stable)
+- **Issue taxonomy:** `type: epic`, `type: research`, `type: task`, `type: bug-fix`
+- **Priority labels:** `priority: critical|high|medium|low`
+- **Domain labels:** `policy`, `psi`, `cgroup`, `oom`, `crostini`, `testing`, `performance`, `research`
+
+Every pull request must include `Closes #N`, milestone assignment, and label coverage so contribution lineage is always visible.
+
+---
+
 ## The Problem
 
 ChromeOS Crostini runs VS Code inside a Debian LXC container. Three independent OOM pathways can kill it:
 
-| # | Pathway | What kills VS Code |
-|---|---|---|
-| 1 | Container RAM exhausted | Linux kernel OOM killer — SIGKILL on the highest-RSS process (VS Code) |
-| 2 | ChromeOS balloon driver shrinks the VM | ChromeOS host memory pressure |
-| 3 | V8 heap exhausted at a hard cap | V8 OOM handler — allocation failure in the extension host |
+| #   | Pathway                                | What kills VS Code                                                     |
+| --- | -------------------------------------- | ---------------------------------------------------------------------- |
+| 1   | Container RAM exhausted                | Linux kernel OOM killer — SIGKILL on the highest-RSS process (VS Code) |
+| 2   | ChromeOS balloon driver shrinks the VM | ChromeOS host memory pressure                                          |
+| 3   | V8 heap exhausted at a hard cap        | V8 OOM handler — allocation failure in the extension host              |
 
-**ChromeOS zram swap only covers Pathway #2.** The container kernel's OOM killer has no knowledge of host-level swap. `free -h` showing `Swap: 0B` inside the container is *not cosmetic* — it is the kernel's actual memory budget for OOM scoring.
+**ChromeOS zram swap only covers Pathway #2.** The container kernel's OOM killer has no knowledge of host-level swap. `free -h` showing `Swap: 0B` inside the container is _not cosmetic_ — it is the kernel's actual memory budget for OOM scoring.
 
 ### Why earlyoom fails here
 
@@ -65,15 +78,15 @@ This watchdog reads only `MemAvailable` and `MemTotal` — both correct on this 
 
 ## What It Does
 
-| Trigger | Action |
-|---|---|
-| `MemAvailable ≤ 15%` | `SIGKILL` Chrome / Playwright |
-| `MemAvailable ≤ 25%` | `SIGTERM` Chrome / Playwright |
-| PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall) |
-| VS Code RSS > 2.5 GB | `SIGTERM` Chrome + desktop notification |
-| VS Code RSS > 3.5 GB | `SIGKILL` Chrome; if no Chrome → `SIGTERM` highest-RSS extension host to save the VS Code window |
-| Every loop | Set `oom_score_adj=0` on VS Code PIDs (counters Electron's 200–300 default) |
-| Every loop | Set `oom_score_adj=1000` on Chrome PIDs (kernel kills it first) |
+| Trigger                | Action                                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------------------------ |
+| `MemAvailable ≤ 15%`   | `SIGKILL` Chrome / Playwright                                                                    |
+| `MemAvailable ≤ 25%`   | `SIGTERM` Chrome / Playwright                                                                    |
+| PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall)                                                        |
+| VS Code RSS > 2.5 GB   | `SIGTERM` Chrome + desktop notification                                                          |
+| VS Code RSS > 3.5 GB   | `SIGKILL` Chrome; if no Chrome → `SIGTERM` highest-RSS extension host to save the VS Code window |
+| Every loop             | Set `oom_score_adj=0` on VS Code PIDs (counters Electron's 200–300 default)                      |
+| Every loop             | Set `oom_score_adj=1000` on Chrome PIDs (kernel kills it first)                                  |
 
 - Checks every **2 seconds** (4s was confirmed too slow — missed a 4 GB spike in < 4s on 2026-03-05)
 - **Startup mode**: 0.5 s polling for 90 s after new VS Code PIDs detected — catches extension-host spikes during startup
@@ -115,26 +128,26 @@ crostini-mem-watchdog/
 
 **Manual fallback:** top-of-file variables in `mem-watchdog.sh`:
 
-| Variable | Default | Description |
-|---|---|---|
-| `SIGTERM_THRESHOLD` | `25` | % free RAM → SIGTERM Chrome |
-| `SIGKILL_THRESHOLD` | `15` | % free RAM → SIGKILL Chrome |
-| `PSI_THRESHOLD` | `25` | PSI full avg10 % → SIGTERM Chrome |
-| `INTERVAL` | `2` | Seconds between normal checks |
-| `STARTUP_INTERVAL` | `0.5` | Seconds between checks in startup mode |
-| `STARTUP_DURATION` | `90` | Seconds to stay in startup mode after new VS Code PIDs |
-| `VSCODE_RSS_WARN_KB` | `2500000` | ~2.5 GB — VS Code RSS warning level |
-| `VSCODE_RSS_EMERG_KB` | `3500000` | ~3.5 GB — VS Code RSS emergency level |
-| `NOTIFY_INTERVAL` | `300` | Seconds between desktop notifications per severity |
+| Variable              | Default   | Description                                            |
+| --------------------- | --------- | ------------------------------------------------------ |
+| `SIGTERM_THRESHOLD`   | `25`      | % free RAM → SIGTERM Chrome                            |
+| `SIGKILL_THRESHOLD`   | `15`      | % free RAM → SIGKILL Chrome                            |
+| `PSI_THRESHOLD`       | `25`      | PSI full avg10 % → SIGTERM Chrome                      |
+| `INTERVAL`            | `2`       | Seconds between normal checks                          |
+| `STARTUP_INTERVAL`    | `0.5`     | Seconds between checks in startup mode                 |
+| `STARTUP_DURATION`    | `90`      | Seconds to stay in startup mode after new VS Code PIDs |
+| `VSCODE_RSS_WARN_KB`  | `2500000` | ~2.5 GB — VS Code RSS warning level                    |
+| `VSCODE_RSS_EMERG_KB` | `3500000` | ~3.5 GB — VS Code RSS emergency level                  |
+| `NOTIFY_INTERVAL`     | `300`     | Seconds between desktop notifications per severity     |
 
 ### Tuning for Your RAM
 
-| Total RAM | `VSCODE_RSS_WARN_KB` | `VSCODE_RSS_EMERG_KB` |
-|---|---|---|
-| 4 GB | `1500000` | `2000000` |
-| 6 GB *(default)* | `2500000` | `3500000` |
-| 8 GB | `3500000` | `5000000` |
-| 16 GB | `6000000` | `10000000` |
+| Total RAM        | `VSCODE_RSS_WARN_KB` | `VSCODE_RSS_EMERG_KB` |
+| ---------------- | -------------------- | --------------------- |
+| 4 GB             | `1500000`            | `2000000`             |
+| 6 GB _(default)_ | `2500000`            | `3500000`             |
+| 8 GB             | `3500000`            | `5000000`             |
+| 16 GB            | `6000000`            | `10000000`            |
 
 ---
 
@@ -168,8 +181,9 @@ On **2026-03-05 at 13:02:25**, VS Code process 778 was OOM-killed:
 The extension host spiked from normal RSS to **~4 GB in under 4 seconds** during startup. The watchdog's interval was 4 s — it fired at 13:02:32, **7 seconds after the crash**. No Chrome was running, so there was nothing to kill anyway.
 
 Three fixes:
+
 1. **Interval**: 4 s → 2 s normal, 0.5 s during startup mode
-2. **RSS threshold**: lowered to 3.5 GB emergency (earlier intervention)  
+2. **RSS threshold**: lowered to 3.5 GB emergency (earlier intervention)
 3. **Last resort**: if no Chrome to kill, SIGTERM the highest-RSS `code` process to save the VS Code window
 
 ---

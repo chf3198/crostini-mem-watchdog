@@ -2,7 +2,7 @@
 name: Feature request
 about: Suggest an improvement or new capability
 title: "[Feature] "
-labels: enhancement
+labels: enhancement,type: task
 assignees: chf3198
 ---
 

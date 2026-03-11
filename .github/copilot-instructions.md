@@ -80,6 +80,23 @@ When new VS Code PIDs are detected, the daemon switches to 0.5s polling for 90s 
 
 **Git operations are entirely the agent's responsibility:** branch creation, commits, merges, rebases, conflict resolution, push retries, and credential scope management. A push failure is an agent problem to solve, not a client task.
 
+## Repository Admin & Contribution Visibility — Non-Negotiable
+
+All implementation work must be publicly traceable for repo visitors.
+
+Before coding:
+1. Confirm a linked issue exists.
+2. Ensure issue has taxonomy label: `type: epic|research|task|bug-fix`.
+3. Ensure issue has one priority label and at least one domain label.
+4. Ensure issue is assigned to a milestone and on the roadmap project.
+
+Before merge:
+1. PR includes `Closes #N`.
+2. PR checklist includes milestone + labels + gate suite evidence.
+3. Any assumption mismatch discovered during work is recorded in `docs/workflow/learnings.md`.
+
+Never perform untracked work. If no issue exists, create one first.
+
 ---
 
 ## Agent Workflow — Non-Negotiable Loop
