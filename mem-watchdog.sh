@@ -52,8 +52,8 @@ NOTIFY_INTERVAL=300           # seconds between desktop notifications per severi
 # Fix: detect new VS Code PIDs, switch to 0.5s interval, drop emergency threshold to 2 GB.
 STARTUP_INTERVAL=0.5          # seconds between checks during VS Code startup
 STARTUP_DURATION=90           # seconds to stay in startup mode after new VS Code PIDs
-STARTUP_RSS_WARN_KB=1500000   # ~1.5 GB — warn threshold in startup mode
-STARTUP_RSS_EMERG_KB=2000000  # ~2.0 GB — emergency threshold in startup mode
+STARTUP_RSS_WARN_KB=3500000   # ~3.5 GB — warn threshold in startup mode (matches steady-state; startup peaks are normal)
+STARTUP_RSS_EMERG_KB=4200000  # ~4.2 GB — emergency threshold in startup mode (only intervene if truly about to OOM)
 STARTUP_DEBOUNCE=300          # minimum seconds between startup mode activations
                               # VS Code language servers (TS, ESLint, GitLens workers) spawn
                               # new code PIDs throughout normal development. Without this guard
