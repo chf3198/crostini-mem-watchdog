@@ -203,6 +203,29 @@ else
   FAIL "$tray_tmp stray /tmp write(s) found in watchdog-tray.sh"
 fi
 
+
+# ── TEST 13: STATUS snapshot appears in journal within 75s ──────────────────
+tee_log ""
+tee_log "── Test 13: STATUS(periodic) snapshot emitted within 75s"
+status_line=$(journalctl --user -u mem-watchdog --since "2 minutes ago" --no-pager -q 2>/dev/null | grep "STATUS(periodic)" | tail -1)
+if [[ -n "$status_line" ]]; then
+  PASS "STATUS(periodic) snapshot found in journal"
+  tee_log "    $(echo "$status_line" | cut -c1-120)"
+else
+  tee_log "  Not yet in journal — waiting up to 75s for first snapshot..."
+  deadline=$(( $(date +%s) + 75 ))
+  while (( $(date +%s) < deadline )); do
+    sleep 5
+    status_line=$(journalctl --user -u mem-watchdog --since "5 minutes ago" --no-pager -q 2>/dev/null | grep "STATUS(periodic)" | tail -1)
+    [[ -n "$status_line" ]] && break
+  done
+  if [[ -n "$status_line" ]]; then
+    PASS "STATUS(periodic) snapshot appeared within 75s"
+    tee_log "    $(echo "$status_line" | cut -c1-120)"
+  else
+    FAIL "No STATUS(periodic) snapshot in journal after 75s — observability not working"
+  fi
+fi
 # ── SUMMARY ──────────────────────────────────────────────────────────────────
 tee_log ""
 tee_log "════════════════════════════════════════════════════════════════"
