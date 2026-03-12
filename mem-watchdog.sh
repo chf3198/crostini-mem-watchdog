@@ -60,6 +60,14 @@ STARTUP_DEBOUNCE=300          # minimum seconds between startup mode activations
                               # the daemon triggered startup mode 567 times in a single day,
                               # keeping it at 0.5 s polling continuously.
 
+# Repeated startup PID churn (extension-host respawn loops) can precede OOM even
+# before emergency thresholds are crossed. If churn is high and RSS is already
+# elevated, proactively restart the heaviest helper process to avoid full window crash.
+STARTUP_BURST_WINDOW=120       # seconds in startup-churn detection window
+STARTUP_BURST_COUNT=10         # total new VS Code PIDs in window to flag burst danger
+STARTUP_BURST_RSS_KB=1600000   # only act if VS Code RSS is already above ~1.6 GB
+HELPER_KILL_COOLDOWN=20        # min seconds between helper restarts
+
 # ── User config override — written by the VS Code extension ────────────────────
 # If the Mem Watchdog VS Code extension is installed and has custom thresholds
 # configured via VS Code Settings, it writes them to this file. Sourcing it here
@@ -76,6 +84,10 @@ _startup_mode_end=0           # epoch seconds until startup mode expires
 _startup_just_triggered=false # true for one iteration — skip sleep for instant re-check
 _known_code_pids=""           # space-separated sorted PIDs from previous iteration
 _last_startup_trigger=0       # epoch seconds of last activation (debounce state)
+_startup_burst_window_start=0 # epoch seconds for startup-churn window
+_startup_burst_count=0        # accumulated new VS Code PIDs in churn window
+_startup_burst_danger=false   # set when churn threshold reached; acted on in main loop
+_last_helper_kill=0           # epoch seconds of last helper restart
 
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
@@ -146,6 +158,69 @@ kill_browsers() {
   $killed || log "  (no chrome/playwright processes found to kill)"
 }
 
+# ── Restart heaviest VS Code helper (never main window process) ───────────────────
+kill_top_vscode_helper() {
+  local reason="$1"
+  local now
+  now=$(date +%s)
+
+  if (( now - _last_helper_kill < HELPER_KILL_COOLDOWN )); then
+    log "  Helper restart cooldown active (${HELPER_KILL_COOLDOWN}s) — skipping"
+    return 1
+  fi
+
+  local line pid rss args
+
+  # Preferred: language servers / extension workers launched with --node-ipc.
+  line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
+    | awk '
+      {
+        pid=$1; rss=$2;
+        $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
+        if (args ~ /^\/usr\/share\/code\/code$/) next;
+        if (args ~ /--type=zygote/) next;
+        if (args ~ /--type=gpu-process/) next;
+        if (args ~ /--node-ipc/ || args ~ /server\.bundle\.js/ || args ~ /tsserver\.js/ || args ~ /eslintServer\.js/) {
+          printf "%s %s %s\n", pid, rss, args;
+        }
+      }
+    ' | sort -k2 -rn | head -1)
+
+  # Fallback: any non-main, non-zygote code child.
+  if [[ -z "$line" ]]; then
+    line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
+      | awk '
+        {
+          pid=$1; rss=$2;
+          $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
+          if (args ~ /^\/usr\/share\/code\/code$/) next;
+          if (args ~ /--type=zygote/) next;
+          if (args ~ /--type=gpu-process/) next;
+          printf "%s %s %s\n", pid, rss, args;
+        }
+      ' | sort -k2 -rn | head -1)
+  fi
+
+  [[ -z "$line" ]] && { log "  No VS Code helper candidate found"; return 1; }
+
+  pid=$(echo "$line" | awk '{print $1}')
+  rss=$(echo "$line" | awk '{print $2}')
+  args=$(echo "$line" | cut -d' ' -f3-)
+
+  log "ACTION(SIGTERM): ${reason} — restarting helper PID ${pid} (rss=${rss} kB): ${args}"
+  if $DRY_RUN; then
+    log "  (dry-run: would SIGTERM helper PID ${pid})"
+    _last_helper_kill=$now
+    return 0
+  fi
+
+  if kill -TERM "$pid" 2>/dev/null; then
+    _last_helper_kill=$now
+    return 0
+  fi
+  return 1
+}
+
 # ── OOM score adjustment ──────────────────────────────────────────────────────
 # Called at startup and on every loop.
 # Protect VS Code (negative adj → kernel avoids it); condemn Chrome (positive).
@@ -192,6 +267,18 @@ adjust_oom_scores() {
     if (( new_count > 0 )); then
       local now
       now=$(date +%s)
+
+      # Track startup churn even when debounce blocks startup-mode re-activation.
+      if (( _startup_burst_window_start == 0 || now - _startup_burst_window_start > STARTUP_BURST_WINDOW )); then
+        _startup_burst_window_start=$now
+        _startup_burst_count=0
+        _startup_burst_danger=false
+      fi
+      _startup_burst_count=$(( _startup_burst_count + new_count ))
+      if (( _startup_burst_count >= STARTUP_BURST_COUNT )); then
+        _startup_burst_danger=true
+      fi
+
       # Debounce: only activate startup mode if STARTUP_DEBOUNCE seconds have
       # elapsed since the last trigger. VS Code language servers and extension
       # workers (TypeScript, ESLint, GitLens) spawn new `code` PIDs throughout
@@ -279,19 +366,26 @@ while true; do
   vscode_rss=$(ps -C code -o rss= 2>/dev/null | awk '{s+=$1} END{print s+0}')
   chrome_running=$(pgrep -f '(chrome|chromium)' 2>/dev/null | head -1)
 
+  # Pre-emergency intervention: startup PID churn burst + elevated RSS.
+  if $_startup_burst_danger && (( vscode_rss >= STARTUP_BURST_RSS_KB )); then
+    log "BURST: startup PID churn=${_startup_burst_count} in ${STARTUP_BURST_WINDOW}s with VS Code RSS ${vscode_rss} kB — preemptive helper restart"
+    notify_desktop "warn" "⚠️ VS Code Startup Churn" \
+      "Repeated VS Code helper respawns detected; restarting heaviest helper to prevent crash."
+    if kill_top_vscode_helper "startup churn burst (${_startup_burst_count} new PIDs/${STARTUP_BURST_WINDOW}s)"; then
+      _startup_burst_danger=false
+      _startup_burst_count=0
+      _startup_burst_window_start=$(date +%s)
+    fi
+  fi
+
   if (( vscode_rss >= eff_emerg )); then
     log "EMERGENCY: VS Code RSS ${vscode_rss} kB (≥3.5 GB) — attempting to save VS Code window"
     notify_desktop "crit" "🚨 VS Code Memory EMERGENCY" \
       "VS Code RSS: $(( vscode_rss / 1024 )) MB — restarting extension host.\nRun: Developer: Restart Extension Host"
     kill_browsers "KILL" "VS Code RSS emergency: ${vscode_rss} kB"
     if [[ -z "$chrome_running" ]]; then
-      # No Chrome to kill — SIGTERM the highest-RSS code process (extension host).
-      # This causes 'Extension host terminated unexpectedly' but SAVES the window.
-      ext_host_pid=$(ps -C code -o pid=,rss= 2>/dev/null | sort -k2 -rn | head -1 | awk '{print $1}')
-      if [[ -n "$ext_host_pid" ]]; then
-        log "  No Chrome present — SIGTERMing extension host PID ${ext_host_pid} to save VS Code window"
-        $DRY_RUN || kill -TERM "$ext_host_pid" 2>/dev/null
-      fi
+      # No Chrome to kill — restart helper only (never main VS Code process).
+      kill_top_vscode_helper "VS Code RSS emergency: ${vscode_rss} kB"
     fi
   elif (( vscode_rss >= eff_warn )); then
     log "WARNING: VS Code RSS ${vscode_rss} kB (≥2.5 GB) — SIGTERMing Chrome, restart ext host soon"
