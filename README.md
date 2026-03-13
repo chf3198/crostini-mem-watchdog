@@ -40,10 +40,10 @@ cd crostini-mem-watchdog && bash install.sh
 
 This repository uses a public issue-first workflow so visitors can audit all work history end-to-end.
 
-
 Every pull request must include `Closes #N`, milestone assignment, and label coverage so contribution lineage is always visible.
 Release/publish gate: client UAT PASS is mandatory before release.
 Client involvement is limited to design consultation and UAT.
+
 ---
 
 ## The Problem
@@ -160,6 +160,23 @@ shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh instal
 
 ```bash
 bash test-pressure.sh    # live: allocates memory, verifies watchdog fires (requires < 40% RAM free)
+```
+
+---
+
+## Future Features (Planned)
+
+- **Extension Footprint Advisor (diagnostic mode):**
+  - Sample `code --status` + extension-host child processes over a short window.
+  - Rank extension helpers by RSS contribution and restart churn.
+  - Emit a recommendation report: `keep`, `workspace-disable`, or `remove`.
+  - Provide safe, staged guidance (disable in workspace first; uninstall only after validation).
+  - Integrate with watchdog STATUS counters to correlate extension mix vs emergency/warn frequency.
+
+Prototype script available now:
+
+```bash
+bash extension-footprint-advisor.sh /path/to/workspace
 ```
 
 ---
