@@ -168,4 +168,34 @@ describe('installOrUpgrade — hash comparison paths', () => {
         const hasEnable = _installerShCallLog.some(c => c.includes('enable'));
         assert.equal(hasEnable, true, 'enable should run on first install');
     });
+
+    test('installed daemon newer than bundled: skips downgrade and stays current', async (t) => {
+        const BUNDLED_OLDER = '#!/usr/bin/env bash\nWATCHDOG_VERSION=20260313.1\n';
+        const INSTALLED_NEWER = '#!/usr/bin/env bash\nWATCHDOG_VERSION=20260313.2\n';
+        const olderHash = crypto.createHash('sha256').update(BUNDLED_OLDER).digest('hex');
+
+        t.mock.method(fs, 'existsSync', (p) => {
+            if (p === '/fake/ext/resources/mem-watchdog.sh') { return true; }
+            if (typeof p === 'string' && p.includes('.local/bin/mem-watchdog.sh')) { return true; }
+            return true;
+        });
+
+        t.mock.method(fs, 'readFileSync', (p) => {
+            if (p === '/fake/ext/resources/mem-watchdog.sh') { return BUNDLED_OLDER; }
+            if (typeof p === 'string' && p.includes('.local/bin/mem-watchdog.sh')) { return INSTALLED_NEWER; }
+            throw new Error(`unexpected readFileSync: ${p}`);
+        });
+
+        // Any file writes would indicate an unintended downgrade attempt.
+        t.mock.method(fs, 'mkdirSync', () => { throw new Error('should not mkdir on downgrade skip'); });
+        t.mock.method(fs, 'copyFileSync', () => { throw new Error('should not copy files on downgrade skip'); });
+        t.mock.method(fs, 'chmodSync', () => { throw new Error('should not chmod on downgrade skip'); });
+
+        const ctx = makeContext(olderHash);
+        const result = await installOrUpgrade(ctx);
+
+        assert.equal(result, 'current');
+        const didRestart = _installerShCallLog.some(c => c.includes('restart mem-watchdog'));
+        assert.equal(didRestart, false, 'should not restart service when guarding against downgrade');
+    });
 });
