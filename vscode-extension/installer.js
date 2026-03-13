@@ -39,6 +39,16 @@ function sha256(filePath) {
     }
 }
 
+function watchdogVersion(filePath) {
+    try {
+        const src = fs.readFileSync(filePath, 'utf8');
+        const m = src.match(/^WATCHDOG_VERSION=([0-9]+(?:\.[0-9]+)?)/m);
+        return m ? Number(m[1]) : 0;
+    } catch (_) {
+        return 0;
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -66,6 +76,16 @@ async function installOrUpgrade(context) {
     const installedHash   = context.globalState.get(STATE_HASH_KEY);
     const installedOnDisk = sha256(INSTALLED_SCRIPT); // null if file missing or unreadable
     const isFirstInstall  = !fs.existsSync(INSTALLED_SCRIPT);
+    const bundledVersion  = watchdogVersion(bundledSh);
+    const installedVersion = watchdogVersion(INSTALLED_SCRIPT);
+
+    // Guard: never downgrade a newer installed daemon to an older bundled one.
+    // This can happen when the user has manually patched ~/.local/bin or when
+    // the extension bundle is behind the repo hotfix level.
+    if (!isFirstInstall && installedVersion > bundledVersion) {
+        await ensureRunning();
+        return 'current';
+    }
 
     // Skip reinstall only when: file exists on disk, bundled hash is known,
     // it matches the stored state hash, AND it matches the actual bytes on disk.
