@@ -67,6 +67,9 @@ STARTUP_BURST_WINDOW=120       # seconds in startup-churn detection window
 STARTUP_BURST_COUNT=10         # total new VS Code PIDs in window to flag burst danger
 STARTUP_BURST_RSS_KB=1600000   # only act if VS Code RSS is already above ~1.6 GB
 HELPER_KILL_COOLDOWN=20        # min seconds between helper restarts
+HELPER_KILL_COOLDOWN_EMERG=5   # short cooldown used during EMERGENCY (no Chrome, RSS runaway)
+                              # 2026-03-13 crash: 20s cooldown blocked all re-attempts while RSS
+                              # grew 3.8→6.0 GB in 20s — kernel OOM fired before cooldown expired.
 STATUS_INTERVAL=60            # seconds between watchdog status snapshots in journal
 
 # ── Restart-loop detection — VS Code crash-restart guard (Issue #25) ──────
@@ -124,6 +127,9 @@ _helper_restart_no_candidate=0
 _helper_restart_failures=0
 _rss_warn_events=0
 _rss_emergency_events=0
+_rss_accel_events=0
+_prev_vscode_rss=0
+_prev_rss_time=0
 _low_mem_term_events=0
 _critical_kill_events=0
 _psi_events=0
@@ -162,7 +168,7 @@ log_status_snapshot() {
   if (( now < _startup_mode_end )); then
     startup_left=$(( _startup_mode_end - now ))
   fi
-  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
+  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} rss_accel=${_rss_accel_events} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
   _last_status_log=$now
 }
 
@@ -236,13 +242,17 @@ kill_browsers() {
 # ── Restart heaviest VS Code helper (never main window process) ───────────────────
 kill_top_vscode_helper() {
   local reason="$1"
+  # use_emerg_cooldown: pass "emerg" to use the shorter HELPER_KILL_COOLDOWN_EMERG (5s)
+  local mode="${2:-normal}"
+  local cooldown=$HELPER_KILL_COOLDOWN
+  [[ "$mode" == "emerg" ]] && cooldown=$HELPER_KILL_COOLDOWN_EMERG
   local now
   now=$(date +%s)
   incr_counter _helper_restart_attempts
 
-  if (( now - _last_helper_kill < HELPER_KILL_COOLDOWN )); then
+  if (( now - _last_helper_kill < cooldown )); then
     incr_counter _helper_restart_cooldown_skips
-    log "  Helper restart cooldown active (${HELPER_KILL_COOLDOWN}s) — skipping"
+    log "  Helper restart cooldown active (${cooldown}s) — skipping"
     return 1
   fi
 
@@ -520,6 +530,24 @@ while true; do
   vscode_rss=$(ps -C code -o rss= 2>/dev/null | awk '{s+=$1} END{print s+0}')
   chrome_running=$(pgrep -f '(chrome|chromium)' 2>/dev/null | head -1)
 
+  # ── RSS velocity check — detect runaway growth (≥400 MB/cycle) ─────────
+  # 2026-03-13 crash: RSS grew 3.8→6.0 GB in ~20s (300 MB/cycle at 2s). Watchdog
+  # detected threshold crossings but was already too late. Velocity tracking lets
+  # us intervene earlier when the growth rate alone signals a runaway.
+  if (( _prev_vscode_rss > 0 && vscode_rss > _prev_vscode_rss )); then
+    _rss_delta=$(( vscode_rss - _prev_vscode_rss ))
+    if (( _rss_delta >= 400000 )); then
+      incr_counter _rss_accel_events
+      log "ACCEL: VS Code RSS grew ${_rss_delta} kB in one cycle (total=${vscode_rss} kB) — accelerating intervention"
+      if [[ -z "$chrome_running" ]]; then
+        kill_top_vscode_helper "RSS acceleration: +${_rss_delta} kB/cycle (${vscode_rss} kB total)" "emerg"
+      else
+        kill_browsers "TERM" "RSS acceleration: +${_rss_delta} kB/cycle (${vscode_rss} kB total)"
+      fi
+    fi
+  fi
+  _prev_vscode_rss=$vscode_rss
+
   # Pre-emergency intervention: startup PID churn burst + elevated RSS.
   if $_startup_burst_danger && (( vscode_rss >= STARTUP_BURST_RSS_KB )); then
     log "BURST: startup PID churn=${_startup_burst_count} in ${STARTUP_BURST_WINDOW}s with VS Code RSS ${vscode_rss} kB — preemptive helper restart"
@@ -539,8 +567,9 @@ while true; do
       "VS Code RSS: $(( vscode_rss / 1024 )) MB — restarting extension host.\nRun: Developer: Restart Extension Host"
     kill_browsers "KILL" "VS Code RSS emergency: ${vscode_rss} kB"
     if [[ -z "$chrome_running" ]]; then
-      # No Chrome to kill — restart helper only (never main VS Code process).
-      kill_top_vscode_helper "VS Code RSS emergency: ${vscode_rss} kB"
+      # No Chrome to kill — restart helper with short emergency cooldown (5s not 20s).
+      # 2026-03-13 crash: 20s cooldown blocked all re-attempts during RSS runaway.
+      kill_top_vscode_helper "VS Code RSS emergency: ${vscode_rss} kB" "emerg"
     fi
   elif (( vscode_rss >= eff_warn )); then
     incr_counter _rss_warn_events
@@ -548,6 +577,11 @@ while true; do
     notify_desktop "warn" "⚠️ VS Code Memory High" \
       "VS Code RSS: $(( vscode_rss / 1024 )) MB — terminating Chrome.\nConsider: Developer: Restart Extension Host"
     kill_browsers "TERM" "VS Code RSS high: ${vscode_rss} kB"
+    # 2026-03-13 crash: at WARN with no Chrome present, watchdog logged 6+ no-ops
+    # while RSS grew unimpeded. Fall through to helper kill when no Chrome to SIGTERM.
+    if [[ -z "$chrome_running" ]]; then
+      kill_top_vscode_helper "VS Code RSS warn: no Chrome to SIGTERM (${vscode_rss} kB)" "normal"
+    fi
   fi
 
   # Escalate: SIGKILL at critical threshold
@@ -556,6 +590,10 @@ while true; do
     notify_desktop "crit" "🚨 Critical Memory: ${pct}% free" \
       "Force-killing Chrome/Playwright.\nClose ChromeOS tabs if crash persists."
     kill_browsers "KILL" "CRITICAL: ${pct}% MemAvailable (${avail} kB)"
+    # 2026-03-13: when no Chrome running at critical threshold, kill heaviest helper
+    if [[ -z "$chrome_running" ]]; then
+      kill_top_vscode_helper "CRITICAL low-mem: no Chrome to SIGKILL (${avail} kB free)" "emerg"
+    fi
 
   # Intervene: SIGTERM at low-memory threshold
   elif (( pct <= SIGTERM_THRESHOLD )); then
@@ -563,6 +601,9 @@ while true; do
     notify_desktop "warn" "⚠️ Low Memory: ${pct}% free" \
       "Terminating Chrome/Playwright to protect VS Code."
     kill_browsers "TERM" "LOW: ${pct}% MemAvailable (${avail} kB)"
+    if [[ -z "$chrome_running" ]]; then
+      kill_top_vscode_helper "LOW mem: no Chrome to SIGTERM (${avail} kB free)" "normal"
+    fi
 
   # Intervene: SIGTERM on sustained PSI pressure spike
   elif (( psi_x100 >= PSI_THRESHOLD * 100 )); then
