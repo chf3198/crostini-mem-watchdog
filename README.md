@@ -40,10 +40,10 @@ cd crostini-mem-watchdog && bash install.sh
 
 This repository uses a public issue-first workflow so visitors can audit all work history end-to-end.
 
-
 Every pull request must include `Closes #N`, milestone assignment, and label coverage so contribution lineage is always visible.
 Release/publish gate: client UAT PASS is mandatory before release.
 Client involvement is limited to design consultation and UAT.
+
 ---
 
 ## The Problem
@@ -161,6 +161,69 @@ shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh instal
 ```bash
 bash test-pressure.sh    # live: allocates memory, verifies watchdog fires (requires < 40% RAM free)
 ```
+
+---
+
+## Future Features (Planned)
+
+- **Extension Footprint Advisor (diagnostic mode):**
+  - Sample `code --status` + extension-host child processes over a short window.
+  - Rank extension helpers by RSS contribution and restart churn.
+  - Emit a recommendation report: `keep`, `workspace-disable`, or `remove`.
+  - Provide safe, staged guidance (disable in workspace first; uninstall only after validation).
+  - Integrate with watchdog STATUS counters to correlate extension mix vs emergency/warn frequency.
+
+Prototype script available now:
+
+```bash
+bash extension-footprint-advisor.sh /path/to/workspace
+```
+
+---
+
+---
+
+## Stress Test Sessions
+
+This section records observed crash events from live development sessions where mem-watchdog was running as protection.
+
+---
+
+### Session 2026-03-10 — Crostini VM Termination via VS Code Crash-Restart Loop
+
+**Duration**: 17:58 – 21:22 (3h 24m)  
+**Workload**: FPW website development (HTML/CSS editing in VS Code) + MCP Playwright browser (visual QA)  
+**Outcome**: Full Crostini container terminated by ChromeOS host at 21:22:07
+
+**Crash fingerprint** (journalctl):
+```
+Mar 10 21:22:07  awk: cannot open /proc/meminfo (Transport endpoint is not connected)
+Mar 10 21:22:07  systemd[144]: Activating special unit exit.target...
+Mar 10 21:22:07  [12+ app-com.google.Chrome-*.scope stopped]
+Mar 10 21:22:07  cros-garcon.service: Main process exited, code=dumped, status=6/ABRT
+```
+
+**What happened**:
+
+1. MCP Playwright server continuously spawned Chrome processes. Watchdog set `oom_score_adj=1000` on each and sent SIGTERM on each VS Code startup event.
+2. VS Code extension-host crashed and restarted **30+ times** over 3.5 hours. Each restart triggered a new startup-mode SIGTERM to Chrome — but Chrome (MCP server) kept respawning.
+3. 12+ Chrome scopes accumulated throughout the session, each adding to baseline RSS.
+4. The sustained restart loop exhausted the ChromeOS VM. At 21:22:07, the virtio socket was severed (`Transport endpoint is not connected`), and ChromeOS terminated the Crostini container.
+
+**Watchdog gaps exposed**:
+
+| Gap | Issue | Severity |
+|-----|-------|----------|
+| No restart-loop detection — each VS Code crash triggered fresh SIGTERM instead of escalating | [#25](https://github.com/chf3198/crostini-mem-watchdog/issues/25) | High |
+| No Chrome process count cap — 12+ Chrome scopes accumulated across session | [#26](https://github.com/chf3198/crostini-mem-watchdog/issues/26) | High |
+| No VM health canary — `/proc/meminfo` unreadable swallowed silently | [#27](https://github.com/chf3198/crostini-mem-watchdog/issues/27) | Medium |
+
+**What the watchdog did right**:
+- ✅ Protected VS Code (no kernel OOM kill of VS Code itself in this session — contrast with 2026-03-05)
+- ✅ Correctly set `oom_score_adj=1000` on Chrome processes
+- ✅ SIGTERM'd Chrome on each VS Code startup to free memory
+
+**Key distinction from 2026-03-05 crash**: This crash was a **VM-level termination**, not a kernel OOM kill of VS Code. The watchdog successfully prevented OOM kills but was overwhelmed by the sustained restart-loop pressure that the ChromeOS host eventually terminated.
 
 ---
 
