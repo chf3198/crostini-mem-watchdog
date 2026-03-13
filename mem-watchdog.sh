@@ -69,6 +69,20 @@ STARTUP_BURST_RSS_KB=1600000   # only act if VS Code RSS is already above ~1.6 G
 HELPER_KILL_COOLDOWN=20        # min seconds between helper restarts
 STATUS_INTERVAL=60            # seconds between watchdog status snapshots in journal
 
+# ── Restart-loop detection — VS Code crash-restart guard (Issue #25) ──────
+# If VS Code restarts > RESTART_LOOP_THRESHOLD times in RESTART_LOOP_WINDOW_S
+# seconds, escalate to SIGKILL Chrome and suppress further Chrome kills for
+# RESTART_LOOP_COOLDOWN_S seconds. Discovered 2026-03-10: 30+ restarts drove
+# Crostini VM termination. The SIGTERM-on-startup loop must break.
+RESTART_LOOP_WINDOW_S=600       # 10-minute sliding window for restart counting
+RESTART_LOOP_THRESHOLD=5        # VS Code startup events in window → declare restart loop
+RESTART_LOOP_COOLDOWN_S=120     # suppress further Chrome kills for this many seconds
+
+# ── Chrome process count cap — accumulation guard (Issue #26) ─────────────
+# Discovered 2026-03-10: 12+ Chrome scopes accumulated over 3.5 hours.
+# SIGTERM-on-startup only clears Chrome at restart moments, not between them.
+CHROME_COUNT_MAX=3              # SIGKILL oldest Chrome/Chromium processes above this cap
+
 # ── User config override — written by the VS Code extension ────────────────────
 # If the Mem Watchdog VS Code extension is installed and has custom thresholds
 # configured via VS Code Settings, it writes them to this file. Sourcing it here
@@ -90,6 +104,10 @@ _startup_burst_count=0        # accumulated new VS Code PIDs in churn window
 _startup_burst_danger=false   # set when churn threshold reached; acted on in main loop
 _last_helper_kill=0           # epoch seconds of last helper restart
 _last_status_log=0            # epoch seconds of last periodic status snapshot
+_restart_timestamps=""        # space-separated epoch seconds of recent VS Code restart events
+_restart_loop_cooldown_end=0  # epoch seconds until restart-loop cooldown expires
+
+# ── Runtime counters: restart-loop and chrome-excess ─────────────────────
 
 # ── Runtime counters / observability ─────────────────────────────────────────
 _loops=0
@@ -109,6 +127,8 @@ _rss_emergency_events=0
 _low_mem_term_events=0
 _critical_kill_events=0
 _psi_events=0
+_restart_loop_events=0
+_chrome_excess_events=0
 
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
@@ -142,7 +162,7 @@ log_status_snapshot() {
   if (( now < _startup_mode_end )); then
     startup_left=$(( _startup_mode_end - now ))
   fi
-  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
+  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
   _last_status_log=$now
 }
 
@@ -350,6 +370,8 @@ adjust_oom_scores() {
         _last_startup_trigger=$now
         _startup_mode_end=$(( now + STARTUP_DURATION ))
         _startup_just_triggered=true
+        # Record timestamp for restart-loop detection (Issue #25)
+        _restart_timestamps="${_restart_timestamps} ${now}"
         log "VS Code startup: ${new_count} new PIDs — startup mode active for ${STARTUP_DURATION}s (${STARTUP_INTERVAL}s interval, ${STARTUP_RSS_EMERG_KB} kB emerg threshold)"
         # Pre-emptively SIGTERM Chrome to free memory before extensions load
         if pgrep -f '(chrome|chromium)' &>/dev/null; then
@@ -361,6 +383,56 @@ adjust_oom_scores() {
       fi
     fi
     _known_code_pids="$current_pids"
+  fi
+}
+
+# ── Restart-loop detection (Issue #25) ──────────────────────────────────────
+# Prune _restart_timestamps to the active window, count remaining events.
+# On threshold breach (and outside cooldown), SIGKILL Chrome and arm cooldown.
+check_restart_loop() {
+  local now
+  now=$(date +%s)
+  local cutoff=$(( now - RESTART_LOOP_WINDOW_S ))
+  # Prune timestamps older than window
+  local new_ts="" ts
+  for ts in $_restart_timestamps; do
+    (( ts >= cutoff )) && new_ts="$new_ts $ts"
+  done
+  _restart_timestamps="${new_ts# }"
+  # Count remaining restart events in window
+  local count=0
+  [[ -n "$_restart_timestamps" ]] &&     count=$(echo "$_restart_timestamps" | tr ' ' '
+' | grep -cv '^$' || echo 0)
+  if (( count >= RESTART_LOOP_THRESHOLD && now >= _restart_loop_cooldown_end )); then
+    incr_counter _restart_loop_events
+    _restart_loop_cooldown_end=$(( now + RESTART_LOOP_COOLDOWN_S ))
+    log "RESTART-LOOP: VS Code restarted ${count}x in ${RESTART_LOOP_WINDOW_S}s — SIGKILL Chrome + ${RESTART_LOOP_COOLDOWN_S}s cooldown"
+    notify_desktop "crit" "🔄 VS Code Restart Loop"       "VS Code restarted ${count}x in $((RESTART_LOOP_WINDOW_S/60)) min. Force-killing Chrome to break loop."
+    kill_browsers "KILL" "restart-loop: ${count} restarts/${RESTART_LOOP_WINDOW_S}s"
+  fi
+}
+
+# ── Chrome process count cap (Issue #26) ─────────────────────────────────────
+# Count Chrome/Chromium PIDs. SIGKILL oldest processes above CHROME_COUNT_MAX.
+check_chrome_cap() {
+  local chrome_pids=()
+  mapfile -t chrome_pids < <(pgrep -f '(chrome|chromium)' 2>/dev/null | sort -n)
+  local count=${#chrome_pids[@]}
+  if (( count > CHROME_COUNT_MAX )); then
+    local excess=$(( count - CHROME_COUNT_MAX ))
+    incr_counter _chrome_excess_events
+    log "CHROME-EXCESS: ${count} Chrome/Chromium PIDs (cap=${CHROME_COUNT_MAX}) — SIGKILL ${excess} oldest"
+    notify_desktop "warn" "⚠️ Chrome Accumulation: ${count}"       "Chrome process count (${count}) exceeds cap (${CHROME_COUNT_MAX}). Killing ${excess} oldest."
+    local i=0
+    for pid in "${chrome_pids[@]}"; do
+      (( i >= excess )) && break
+      if $DRY_RUN; then
+        log "  (dry-run: would SIGKILL Chrome PID ${pid})"
+      else
+        kill -9 "$pid" 2>/dev/null && log "  → SIGKILL Chrome PID ${pid} (excess accumulation)"
+      fi
+      (( i++ ))
+    done
   fi
 }
 
@@ -400,11 +472,28 @@ while true; do
   # (also detects new VS Code sessions and triggers startup mode)
   adjust_oom_scores
 
+  # ── VM health canary — /proc/meminfo inaccessibility (Issue #27) ───────────
+  # "Transport endpoint is not connected" on /proc/meminfo signals that the
+  # Crostini virtio socket to ChromeOS has been severed — VM shutdown imminent.
+  # Discovered 2026-03-10: the watchdog silently continued with empty reads
+  # instead of logging the impending shutdown. Flush and warn before exiting.
+  if ! [[ -r /proc/meminfo ]]; then
+    log "WARN: /proc/meminfo unreadable — Crostini VM shutdown signal detected; flushing and pausing"
+    notify_desktop "crit" "⚠️ VM Shutdown Signal"       "/proc/meminfo unreadable. Crostini container may be terminating."
+    sync 2>/dev/null || true
+    sleep 1 & wait "$!" 2>/dev/null || true
+    continue
+  fi
+
+  # ── Restart-loop and Chrome-cap checks ───────────────────────────────────
+  check_restart_loop
+  check_chrome_cap
+
   # Read MemAvailable and MemTotal.
   # IMPORTANT: Never use SwapFree — Crostini kernel reports ~18.4 exabytes
   # (uint64 overflow sentinel). Use awk to be safe against whitespace/format.
-  avail=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo)
-  total=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo)
+  avail=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+  total=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
 
   # Guard against empty/malformed reads
   [[ -z "$avail" || -z "$total" || "$total" -eq 0 ]] && continue
