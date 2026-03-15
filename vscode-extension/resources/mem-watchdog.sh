@@ -67,8 +67,16 @@ STARTUP_DEBOUNCE=300          # minimum seconds between startup mode activations
 STARTUP_BURST_WINDOW=120       # seconds in startup-churn detection window
 STARTUP_BURST_COUNT=10         # total new VS Code PIDs in window to flag burst danger
 STARTUP_BURST_RSS_KB=1600000   # only act if VS Code RSS is already above ~1.6 GB
-HELPER_KILL_COOLDOWN=20        # min seconds between helper restarts
+HELPER_KILL_COOLDOWN=10        # min seconds between helper restarts (was 20; WARN branch fires
+                              # after every EMERGENCY kill so 20s left it blocked for 15s)
 HELPER_KILL_COOLDOWN_EMERG=5   # short cooldown used during EMERGENCY (no Chrome, RSS runaway)
+                              # 2026-03-13 crash: 20s cooldown blocked all re-attempts while RSS
+                              # grew 3.8→6.0 GB in 20s — kernel OOM fired before cooldown expired.
+ANTI_RESPAWN_WINDOW=30         # seconds to skip a process type after killing it
+                              # 2026-03-13: tsserver killed → immediately respawned → killed again
+                              # in a tight loop. Skipping the same type forces a different target.
+EXT_HOST_ESCALATION_COUNT=5    # kill this many helpers before escalating to extension host
+EXT_HOST_ESCALATION_WINDOW=60  # seconds window for escalation kill count   # short cooldown used during EMERGENCY (no Chrome, RSS runaway)
                               # 2026-03-13 crash: 20s cooldown blocked all re-attempts while RSS
                               # grew 3.8→6.0 GB in 20s — kernel OOM fired before cooldown expired.
 STATUS_INTERVAL=60            # seconds between watchdog status snapshots in journal
@@ -107,6 +115,11 @@ _startup_burst_window_start=0 # epoch seconds for startup-churn window
 _startup_burst_count=0        # accumulated new VS Code PIDs in churn window
 _startup_burst_danger=false   # set when churn threshold reached; acted on in main loop
 _last_helper_kill=0           # epoch seconds of last helper restart
+_last_killed_type=""          # process type tag of last helper kill (anti-respawn)
+_last_killed_type_time=0      # epoch seconds of last kill of that type
+_helper_kills_in_window=0     # count of helper kills within EXT_HOST_ESCALATION_WINDOW
+_helper_kills_window_start=0  # epoch seconds when escalation window opened
+_ext_host_escalation_events=0 # count of extension-host escalation kills
 _last_status_log=0            # epoch seconds of last periodic status snapshot
 _restart_timestamps=""        # space-separated epoch seconds of recent VS Code restart events
 _restart_loop_cooldown_end=0  # epoch seconds until restart-loop cooldown expires
@@ -129,6 +142,7 @@ _helper_restart_failures=0
 _rss_warn_events=0
 _rss_emergency_events=0
 _rss_accel_events=0
+_ext_host_escalation_events=0
 _prev_vscode_rss=0
 _prev_rss_time=0
 _low_mem_term_events=0
@@ -169,7 +183,7 @@ log_status_snapshot() {
   if (( now < _startup_mode_end )); then
     startup_left=$(( _startup_mode_end - now ))
   fi
-  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} rss_accel=${_rss_accel_events} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
+  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} rss_accel=${_rss_accel_events} exthost_escal=${_ext_host_escalation_events} anti_respawn_type=${_last_killed_type} helper_kills_window=${_helper_kills_in_window} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
   _last_status_log=$now
 }
 
@@ -203,6 +217,32 @@ notify_desktop() {
   DISPLAY=:0 \
   DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus" \
     notify-send --urgency="$urgency" --expire-time=10000 "$title" "$body" 2>/dev/null || true
+}
+
+# ── Kill extension host (Copilot Chat container) — escalation of last resort ──
+# Called when repeated helper kills (EXT_HOST_ESCALATION_COUNT in EXT_HOST_ESCALATION_WINDOW)
+# have not reduced RSS below the emergency threshold. The extension host carries
+# Copilot Chat (~700 MB). Killing it forces a full extension host restart.
+kill_extension_host() {
+  local reason="$1"
+  incr_counter _ext_host_escalation_events
+  local exthost_pid
+  exthost_pid=$(ps -C code -o pid=,args= 2>/dev/null \
+    | awk '$0 ~ /--type=extensionHost/ {print $1; exit}')
+  if [[ -z "$exthost_pid" ]]; then
+    log "  ESCALATION: no extensionHost process found"
+    return 1
+  fi
+  local rss
+  rss=$(cat /proc/"$exthost_pid"/status 2>/dev/null | awk '/^VmRSS:/{print $2; exit}')
+  log "ESCALATION(SIGTERM): ${reason} — killing extensionHost PID ${exthost_pid} (rss=${rss} kB)"
+  log "  Copilot Chat extension host will restart. Run: Developer: Restart Extension Host"
+  notify_desktop "crit" "🚨 Extension Host Killed" \
+    "Repeated helper kills failed to reduce RSS. Extension host (Copilot Chat) restarted.\nRun: Developer: Restart Extension Host"
+  $DRY_RUN && { log "  (dry-run: would SIGTERM extensionHost PID ${exthost_pid})"; return 0; }
+  kill -TERM "$exthost_pid" 2>/dev/null
+  _helper_kills_in_window=0
+  _helper_kills_window_start=$(date +%s)
 }
 
 # ── Kill Chrome and Playwright processes ─────────────────────────────────────
@@ -257,36 +297,94 @@ kill_top_vscode_helper() {
     return 1
   fi
 
-  local line pid rss args
+  local line pid rss args candidate_type
 
-  # Preferred: language servers / extension workers launched with --node-ipc.
+  # ── Build candidate list: language servers / extension workers first ─────
+  # Anti-respawn: classify a process type tag from its cmdline, then skip the
+  # last-killed type if it was killed within ANTI_RESPAWN_WINDOW seconds.
+  # This prevents the tsserver kill → respawn → kill tight loop that caused the
+  # 2026-03-13 crash (2081 cooldown skips / 488 successes; 4:1 block ratio).
+  _classify_helper_type() {
+    local a="$1"
+    if   [[ "$a" == *"tsserver.js"* ]];      then echo "tsserver"
+    elif [[ "$a" == *"eslintServer.js"* ]];  then echo "eslint"
+    elif [[ "$a" == *"server.bundle.js"* ]]; then echo "server-bundle"
+    elif [[ "$a" == *"--node-ipc"* ]];       then echo "node-ipc"
+    elif [[ "$a" == *"--type=renderer"* ]];  then echo "renderer"
+    else                                          echo "other"
+    fi
+  }
+
+  local now_inner
+  now_inner=$(date +%s)
+  local skip_type=""
+  if [[ -n "$_last_killed_type" ]] && (( now_inner - _last_killed_type_time < ANTI_RESPAWN_WINDOW )); then
+    skip_type="$_last_killed_type"
+  fi
+
+  # Preferred: language servers / extension workers, excluding recently-killed type
   line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-    | awk '
+    | awk -v skip="$skip_type" '
+      function classify(a) {
+        if (a ~ /tsserver\.js/)      return "tsserver"
+        if (a ~ /eslintServer\.js/)  return "eslint"
+        if (a ~ /server\.bundle\.js/) return "server-bundle"
+        if (a ~ /--node-ipc/)         return "node-ipc"
+        return "other"
+      }
       {
         pid=$1; rss=$2;
         $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
         if (args ~ /^\/usr\/share\/code\/code$/) next;
         if (args ~ /--type=zygote/) next;
         if (args ~ /--type=gpu-process/) next;
+        if (args ~ /--type=extensionHost/) next;
+        t=classify(args)
+        if (skip != "" && t == skip) next;
         if (args ~ /--node-ipc/ || args ~ /server\.bundle\.js/ || args ~ /tsserver\.js/ || args ~ /eslintServer\.js/) {
           printf "%s %s %s\n", pid, rss, args;
         }
       }
     ' | sort -k2 -rn | head -1)
 
-  # Fallback: any non-main, non-zygote code child.
+  # Fallback: any non-main, non-zygote, non-extensionHost child
   if [[ -z "$line" ]]; then
     line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-      | awk '
+      | awk -v skip="$skip_type" '
+        function classify(a) {
+          if (a ~ /tsserver\.js/)      return "tsserver"
+          if (a ~ /eslintServer\.js/)  return "eslint"
+          if (a ~ /server\.bundle\.js/) return "server-bundle"
+          if (a ~ /--node-ipc/)         return "node-ipc"
+          return "other"
+        }
         {
           pid=$1; rss=$2;
           $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
           if (args ~ /^\/usr\/share\/code\/code$/) next;
           if (args ~ /--type=zygote/) next;
           if (args ~ /--type=gpu-process/) next;
+          if (args ~ /--type=extensionHost/) next;
+          t=classify(args)
+          if (skip != "" && t == skip) next;
           printf "%s %s %s\n", pid, rss, args;
         }
       ' | sort -k2 -rn | head -1)
+  fi
+
+  # Last-resort fallback: include recently-killed type if nothing else found
+  if [[ -z "$line" ]]; then
+    line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
+      | awk '{
+          pid=$1; rss=$2;
+          $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
+          if (args ~ /^\/usr\/share\/code\/code$/) next;
+          if (args ~ /--type=zygote/) next;
+          if (args ~ /--type=gpu-process/) next;
+          if (args ~ /--type=extensionHost/) next;
+          printf "%s %s %s\n", pid, rss, args;
+        }' | sort -k2 -rn | head -1)
+    [[ -n "$line" ]] && log "  Anti-respawn: no alternative found — re-using last-killed type"
   fi
 
   [[ -z "$line" ]] && { incr_counter _helper_restart_no_candidate; log "  No VS Code helper candidate found"; return 1; }
@@ -294,6 +392,7 @@ kill_top_vscode_helper() {
   pid=$(echo "$line" | awk '{print $1}')
   rss=$(echo "$line" | awk '{print $2}')
   args=$(echo "$line" | cut -d' ' -f3-)
+  candidate_type=$(_classify_helper_type "$args")
 
   log "ACTION(SIGTERM): ${reason} — restarting helper PID ${pid} (rss=${rss} kB): ${args}"
   if $DRY_RUN; then
@@ -305,6 +404,16 @@ kill_top_vscode_helper() {
   if kill -TERM "$pid" 2>/dev/null; then
     incr_counter _helper_restart_success
     _last_helper_kill=$now
+    # Record anti-respawn type so next kill picks a different process
+    _last_killed_type="$candidate_type"
+    _last_killed_type_time=$now
+    # Track escalation window
+    if (( now - _helper_kills_window_start > EXT_HOST_ESCALATION_WINDOW )); then
+      _helper_kills_in_window=1
+      _helper_kills_window_start=$now
+    else
+      _helper_kills_in_window=$(( _helper_kills_in_window + 1 ))
+    fi
     return 0
   fi
   incr_counter _helper_restart_failures
@@ -570,7 +679,12 @@ while true; do
     if [[ -z "$chrome_running" ]]; then
       # No Chrome to kill — restart helper with short emergency cooldown (5s not 20s).
       # 2026-03-13 crash: 20s cooldown blocked all re-attempts during RSS runaway.
-      kill_top_vscode_helper "VS Code RSS emergency: ${vscode_rss} kB" "emerg"
+      if (( _helper_kills_in_window >= EXT_HOST_ESCALATION_COUNT )); then
+        # Repeated kills not reducing RSS — escalate to extension host (Copilot Chat)
+        kill_extension_host "repeated helper kills (${_helper_kills_in_window}/${EXT_HOST_ESCALATION_WINDOW}s) failed to reduce RSS below ${eff_emerg} kB"
+      else
+        kill_top_vscode_helper "VS Code RSS emergency: ${vscode_rss} kB" "emerg"
+      fi
     fi
   elif (( vscode_rss >= eff_warn )); then
     incr_counter _rss_warn_events
