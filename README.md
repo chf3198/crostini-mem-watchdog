@@ -8,8 +8,8 @@
 [![Installs](https://img.shields.io/visual-studio-marketplace/i/CurtisFranks.mem-watchdog-status?color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=CurtisFranks.mem-watchdog-status)
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ChromeOS%20Crostini-4285f4)](https://chromeos.dev/en/linux)
-[![Tests](https://img.shields.io/badge/bash-12%2F12-brightgreen)](test-watchdog.sh)
-[![Tests](https://img.shields.io/badge/js-54%2F54-brightgreen)](vscode-extension/package.json)
+[![Tests](https://img.shields.io/badge/bash-15%2F15-brightgreen)](test-watchdog.sh)
+[![Tests](https://img.shields.io/badge/js-55%2F55-brightgreen)](vscode-extension/package.json)
 
 _`earlyoom` hard-crashes on Crostini (exit 104, every 3 seconds, zero protection). This replaces it with a VS Code-aware watchdog that kills Chrome before the kernel OOM-kills VS Code._
 
@@ -79,8 +79,8 @@ This watchdog reads only `MemAvailable` and `MemTotal` — both correct on this 
 | `MemAvailable ≤ 15%`   | `SIGKILL` Chrome / Playwright                                                                    |
 | `MemAvailable ≤ 25%`   | `SIGTERM` Chrome / Playwright                                                                    |
 | PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall)                                                        |
-| VS Code RSS > 2.5 GB   | `SIGTERM` Chrome + desktop notification                                                          |
-| VS Code RSS > 3.5 GB   | `SIGKILL` Chrome; if no Chrome → `SIGTERM` highest-RSS extension host to save the VS Code window |
+| VS Code RSS > 2.2 GB   | `SIGTERM` Chrome + desktop notification                                                          |
+| VS Code RSS > 3.2 GB   | `SIGKILL` Chrome; if no Chrome → `SIGTERM` highest-RSS extension host to save the VS Code window |
 | Every loop             | Set `oom_score_adj=0` on VS Code PIDs (counters Electron's 200–300 default)                      |
 | Every loop             | Set `oom_score_adj=1000` on Chrome PIDs (kernel kills it first)                                  |
 
@@ -99,7 +99,7 @@ crostini-mem-watchdog/
 ├── mem-watchdog.sh              ← core daemon (bash, coreutils only)
 ├── mem-watchdog.service         ← systemd user service unit
 ├── install.sh                   ← shell-only installer (no VS Code required)
-├── test-watchdog.sh             ← 12-test validation suite
+├── test-watchdog.sh             ← 15-test validation suite
 ├── test-pressure.sh             ← live memory pressure tests
 ├── watchdog-tray.sh             ← optional: yad system tray icon
 └── vscode-extension/            ← VS Code extension (primary install path)
@@ -132,8 +132,8 @@ crostini-mem-watchdog/
 | `INTERVAL`            | `2`       | Seconds between normal checks                          |
 | `STARTUP_INTERVAL`    | `0.5`     | Seconds between checks in startup mode                 |
 | `STARTUP_DURATION`    | `90`      | Seconds to stay in startup mode after new VS Code PIDs |
-| `VSCODE_RSS_WARN_KB`  | `2500000` | ~2.5 GB — VS Code RSS warning level                    |
-| `VSCODE_RSS_EMERG_KB` | `3500000` | ~3.5 GB — VS Code RSS emergency level                  |
+| `VSCODE_RSS_WARN_KB`  | `2200000` | ~2.2 GB — VS Code RSS warning level                    |
+| `VSCODE_RSS_EMERG_KB` | `3200000` | ~3.2 GB — VS Code RSS emergency level                  |
 | `NOTIFY_INTERVAL`     | `300`     | Seconds between desktop notifications per severity     |
 
 ### Tuning for Your RAM
@@ -141,7 +141,7 @@ crostini-mem-watchdog/
 | Total RAM        | `VSCODE_RSS_WARN_KB` | `VSCODE_RSS_EMERG_KB` |
 | ---------------- | -------------------- | --------------------- |
 | 4 GB             | `1500000`            | `2000000`             |
-| 6 GB _(default)_ | `2500000`            | `3500000`             |
+| 6 GB _(default)_ | `2200000`            | `3200000`             |
 | 8 GB             | `3500000`            | `5000000`             |
 | 16 GB            | `6000000`            | `10000000`            |
 
@@ -152,8 +152,8 @@ crostini-mem-watchdog/
 All 4 gates must pass before any change is published:
 
 ```bash
-bash test-watchdog.sh              # 12 bash tests (~3 s) — service, OOM scores, PSI, SwapFree safety, SIGTERM
-cd vscode-extension && npm test    # 54 JS unit tests (~1 s) — extension state machine, pileup guard, utils
+bash test-watchdog.sh              # 15 bash tests (~3 s) — service, OOM scores, PSI, SwapFree safety, SIGTERM
+cd vscode-extension && npm test    # 55 JS unit tests (~1 s) — extension state machine, pileup guard, utils
 bash -n mem-watchdog.sh            # bash syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
 ```
@@ -242,7 +242,7 @@ The extension host spiked from normal RSS to **~4 GB in under 4 seconds** during
 Three fixes:
 
 1. **Interval**: 4 s → 2 s normal, 0.5 s during startup mode
-2. **RSS threshold**: lowered to 3.5 GB emergency (earlier intervention)
+2. **RSS threshold**: lowered to 3.2 GB emergency (earlier intervention)
 3. **Last resort**: if no Chrome to kill, SIGTERM the highest-RSS `code` process to save the VS Code window
 
 ---

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.2] — 2026-03-16
+
+### Fixed
+- **Daemon ACCEL guard restored** — RSS velocity intervention now requires both conditions: `rss_delta >= RSS_ACCEL_KB` **and** `vscode_rss >= eff_warn`. This prevents false-positive helper kills during normal startup JIT spikes at low total RSS.
+- **Language-server helper protection widened** — `jsonServerMain` added to protected helper classification to avoid disruptive restarts of JSON language tooling.
+- **Startup BURST fallback safety** — when no safe helper candidate exists, watchdog now logs and skips restart instead of escalating destructively.
+
+### Changed
+- Test gate totals updated and revalidated: **15 bash tests** (`test-watchdog.sh`) and **55 JS unit tests** (`npm test`).
+
 ## [0.3.1] — 2026-03-07
 
 ### Fixed

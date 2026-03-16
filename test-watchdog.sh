@@ -227,14 +227,16 @@ else
   fi
 fi
 
-# ── TEST 14: Helper exclusion guard includes core language servers ───────────
+# ── TEST 14: Helper selection logic protects core language servers ───────────
+# Language server protection moved from HELPER_EXCLUDE_ARGS_REGEX (v20260313)
+# to inline awk patterns inside kill_top_vscode_helper (v20260315+).
+# Test verifies the three most critical patterns are present regardless of form.
 tee_log ""
-tee_log "── Test 14: HELPER_EXCLUDE_ARGS_REGEX protects language servers"
-if grep -q 'HELPER_EXCLUDE_ARGS_REGEX=' "$WATCHDOG" \
-  && grep -q 'jsonServerMain' "$WATCHDOG" \
-  && grep -q 'tsserver\\.js' "$WATCHDOG" \
-  && grep -q 'eslintServer\\.js' "$WATCHDOG"; then
-  PASS "Language-server exclusion regex present (json/ts/eslint)"
+tee_log "── Test 14: Language-server protection in kill_top_vscode_helper"
+if grep -q 'jsonServerMain' "$WATCHDOG" \
+  && grep -q 'tsserver' "$WATCHDOG" \
+  && grep -q 'eslintServer' "$WATCHDOG"; then
+  PASS "Language-server exclusion present (json/ts/eslint) — inline awk form"
 else
   FAIL "Language-server exclusion regex missing expected protections"
 fi
