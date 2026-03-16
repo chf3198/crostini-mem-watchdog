@@ -39,7 +39,7 @@ SIGTERM_THRESHOLD=25   # Kill Chrome with SIGTERM when MemAvailable < 25% (~1.6 
 SIGKILL_THRESHOLD=15   # Escalate to SIGKILL when MemAvailable < 15% (~945 MB)
 PSI_THRESHOLD=25       # Kill on sustained memory stall: PSI full avg10 > 25%
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-WATCHDOG_VERSION=20260313.2   # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260313.2   # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 # VS Code RSS thresholds (confirmed: extension host hit 4 GB, watchdog had no Chrome to kill)
@@ -235,7 +235,7 @@ kill_extension_host() {
     return 1
   fi
   local rss
-  rss=$(cat /proc/"$exthost_pid"/status 2>/dev/null | awk '/^VmRSS:/{print $2; exit}')
+  rss=$(awk '/^VmRSS:/{print $2; exit}' /proc/"$exthost_pid"/status 2>/dev/null)
   log "ESCALATION(SIGTERM): ${reason} — killing extensionHost PID ${exthost_pid} (rss=${rss} kB)"
   log "  Copilot Chat extension host will restart. Run: Developer: Restart Extension Host"
   notify_desktop "crit" "🚨 Extension Host Killed" \
