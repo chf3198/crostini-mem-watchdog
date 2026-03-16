@@ -226,6 +226,28 @@ else
     FAIL "No STATUS(periodic) snapshot in journal after 75s — observability not working"
   fi
 fi
+
+# ── TEST 14: Helper exclusion guard includes core language servers ───────────
+tee_log ""
+tee_log "── Test 14: HELPER_EXCLUDE_ARGS_REGEX protects language servers"
+if grep -q 'HELPER_EXCLUDE_ARGS_REGEX=' "$WATCHDOG" \
+  && grep -q 'jsonServerMain' "$WATCHDOG" \
+  && grep -q 'tsserver\\.js' "$WATCHDOG" \
+  && grep -q 'eslintServer\\.js' "$WATCHDOG"; then
+  PASS "Language-server exclusion regex present (json/ts/eslint)"
+else
+  FAIL "Language-server exclusion regex missing expected protections"
+fi
+
+# ── TEST 15: Startup burst fallback does not kill VS Code main process ───────
+tee_log ""
+tee_log "── Test 15: Startup burst fallback is non-destructive"
+if grep -q 'BURST: no safe helper candidate available' "$WATCHDOG"; then
+  PASS "Startup burst safe-skip fallback present"
+else
+  FAIL "Startup burst safe-skip fallback missing"
+fi
+
 # ── SUMMARY ──────────────────────────────────────────────────────────────────
 tee_log ""
 tee_log "════════════════════════════════════════════════════════════════"

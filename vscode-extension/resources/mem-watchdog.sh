@@ -67,6 +67,7 @@ STARTUP_DEBOUNCE=300          # minimum seconds between startup mode activations
 STARTUP_BURST_WINDOW=120       # seconds in startup-churn detection window
 STARTUP_BURST_COUNT=10         # total new VS Code PIDs in window to flag burst danger
 STARTUP_BURST_RSS_KB=1600000   # only act if VS Code RSS is already above ~1.6 GB
+HELPER_EXCLUDE_ARGS_REGEX='resources/app/extensions/.*/server/dist/node/|jsonServerMain|htmlServerMain|cssServerMain|tsserver\.js|typescript-language-features|eslintServer\.js|yaml-language-server|pyright-langserver|basedpyright-langserver|jedi-language-server|ruff-lsp'
 HELPER_KILL_COOLDOWN=10        # min seconds between helper restarts (was 20; WARN branch fires
                               # after every EMERGENCY kill so 20s left it blocked for 15s)
 HELPER_KILL_COOLDOWN_EMERG=5   # short cooldown used during EMERGENCY (no Chrome, RSS runaway)
@@ -297,7 +298,8 @@ kill_top_vscode_helper() {
     return 1
   fi
 
-  local line pid rss args candidate_type
+  local line pid rss args candidate_type exclude_regex
+  exclude_regex="$HELPER_EXCLUDE_ARGS_REGEX"
 
   # ── Build candidate list: language servers / extension workers first ─────
   # Anti-respawn: classify a process type tag from its cmdline, then skip the
@@ -322,9 +324,9 @@ kill_top_vscode_helper() {
     skip_type="$_last_killed_type"
   fi
 
-  # Preferred: language servers / extension workers, excluding recently-killed type
+  # Preferred: heavyweight utility helpers, excluding recently-killed type
   line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-    | awk -v skip="$skip_type" '
+    | awk -v skip="$skip_type" -v excl="$exclude_regex" '
       function classify(a) {
         if (a ~ /tsserver\.js/)      return "tsserver"
         if (a ~ /eslintServer\.js/)  return "eslint"
@@ -339,9 +341,10 @@ kill_top_vscode_helper() {
         if (args ~ /--type=zygote/) next;
         if (args ~ /--type=gpu-process/) next;
         if (args ~ /--type=extensionHost/) next;
+        if (excl != "" && args ~ excl) next;
         t=classify(args)
         if (skip != "" && t == skip) next;
-        if (args ~ /--node-ipc/ || args ~ /server\.bundle\.js/ || args ~ /tsserver\.js/ || args ~ /eslintServer\.js/) {
+        if (args ~ /--utility-sub-type=node\.mojom\.NodeService/ || args ~ /--type=utility/) {
           printf "%s %s %s\n", pid, rss, args;
         }
       }
@@ -350,7 +353,7 @@ kill_top_vscode_helper() {
   # Fallback: any non-main, non-zygote, non-extensionHost child
   if [[ -z "$line" ]]; then
     line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-      | awk -v skip="$skip_type" '
+      | awk -v skip="$skip_type" -v excl="$exclude_regex" '
         function classify(a) {
           if (a ~ /tsserver\.js/)      return "tsserver"
           if (a ~ /eslintServer\.js/)  return "eslint"
@@ -365,6 +368,7 @@ kill_top_vscode_helper() {
           if (args ~ /--type=zygote/) next;
           if (args ~ /--type=gpu-process/) next;
           if (args ~ /--type=extensionHost/) next;
+          if (excl != "" && args ~ excl) next;
           t=classify(args)
           if (skip != "" && t == skip) next;
           printf "%s %s %s\n", pid, rss, args;
@@ -375,13 +379,14 @@ kill_top_vscode_helper() {
   # Last-resort fallback: include recently-killed type if nothing else found
   if [[ -z "$line" ]]; then
     line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-      | awk '{
+      | awk -v excl="$exclude_regex" '{
           pid=$1; rss=$2;
           $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
           if (args ~ /^\/usr\/share\/code\/code$/) next;
           if (args ~ /--type=zygote/) next;
           if (args ~ /--type=gpu-process/) next;
           if (args ~ /--type=extensionHost/) next;
+          if (excl != "" && args ~ excl) next;
           printf "%s %s %s\n", pid, rss, args;
         }' | sort -k2 -rn | head -1)
     [[ -n "$line" ]] && log "  Anti-respawn: no alternative found — re-using last-killed type"
@@ -664,6 +669,11 @@ while true; do
     notify_desktop "warn" "⚠️ VS Code Startup Churn" \
       "Repeated VS Code helper respawns detected; restarting heaviest helper to prevent crash."
     if kill_top_vscode_helper "startup churn burst (${_startup_burst_count} new PIDs/${STARTUP_BURST_WINDOW}s)"; then
+      _startup_burst_danger=false
+      _startup_burst_count=0
+      _startup_burst_window_start=$(date +%s)
+    else
+      log "BURST: no safe helper candidate available — skipping helper restart to avoid language-server disruption"
       _startup_burst_danger=false
       _startup_burst_count=0
       _startup_burst_window_start=$(date +%s)
