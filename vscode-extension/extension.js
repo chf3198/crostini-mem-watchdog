@@ -14,6 +14,8 @@ const vscode       = require('vscode');
 const installer    = require('./installer');
 const configWriter = require('./configWriter');
 const commands     = require('./commands');
+const { installGlobalSkill } = require('./skillInstaller');
+const { registerChatParticipant } = require('./chatParticipant');
 const { readMeminfo, sh, checkServiceStatus } = require('./utils');
 
 // ── Status bar poll interval ──────────────────────────────────────────────────
@@ -135,6 +137,18 @@ async function activate(context) {
         vscode.window.showErrorMessage(`Mem Watchdog: install failed — ${err.message}`);
     }
 
+    // ── 1b. Install / refresh user-level Copilot skill ─────────────────────
+    // Installs to ~/.copilot/skills/mem-watchdog-ops so the assistant can
+    // carry watchdog-specific operational context across repositories.
+    try {
+        const skill = installGlobalSkill(context.extensionUri.fsPath);
+        if (skill.state === 'installed') {
+            vscode.window.showInformationMessage('Mem Watchdog: Copilot skill installed ✓');
+        }
+    } catch (err) {
+        console.error('[memWatchdog] skillInstaller error:', err.message);
+    }
+
     // ── 2. Sync VS Code settings → config file ────────────────────────────────
     try {
         const cfgWarnings = configWriter.writeConfig(vscode.workspace.getConfiguration('memWatchdog'));
@@ -197,6 +211,9 @@ async function activate(context) {
 
     context.subscriptions.push(item);
     context.subscriptions.push({ dispose: () => clearInterval(timer) });
+
+    // ── 6. Optional chat participant (if Chat API is available) ─────────────
+    registerChatParticipant(context);
 }
 
 function deactivate() {

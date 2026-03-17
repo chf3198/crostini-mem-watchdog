@@ -61,6 +61,50 @@
     "test:stress": "node --expose-gc test/stress/update-stress.js"
   },
   "contributes": {
+    "chatSkills": [
+      {
+        "path": "./skills/mem-watchdog-ops/SKILL.md"
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "mem-watchdog-status.memWatchdogAssistant",
+        "name": "memwatchdog",
+        "fullName": "Mem Watchdog Assistant",
+        "description": "Inspect watchdog status and logs, and apply memory tuning profiles",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "status",
+            "description": "Show memory and watchdog status snapshot"
+          },
+          {
+            "name": "logs",
+            "description": "Show recent mem-watchdog journal lines"
+          },
+          {
+            "name": "tune",
+            "description": "Apply a memory profile: balanced, conservative, or playwright"
+          },
+          {
+            "name": "act",
+            "description": "Run watchdog action: kill chrome, restart service, or open dashboard"
+          }
+        ],
+        "disambiguation": [
+          {
+            "category": "watchdog-ops",
+            "description": "Questions about mem-watchdog behavior, Linux memory pressure, watchdog logs, and tuning thresholds for constrained environments.",
+            "examples": [
+              "Show mem-watchdog status and RAM pressure",
+              "Tail watchdog logs and explain recent kill actions",
+              "Switch to a conservative memory profile",
+              "Kill Chrome now to protect VS Code"
+            ]
+          }
+        ]
+      }
+    ],
     "commands": [
       {
         "command": "memWatchdog.showDashboard",

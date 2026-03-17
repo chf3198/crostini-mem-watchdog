@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.3] — 2026-03-17
+
+### Added
+- **Global Copilot skill install (user-level)** — extension activation now installs/updates `mem-watchdog-ops` to `~/.copilot/skills/mem-watchdog-ops`.
+- **Bundled skill contribution** — extension now contributes `chatSkills` entry for `./skills/mem-watchdog-ops/SKILL.md`.
+- **Chat participant integration** — optional `@memwatchdog` participant with slash commands:
+	- `/status` (memory/service snapshot)
+	- `/logs` (recent watchdog journal)
+	- `/tune` (balanced/conservative/playwright profiles)
+	- `/act` (kill chrome, restart service, open dashboard)
+- **Skill helper script** — `watchdog-snapshot.sh` added in the skill directory for quick status triage.
+- **Unit tests** — added `skillInstaller.test.js` covering first install, update refresh, and missing-source skip.
+
 ## [0.3.2] — 2026-03-16
 
 ### Fixed
