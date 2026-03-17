@@ -39,13 +39,13 @@ SIGTERM_THRESHOLD=25   # Kill Chrome with SIGTERM when MemAvailable < 25% (~1.6 
 SIGKILL_THRESHOLD=15   # Escalate to SIGKILL when MemAvailable < 15% (~945 MB)
 PSI_THRESHOLD=25       # Kill on sustained memory stall: PSI full avg10 > 25%
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-WATCHDOG_VERSION=20260313.2   # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260316.1   # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 # VS Code RSS thresholds (confirmed: extension host hit 4 GB, watchdog had no Chrome to kill)
 # Lower thresholds so we can intervene BEFORE the kernel OOM fires.
-VSCODE_RSS_EMERG_KB=3500000   # ~3.5 GB — SIGKILL chrome; if no chrome, SIGTERM extension host
-VSCODE_RSS_WARN_KB=2500000    # ~2.5 GB — SIGTERM chrome + desktop alert to restart ext host
+VSCODE_RSS_EMERG_KB=3200000   # ~3.2 GB — emergency cutoff before kernel OOM territory
+VSCODE_RSS_WARN_KB=2200000    # ~2.2 GB — earlier warning for constrained Crostini RAM
 NOTIFY_INTERVAL=300           # seconds between desktop notifications per severity
 
 # ── Startup mode — faster polling + tighter thresholds for 90s after VS Code starts ──
@@ -53,8 +53,8 @@ NOTIFY_INTERVAL=300           # seconds between desktop notifications per severi
 # Fix: detect new VS Code PIDs, switch to 0.5s interval, drop emergency threshold to 2 GB.
 STARTUP_INTERVAL=0.5          # seconds between checks during VS Code startup
 STARTUP_DURATION=90           # seconds to stay in startup mode after new VS Code PIDs
-STARTUP_RSS_WARN_KB=3500000   # ~3.5 GB — warn threshold in startup mode (matches steady-state; startup peaks are normal)
-STARTUP_RSS_EMERG_KB=4200000  # ~4.2 GB — emergency threshold in startup mode (only intervene if truly about to OOM)
+STARTUP_RSS_WARN_KB=2800000   # ~2.8 GB — startup can spike fast; intervene earlier
+STARTUP_RSS_EMERG_KB=3400000  # ~3.4 GB — emergency ceiling in startup mode
 STARTUP_DEBOUNCE=300          # minimum seconds between startup mode activations
                               # VS Code language servers (TS, ESLint, GitLens workers) spawn
                               # new code PIDs throughout normal development. Without this guard
@@ -67,7 +67,6 @@ STARTUP_DEBOUNCE=300          # minimum seconds between startup mode activations
 STARTUP_BURST_WINDOW=120       # seconds in startup-churn detection window
 STARTUP_BURST_COUNT=10         # total new VS Code PIDs in window to flag burst danger
 STARTUP_BURST_RSS_KB=1600000   # only act if VS Code RSS is already above ~1.6 GB
-HELPER_EXCLUDE_ARGS_REGEX='resources/app/extensions/.*/server/dist/node/|jsonServerMain|htmlServerMain|cssServerMain|tsserver\.js|typescript-language-features|eslintServer\.js|yaml-language-server|pyright-langserver|basedpyright-langserver|jedi-language-server|ruff-lsp'
 HELPER_KILL_COOLDOWN=10        # min seconds between helper restarts (was 20; WARN branch fires
                               # after every EMERGENCY kill so 20s left it blocked for 15s)
 HELPER_KILL_COOLDOWN_EMERG=5   # short cooldown used during EMERGENCY (no Chrome, RSS runaway)
@@ -76,11 +75,19 @@ HELPER_KILL_COOLDOWN_EMERG=5   # short cooldown used during EMERGENCY (no Chrome
 ANTI_RESPAWN_WINDOW=30         # seconds to skip a process type after killing it
                               # 2026-03-13: tsserver killed → immediately respawned → killed again
                               # in a tight loop. Skipping the same type forces a different target.
-EXT_HOST_ESCALATION_COUNT=5    # kill this many helpers before escalating to extension host
+# EXT_HOST_ESCALATION_COUNT — superseded by RSS_RUNAWAY_STREAK circuit-breaker in kill_vscode_main
 EXT_HOST_ESCALATION_WINDOW=60  # seconds window for escalation kill count   # short cooldown used during EMERGENCY (no Chrome, RSS runaway)
                               # 2026-03-13 crash: 20s cooldown blocked all re-attempts while RSS
                               # grew 3.8→6.0 GB in 20s — kernel OOM fired before cooldown expired.
 STATUS_INTERVAL=60            # seconds between watchdog status snapshots in journal
+
+# ── Intervention safety gates — prevent action thrash under spike storms ──
+ACTION_BUDGET_WINDOW=30       # seconds in intervention budget window
+ACTION_BUDGET_MAX=6           # max non-critical actions per window
+CODE_RECOVERY_COOLDOWN=30     # minimum seconds between controlled VS Code recovery actions
+RSS_ACCEL_KB=300000           # acceleration threshold (~300 MB per cycle)
+RSS_RUNAWAY_MIN_KB=2600000    # only track runaway streak above this RSS floor
+RSS_RUNAWAY_STREAK=3          # consecutive accel cycles before circuit-breaker recovery
 
 # ── Restart-loop detection — VS Code crash-restart guard (Issue #25) ──────
 # If VS Code restarts > RESTART_LOOP_THRESHOLD times in RESTART_LOOP_WINDOW_S
@@ -151,6 +158,12 @@ _critical_kill_events=0
 _psi_events=0
 _restart_loop_events=0
 _chrome_excess_events=0
+_code_recovery_events=0
+_action_budget_window_start=0
+_action_budget_count=0
+_action_taken=false
+_last_code_recovery=0
+_runaway_streak=0
 
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
@@ -184,8 +197,36 @@ log_status_snapshot() {
   if (( now < _startup_mode_end )); then
     startup_left=$(( _startup_mode_end - now ))
   fi
-  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} rss_accel=${_rss_accel_events} exthost_escal=${_ext_host_escalation_events} anti_respawn_type=${_last_killed_type} helper_kills_window=${_helper_kills_in_window} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
+  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} rss_accel=${_rss_accel_events} rss_runaway_streak=${_runaway_streak} code_recoveries=${_code_recovery_events} exthost_escal=${_ext_host_escalation_events} anti_respawn_type=${_last_killed_type} helper_kills_window=${_helper_kills_in_window} action_budget_used=${_action_budget_count} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
   _last_status_log=$now
+}
+
+action_budget_allows() {
+  local mode="${1:-normal}" # normal|critical
+  local now
+  now=$(date +%s)
+
+  if $_action_taken; then
+    log "  Action gate: already executed an intervention this loop — skipping"
+    return 1
+  fi
+
+  if (( _action_budget_window_start == 0 || now - _action_budget_window_start > ACTION_BUDGET_WINDOW )); then
+    _action_budget_window_start=$now
+    _action_budget_count=0
+  fi
+
+  if [[ "$mode" != "critical" ]] && (( _action_budget_count >= ACTION_BUDGET_MAX )); then
+    log "  Action budget active: ${_action_budget_count}/${ACTION_BUDGET_MAX} actions in ${ACTION_BUDGET_WINDOW}s — skipping non-critical action"
+    return 1
+  fi
+
+  return 0
+}
+
+record_action() {
+  _action_taken=true
+  _action_budget_count=$(( _action_budget_count + 1 ))
 }
 
 # ── Desktop notification (notify-send) with per-severity throttle ───────────────
@@ -226,6 +267,7 @@ notify_desktop() {
 # Copilot Chat (~700 MB). Killing it forces a full extension host restart.
 kill_extension_host() {
   local reason="$1"
+  action_budget_allows "normal" || return 1
   incr_counter _ext_host_escalation_events
   local exthost_pid
   exthost_pid=$(ps -C code -o pid=,args= 2>/dev/null \
@@ -235,7 +277,8 @@ kill_extension_host() {
     return 1
   fi
   local rss
-  rss=$(cat /proc/"$exthost_pid"/status 2>/dev/null | awk '/^VmRSS:/{print $2; exit}')
+  rss=$(awk '/^VmRSS:/{print $2; exit}' /proc/"$exthost_pid"/status 2>/dev/null)
+  record_action
   log "ESCALATION(SIGTERM): ${reason} — killing extensionHost PID ${exthost_pid} (rss=${rss} kB)"
   log "  Copilot Chat extension host will restart. Run: Developer: Restart Extension Host"
   notify_desktop "crit" "🚨 Extension Host Killed" \
@@ -246,10 +289,44 @@ kill_extension_host() {
   _helper_kills_window_start=$(date +%s)
 }
 
+kill_vscode_main() {
+  local reason="$1"
+  local mode="${2:-critical}" # normal|critical
+  local now
+  now=$(date +%s)
+
+  action_budget_allows "$mode" || return 1
+  if (( now - _last_code_recovery < CODE_RECOVERY_COOLDOWN )); then
+    log "  VS Code recovery cooldown active (${CODE_RECOVERY_COOLDOWN}s) — skipping"
+    return 1
+  fi
+
+  local pid rss
+  pid=$(ps -C code -o pid=,args= 2>/dev/null | awk '$0 ~ /\/usr\/share\/code\/code$/ {print $1; exit}')
+  if [[ -z "$pid" ]]; then
+    pid=$(ps -C code -o pid=,rss= 2>/dev/null | sort -k2 -rn | awk 'NR==1{print $1}')
+  fi
+  [[ -z "$pid" ]] && { log "  VS Code recovery: no code PID found"; return 1; }
+
+  rss=$(awk '/^VmRSS:/{print $2; exit}' /proc/"$pid"/status 2>/dev/null)
+  record_action
+  incr_counter _code_recovery_events
+  _last_code_recovery=$now
+  log "RECOVERY(SIGTERM): ${reason} — restarting VS Code main PID ${pid} (rss=${rss} kB)"
+  notify_desktop "crit" "🚨 VS Code Recovery Triggered" \
+    "Runaway memory detected. Restarting VS Code to prevent kernel OOM."
+
+  $DRY_RUN && { log "  (dry-run: would SIGTERM VS Code PID ${pid})"; return 0; }
+  kill -TERM "$pid" 2>/dev/null
+}
+
 # ── Kill Chrome and Playwright processes ─────────────────────────────────────
 kill_browsers() {
   local signal="$1"   # TERM or KILL
   local reason="$2"
+  local mode="${3:-normal}" # normal|critical
+
+  action_budget_allows "$mode" || return 1
 
   if [[ "$signal" == "TERM" ]]; then
     incr_counter _browser_term_actions
@@ -257,6 +334,7 @@ kill_browsers() {
     incr_counter _browser_kill_actions
   fi
 
+  record_action
   log "ACTION(SIG${signal}): ${reason}"
 
   if $DRY_RUN; then
@@ -278,7 +356,10 @@ kill_browsers() {
   if ! $killed; then
     incr_counter _browser_noop_actions
     log "  (no chrome/playwright processes found to kill)"
+    return 1
   fi
+
+  return 0
 }
 
 # ── Restart heaviest VS Code helper (never main window process) ───────────────────
@@ -290,6 +371,7 @@ kill_top_vscode_helper() {
   [[ "$mode" == "emerg" ]] && cooldown=$HELPER_KILL_COOLDOWN_EMERG
   local now
   now=$(date +%s)
+  action_budget_allows "normal" || return 1
   incr_counter _helper_restart_attempts
 
   if (( now - _last_helper_kill < cooldown )); then
@@ -298,8 +380,7 @@ kill_top_vscode_helper() {
     return 1
   fi
 
-  local line pid rss args candidate_type exclude_regex
-  exclude_regex="$HELPER_EXCLUDE_ARGS_REGEX"
+  local line pid rss args candidate_type
 
   # ── Build candidate list: language servers / extension workers first ─────
   # Anti-respawn: classify a process type tag from its cmdline, then skip the
@@ -310,6 +391,7 @@ kill_top_vscode_helper() {
     local a="$1"
     if   [[ "$a" == *"tsserver.js"* ]];      then echo "tsserver"
     elif [[ "$a" == *"eslintServer.js"* ]];  then echo "eslint"
+    elif [[ "$a" == *"jsonServerMain"* ]];   then echo "json-server"
     elif [[ "$a" == *"server.bundle.js"* ]]; then echo "server-bundle"
     elif [[ "$a" == *"--node-ipc"* ]];       then echo "node-ipc"
     elif [[ "$a" == *"--type=renderer"* ]];  then echo "renderer"
@@ -324,12 +406,13 @@ kill_top_vscode_helper() {
     skip_type="$_last_killed_type"
   fi
 
-  # Preferred: heavyweight utility helpers, excluding recently-killed type
+  # Preferred: language servers / extension workers, excluding recently-killed type
   line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-    | awk -v skip="$skip_type" -v excl="$exclude_regex" '
+    | awk -v skip="$skip_type" '
       function classify(a) {
         if (a ~ /tsserver\.js/)      return "tsserver"
         if (a ~ /eslintServer\.js/)  return "eslint"
+        if (a ~ /jsonServerMain/)     return "json-server"
         if (a ~ /server\.bundle\.js/) return "server-bundle"
         if (a ~ /--node-ipc/)         return "node-ipc"
         return "other"
@@ -341,10 +424,9 @@ kill_top_vscode_helper() {
         if (args ~ /--type=zygote/) next;
         if (args ~ /--type=gpu-process/) next;
         if (args ~ /--type=extensionHost/) next;
-        if (excl != "" && args ~ excl) next;
         t=classify(args)
         if (skip != "" && t == skip) next;
-        if (args ~ /--utility-sub-type=node\.mojom\.NodeService/ || args ~ /--type=utility/) {
+        if (args ~ /--node-ipc/ || args ~ /server\.bundle\.js/ || args ~ /tsserver\.js/ || args ~ /eslintServer\.js/ || args ~ /jsonServerMain/) {
           printf "%s %s %s\n", pid, rss, args;
         }
       }
@@ -353,10 +435,11 @@ kill_top_vscode_helper() {
   # Fallback: any non-main, non-zygote, non-extensionHost child
   if [[ -z "$line" ]]; then
     line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-      | awk -v skip="$skip_type" -v excl="$exclude_regex" '
+      | awk -v skip="$skip_type" '
         function classify(a) {
           if (a ~ /tsserver\.js/)      return "tsserver"
           if (a ~ /eslintServer\.js/)  return "eslint"
+          if (a ~ /jsonServerMain/)     return "json-server"
           if (a ~ /server\.bundle\.js/) return "server-bundle"
           if (a ~ /--node-ipc/)         return "node-ipc"
           return "other"
@@ -368,7 +451,6 @@ kill_top_vscode_helper() {
           if (args ~ /--type=zygote/) next;
           if (args ~ /--type=gpu-process/) next;
           if (args ~ /--type=extensionHost/) next;
-          if (excl != "" && args ~ excl) next;
           t=classify(args)
           if (skip != "" && t == skip) next;
           printf "%s %s %s\n", pid, rss, args;
@@ -379,14 +461,13 @@ kill_top_vscode_helper() {
   # Last-resort fallback: include recently-killed type if nothing else found
   if [[ -z "$line" ]]; then
     line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-      | awk -v excl="$exclude_regex" '{
+      | awk '{
           pid=$1; rss=$2;
           $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
           if (args ~ /^\/usr\/share\/code\/code$/) next;
           if (args ~ /--type=zygote/) next;
           if (args ~ /--type=gpu-process/) next;
           if (args ~ /--type=extensionHost/) next;
-          if (excl != "" && args ~ excl) next;
           printf "%s %s %s\n", pid, rss, args;
         }' | sort -k2 -rn | head -1)
     [[ -n "$line" ]] && log "  Anti-respawn: no alternative found — re-using last-killed type"
@@ -399,6 +480,7 @@ kill_top_vscode_helper() {
   args=$(echo "$line" | cut -d' ' -f3-)
   candidate_type=$(_classify_helper_type "$args")
 
+  record_action
   log "ACTION(SIGTERM): ${reason} — restarting helper PID ${pid} (rss=${rss} kB): ${args}"
   if $DRY_RUN; then
     log "  (dry-run: would SIGTERM helper PID ${pid})"
@@ -578,6 +660,7 @@ adjust_oom_scores
 
 while true; do
   incr_counter _loops
+  _action_taken=false
 
   # ── Determine effective thresholds and whether we're in startup mode ────────
   local_now=$(date +%s)
@@ -645,26 +728,46 @@ while true; do
   vscode_rss=$(ps -C code -o rss= 2>/dev/null | awk '{s+=$1} END{print s+0}')
   chrome_running=$(pgrep -f '(chrome|chromium)' 2>/dev/null | head -1)
 
-  # ── RSS velocity check — detect runaway growth (≥400 MB/cycle) ─────────
+  # ── RSS velocity check — detect runaway growth (≥RSS_ACCEL_KB/cycle) ──
   # 2026-03-13 crash: RSS grew 3.8→6.0 GB in ~20s (300 MB/cycle at 2s). Watchdog
   # detected threshold crossings but was already too late. Velocity tracking lets
   # us intervene earlier when the growth rate alone signals a runaway.
+  #
+  # GATE: only fire when vscode_rss is already at or above eff_warn.
+  # Without this gate, V8 JIT compilation during VS Code startup legitimately spikes
+  # 300–900 MB/cycle at 1–2 GB total RSS (safe range), causing the watchdog to kill
+  # NodeService / extension-host processes in a restart loop (confirmed 2026-03-16:
+  # "Extension host terminated unexpectedly 3 times within the last 5 minutes").
+  # The 2026-03-13 crash that motivated this check started at ~3.8 GB — the gate
+  # preserves that protection while eliminating startup false positives.
   if (( _prev_vscode_rss > 0 && vscode_rss > _prev_vscode_rss )); then
     _rss_delta=$(( vscode_rss - _prev_vscode_rss ))
-    if (( _rss_delta >= 400000 )); then
+    if (( _rss_delta >= RSS_ACCEL_KB && vscode_rss >= eff_warn )); then
       incr_counter _rss_accel_events
       log "ACCEL: VS Code RSS grew ${_rss_delta} kB in one cycle (total=${vscode_rss} kB) — accelerating intervention"
+      if (( vscode_rss >= RSS_RUNAWAY_MIN_KB )); then
+        _runaway_streak=$(( _runaway_streak + 1 ))
+      fi
       if [[ -z "$chrome_running" ]]; then
         kill_top_vscode_helper "RSS acceleration: +${_rss_delta} kB/cycle (${vscode_rss} kB total)" "emerg"
       else
         kill_browsers "TERM" "RSS acceleration: +${_rss_delta} kB/cycle (${vscode_rss} kB total)"
       fi
     fi
+  else
+    _runaway_streak=0
+  fi
+
+  if (( _runaway_streak >= RSS_RUNAWAY_STREAK )); then
+    log "CIRCUIT-BREAKER: RSS runaway streak ${_runaway_streak}/${RSS_RUNAWAY_STREAK} (rss=${vscode_rss} kB) — controlled VS Code restart"
+    kill_vscode_main "RSS runaway persisted across ${_runaway_streak} cycles (${vscode_rss} kB)" "critical"
+    _runaway_streak=0
   fi
   _prev_vscode_rss=$vscode_rss
 
   # Pre-emergency intervention: startup PID churn burst + elevated RSS.
-  if $_startup_burst_danger && (( vscode_rss >= STARTUP_BURST_RSS_KB )); then
+  # Never run this once emergency threshold is reached; emergency takes priority.
+  if $_startup_burst_danger && (( vscode_rss >= STARTUP_BURST_RSS_KB )) && (( vscode_rss < eff_emerg )); then
     log "BURST: startup PID churn=${_startup_burst_count} in ${STARTUP_BURST_WINDOW}s with VS Code RSS ${vscode_rss} kB — preemptive helper restart"
     notify_desktop "warn" "⚠️ VS Code Startup Churn" \
       "Repeated VS Code helper respawns detected; restarting heaviest helper to prevent crash."
@@ -682,30 +785,27 @@ while true; do
 
   if (( vscode_rss >= eff_emerg )); then
     incr_counter _rss_emergency_events
-    log "EMERGENCY: VS Code RSS ${vscode_rss} kB (≥3.5 GB) — attempting to save VS Code window"
+    log "EMERGENCY: VS Code RSS ${vscode_rss} kB (≥${eff_emerg} kB) — attempting to save VS Code window"
     notify_desktop "crit" "🚨 VS Code Memory EMERGENCY" \
-      "VS Code RSS: $(( vscode_rss / 1024 )) MB — restarting extension host.\nRun: Developer: Restart Extension Host"
-    kill_browsers "KILL" "VS Code RSS emergency: ${vscode_rss} kB"
+      "VS Code RSS: $(( vscode_rss / 1024 )) MB — triggering controlled recovery to avoid kernel OOM."
     if [[ -z "$chrome_running" ]]; then
-      # No Chrome to kill — restart helper with short emergency cooldown (5s not 20s).
-      # 2026-03-13 crash: 20s cooldown blocked all re-attempts during RSS runaway.
-      if (( _helper_kills_in_window >= EXT_HOST_ESCALATION_COUNT )); then
-        # Repeated kills not reducing RSS — escalate to extension host (Copilot Chat)
-        kill_extension_host "repeated helper kills (${_helper_kills_in_window}/${EXT_HOST_ESCALATION_WINDOW}s) failed to reduce RSS below ${eff_emerg} kB"
-      else
-        kill_top_vscode_helper "VS Code RSS emergency: ${vscode_rss} kB" "emerg"
-      fi
+      # No Chrome target during emergency: avoid helper thrash and restart VS Code directly.
+      kill_vscode_main "VS Code RSS emergency with no browser target (${vscode_rss} kB)" "critical"
+    else
+      kill_browsers "KILL" "VS Code RSS emergency: ${vscode_rss} kB" "critical"
     fi
   elif (( vscode_rss >= eff_warn )); then
     incr_counter _rss_warn_events
-    log "WARNING: VS Code RSS ${vscode_rss} kB (≥2.5 GB) — SIGTERMing Chrome, restart ext host soon"
+    log "WARNING: VS Code RSS ${vscode_rss} kB (≥${eff_warn} kB) — SIGTERMing Chrome, restart ext host soon"
     notify_desktop "warn" "⚠️ VS Code Memory High" \
       "VS Code RSS: $(( vscode_rss / 1024 )) MB — terminating Chrome.\nConsider: Developer: Restart Extension Host"
     kill_browsers "TERM" "VS Code RSS high: ${vscode_rss} kB"
     # 2026-03-13 crash: at WARN with no Chrome present, watchdog logged 6+ no-ops
     # while RSS grew unimpeded. Fall through to helper kill when no Chrome to SIGTERM.
     if [[ -z "$chrome_running" ]]; then
-      kill_top_vscode_helper "VS Code RSS warn: no Chrome to SIGTERM (${vscode_rss} kB)" "normal"
+      if ! kill_top_vscode_helper "VS Code RSS warn: no Chrome to SIGTERM (${vscode_rss} kB)" "normal"; then
+        kill_extension_host "warn fallback: helper unavailable while RSS high (${vscode_rss} kB)"
+      fi
     fi
   fi
 
@@ -714,10 +814,10 @@ while true; do
     incr_counter _critical_kill_events
     notify_desktop "crit" "🚨 Critical Memory: ${pct}% free" \
       "Force-killing Chrome/Playwright.\nClose ChromeOS tabs if crash persists."
-    kill_browsers "KILL" "CRITICAL: ${pct}% MemAvailable (${avail} kB)"
+    kill_browsers "KILL" "CRITICAL: ${pct}% MemAvailable (${avail} kB)" "critical"
     # 2026-03-13: when no Chrome running at critical threshold, kill heaviest helper
     if [[ -z "$chrome_running" ]]; then
-      kill_top_vscode_helper "CRITICAL low-mem: no Chrome to SIGKILL (${avail} kB free)" "emerg"
+      kill_vscode_main "CRITICAL low-mem with no browser target (${avail} kB free)" "critical"
     fi
 
   # Intervene: SIGTERM at low-memory threshold
@@ -727,7 +827,9 @@ while true; do
       "Terminating Chrome/Playwright to protect VS Code."
     kill_browsers "TERM" "LOW: ${pct}% MemAvailable (${avail} kB)"
     if [[ -z "$chrome_running" ]]; then
-      kill_top_vscode_helper "LOW mem: no Chrome to SIGTERM (${avail} kB free)" "normal"
+      if ! kill_top_vscode_helper "LOW mem: no Chrome to SIGTERM (${avail} kB free)" "normal"; then
+        kill_extension_host "low-mem fallback: helper unavailable (${avail} kB free)"
+      fi
     fi
 
   # Intervene: SIGTERM on sustained PSI pressure spike

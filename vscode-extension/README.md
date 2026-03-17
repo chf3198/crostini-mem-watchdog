@@ -50,6 +50,28 @@ Access all commands via `Ctrl+Shift+P` → **Mem Watchdog:**
 
 ---
 
+## Copilot Integration
+
+On activation, the extension also installs a **user-level Copilot skill** to:
+
+- `~/.copilot/skills/mem-watchdog-ops`
+
+This gives Copilot reusable watchdog operating context across repositories.
+
+The extension also contributes:
+
+- A bundled chat skill (`mem-watchdog-ops`) via `chatSkills`
+- An optional chat participant: `@memwatchdog`
+
+`@memwatchdog` slash commands:
+
+- `/status` — snapshot of RAM/service/PSI/VS Code RSS
+- `/logs` — recent `mem-watchdog` journal lines
+- `/tune` — apply tuning profile (`balanced`, `conservative`, `playwright`)
+- `/act` — run action (`kill chrome`, `restart service`, `open dashboard`)
+
+---
+
 ## Settings
 
 Configure all thresholds via **VS Code Settings → Mem Watchdog**. Changes take effect immediately — the extension rewrites `~/.config/mem-watchdog/config.sh` and restarts the daemon automatically.
