@@ -20,6 +20,29 @@
 
 ---
 
+### 2026-03-19 — `.env` in VSIX bundle: credential leak blocked by vsce, silent in git
+
+**Context**: Publishing `CurtisFranks.mem-watchdog-status v0.3.3` to the VS Code Marketplace for the first time since `.env` was added to the extension directory.
+
+**Discovery**: `vsce publish` hard-blocked with `ERROR: .env files should not be packaged.` The `.env` file (`VSCE_PAT=<Azure DevOps PAT>`) and `.env.example` were not in `.vscodeignore`. vsce includes all non-ignored files — it does not have a built-in exclusion for `.env` (unlike `package-lock.json`, `*.vsix`, `.github/`, `node_modules/`, and devDependencies which ARE auto-excluded). Without the block, the PAT would have been visible inside the `.vsix` archive to anyone who unpacked it and to VS Code extension host processes on install.
+
+Two layers of risk:
+1. **Direct PAT exposure**: anyone who installs the extension and extracts the VSIX gets the literal `VSCE_PAT` value
+2. **Extension host environment**: VS Code loads the extension from its install directory; `.env` files in that directory are accessible to the extension process and potentially to other extensions
+
+`.gitignore` had `.env` excluded (so it was never committed), but `.vscodeignore` is a separate gating file and did not have it.
+
+**Fix**: Added to `.vscodeignore` under the `publish.sh` comment block:
+```
+publish.sh
+.env
+.env.example
+```
+
+**Application**: For any VS Code extension that uses a `.env` for publish credentials: add `.env` and `.env.example` to `.vscodeignore` at the same time the file is created — not at first publish. Run `vsce ls` before every new publish to confirm the bundle manifest before the actual upload. Note: `vsce ls` does NOT require the PAT and can be run at any time as a pre-flight check.
+
+---
+
 ### 2026-03-07 — Zero-fork service status: cgroup.procs vs exec() benchmark
 
 **Context**: Deep memory usage analysis of the VS Code extension. Looking for ways to reduce CPU and heap pressure from the `update()` hot path, which runs every 2 s (0.5 s in startup mode).
