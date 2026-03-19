@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.3.2] — 2026-03-16
+## [0.3.3] — 2026-03-19
 
 ### Fixed
 - **Daemon ACCEL guard restored** — RSS velocity intervention now requires both conditions: `rss_delta >= RSS_ACCEL_KB` **and** `vscode_rss >= eff_warn`. This prevents false-positive helper kills during normal startup JIT spikes at low total RSS.
