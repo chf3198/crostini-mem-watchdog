@@ -6,8 +6,10 @@
 # Build scripts — not needed inside the installed extension
 scripts/
 
-# Publish helper — not needed inside the installed extension
+# Publish helper and credentials — never bundle into VSIX
 publish.sh
+.env
+.env.example
 
 # Test suite — not needed inside the installed extension
 test/
