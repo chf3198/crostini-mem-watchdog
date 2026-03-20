@@ -87,7 +87,7 @@ jobs:
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
-      actions: write   # required by actions/upload-artifact@v4
+      actions: write   # required by actions/upload-artifact@v7
     steps:
       - uses: actions/checkout@v4
 
@@ -110,7 +110,7 @@ jobs:
         working-directory: vscode-extension
 
       - name: Upload .vsix artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vsix-pr-${{ github.event.pull_request.number }}
           path: vscode-extension/*.vsix
