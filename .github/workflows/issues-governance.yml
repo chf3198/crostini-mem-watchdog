@@ -1,0 +1,223 @@
+name: Issues Governance
+
+on:
+  issues:
+    types: [opened, edited, reopened, labeled, unlabeled]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  validate_issue_event:
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure governance label exists
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'governance:needs-triage'
+              });
+            } catch (e) {
+              if (e.status === 404) {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: 'governance:needs-triage',
+                  color: 'B60205',
+                  description: 'Issue fails governance policy checks and needs triage'
+                });
+              } else {
+                throw e;
+              }
+            }
+
+      - name: Validate issue policy
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const title = (issue.title || '').trim();
+            const body = (issue.body || '').toLowerCase();
+            const labels = (issue.labels || []).map(l => (l.name || '').toLowerCase());
+
+            const violations = [];
+
+            // Title policy: plain imperative, no pseudo-prefixes / commit-style prefixes
+            const disallowedTitlePrefix = /^(?:\[[^\]]+\]\s*|ticket-\d+\s*:\s*|[a-z]+-\d+\s*:\s*|(?:feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert|content|research|epic)\([^\)]+\)\s*:\s*)/i;
+            if (!title) {
+              violations.push('Title is required.');
+            } else {
+              if (title.length > 72) violations.push('Title must be 72 characters or fewer.');
+              if (disallowedTitlePrefix.test(title)) {
+                violations.push('Title must be plain imperative text (no prefixes like TICKET-123, [BUG], or type(scope):).');
+              }
+            }
+
+            // Required labels
+            const hasType = labels.some(l => l.startsWith('type:'));
+            const hasPriority = labels.some(l => l.startsWith('priority:'));
+            const hasArea = labels.some(l => l.startsWith('area:'));
+            if (!hasType) violations.push('Missing a type label (`type:*`).');
+            if (!hasPriority) violations.push('Missing a priority label (`priority:*`).');
+            if (!hasArea) violations.push('Missing an area label (`area:*`).');
+
+            // Body policy
+            if (!body.includes('acceptance criteria')) {
+              violations.push('Body must include an "Acceptance criteria" section.');
+            }
+            if (!(body.includes('problem') || body.includes('objective'))) {
+              violations.push('Body must include a "Problem" or "Objective" section.');
+            }
+            if (!body.includes('impact')) {
+              violations.push('Body should include an "Impact" section.');
+            }
+
+            const needsLabel = 'governance:needs-triage';
+            const hasNeedsLabel = labels.includes(needsLabel);
+
+            if (violations.length > 0) {
+              if (!hasNeedsLabel) {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: [needsLabel]
+                });
+              }
+
+              const marker = '<!-- issues-governance-comment -->';
+              const bodyText = `${marker}
+❌ This issue is missing required governance fields:
+
+${violations.map(v => `- [ ] ${v}`).join('
+')}
+
+Please update the issue. This label will auto-clear when checks pass.`;
+
+              // Update prior bot comment if present; else create one
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                per_page: 100
+              });
+              const existing = comments.find(c => c.user?.type === 'Bot' && (c.body || '').includes(marker));
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body: bodyText
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: bodyText
+                });
+              }
+
+              core.setFailed(`Issue #${issue.number} failed governance checks.`);
+            } else {
+              if (hasNeedsLabel) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  name: needsLabel
+                }).catch(() => {});
+              }
+            }
+
+  scheduled_audit:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure governance label exists
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'governance:needs-triage'
+              });
+            } catch (e) {
+              if (e.status === 404) {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: 'governance:needs-triage',
+                  color: 'B60205',
+                  description: 'Issue fails governance policy checks and needs triage'
+                });
+              } else {
+                throw e;
+              }
+            }
+
+      - name: Audit open issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            });
+
+            const disallowedTitlePrefix = /^(?:\[[^\]]+\]\s*|ticket-\d+\s*:\s*|[a-z]+-\d+\s*:\s*|(?:feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert|content|research|epic)\([^\)]+\)\s*:\s*)/i;
+            let flagged = 0;
+
+            for (const issue of issues) {
+              if (issue.pull_request) continue;
+              const title = (issue.title || '').trim();
+              const body = (issue.body || '').toLowerCase();
+              const labels = (issue.labels || []).map(l => (l.name || '').toLowerCase());
+
+              let bad = false;
+              if (!title || title.length > 72 || disallowedTitlePrefix.test(title)) bad = true;
+              if (!labels.some(l => l.startsWith('type:'))) bad = true;
+              if (!labels.some(l => l.startsWith('priority:'))) bad = true;
+              if (!labels.some(l => l.startsWith('area:'))) bad = true;
+              if (!body.includes('acceptance criteria')) bad = true;
+              if (!(body.includes('problem') || body.includes('objective'))) bad = true;
+
+              const hasNeeds = labels.includes('governance:needs-triage');
+              if (bad && !hasNeeds) {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  labels: ['governance:needs-triage']
+                });
+                flagged += 1;
+              }
+              if (!bad && hasNeeds) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  name: 'governance:needs-triage'
+                }).catch(() => {});
+              }
+            }
+
+            core.summary
+              .addHeading('Issues Governance Audit')
+              .addRaw(`Open issues scanned: ${issues.filter(i => !i.pull_request).length}`)
+              .addBreak()
+              .addRaw(`Newly flagged: ${flagged}`)
+              .write();
