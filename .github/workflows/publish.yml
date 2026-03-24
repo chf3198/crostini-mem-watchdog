@@ -45,6 +45,16 @@ jobs:
         run: npm ci
         working-directory: vscode-extension
 
+      - name: Validate tag ↔ extension version
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./vscode-extension/package.json').version")"
+          if [[ "$TAG_VERSION" != "$PKG_VERSION" ]]; then
+            echo "Tag/version mismatch: tag=$TAG_VERSION package.json=$PKG_VERSION"
+            exit 1
+          fi
+
       - name: Run unit tests
         run: npm test
         working-directory: vscode-extension
@@ -54,6 +64,17 @@ jobs:
 
       - name: Build resources
         run: npm run build
+        working-directory: vscode-extension
+
+      - name: VSIX manifest audit
+        run: |
+          set -euo pipefail
+          npx --yes @vscode/vsce ls > /tmp/vsce-ls.txt
+          cat /tmp/vsce-ls.txt
+          if grep -E '(^|/)\.env($|\.|/)' /tmp/vsce-ls.txt; then
+            echo "Blocked: .env file detected in VSIX manifest"
+            exit 1
+          fi
         working-directory: vscode-extension
 
       - name: Publish to VS Code Marketplace

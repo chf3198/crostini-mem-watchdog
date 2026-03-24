@@ -5,6 +5,7 @@
 # Job topology:
 #   lint-daemon   — bash -n syntax check + shellcheck (static; fast)
 #   test-extension — npm test on Node 18/20/22 matrix (~1 s each)
+#   secret-scan   — gitleaks scan of repository history and workspace files
 #   package       — vsce package + upload .vsix artifact (PR only)
 #
 # NOTE: test-watchdog.sh is intentionally NOT run here.
@@ -76,13 +77,30 @@ jobs:
         run: npm test
         working-directory: vscode-extension
 
-  # ── Job 3: vsce package — PR artifact upload ────────────────────────────
+  # ── Job 3: Secret scan (gitleaks) ─────────────────────────────────────────
+  # Detects committed secrets in git history and repository contents.
+  secret-scan:
+    name: Secret scan — gitleaks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Job 4: vsce package — PR artifact upload ────────────────────────────
   # Builds the .vsix and uploads it as a PR artifact so reviewers can
   # install and test the exact version before merging.
   # Skipped on push to main (publish.yml handles tagged releases).
   package:
     name: Extension — vsce package
-    needs: [lint-daemon, test-extension]
+    needs: [lint-daemon, test-extension, secret-scan]
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     permissions:
@@ -105,6 +123,17 @@ jobs:
         run: npm run build
         working-directory: vscode-extension
 
+      - name: VSIX manifest audit
+        run: |
+          set -euo pipefail
+          npx --yes @vscode/vsce ls > /tmp/vsce-ls.txt
+          cat /tmp/vsce-ls.txt
+          if grep -E '(^|/)\.env($|\.|/)' /tmp/vsce-ls.txt; then
+            echo "Blocked: .env file detected in VSIX manifest"
+            exit 1
+          fi
+        working-directory: vscode-extension
+
       - name: vsce package
         run: npx --yes @vscode/vsce package --no-dependencies
         working-directory: vscode-extension
@@ -116,7 +145,7 @@ jobs:
           path: vscode-extension/*.vsix
           retention-days: 14
 
-  # ── Job 4: Dependency review — PR only ──────────────────────────────────────
+  # ── Job 5: Dependency review — PR only ──────────────────────────────────────
   # Compares the dependency tree before and after the PR and fails if any
   # newly introduced package has a known CVE. Uses the GitHub Advisory Database.
   dependency-review:

@@ -20,6 +20,28 @@
 
 ---
 
+### 2026-03-19 — Global Copilot standards require a 4-layer model (instructions + skills + hooks + CI)
+
+**Context**: Expanding automation strategy from repo-only CI checks to cross-repository adoption for current and future repositories.
+
+**Discovery**: VS Code Copilot customization now supports a clear layered model:
+1. **User-level instructions** (`~/.copilot/instructions`) for always-on cross-repo standards.
+2. **User-level skills** (`~/.copilot/skills`) for reusable expert workflows loaded on demand.
+3. **User-level hooks** (`~/.copilot/hooks`) for deterministic in-session automation and guardrails.
+4. **Repository CI workflows** as final objective pass/fail enforcement.
+
+Skills alone are not continuous enforcement; they are procedural intelligence. Hooks provide deterministic lifecycle execution, while CI remains the authoritative compliance gate.
+
+**Application**: For all repos going forward, use this rollout order:
+- global standards in user-level instructions,
+- reusable operations in user-level skills,
+- deterministic guardrails in user-level hooks,
+- repo-local CI/publish gates for version integrity, artifact audits, and security scanning.
+
+This split avoids duplicated policy text across repositories while keeping repository-specific architecture and gates in `.github/`.
+
+---
+
 ### 2026-03-19 — `.env` in VSIX bundle: credential leak blocked by vsce, silent in git
 
 **Context**: Publishing `CurtisFranks.mem-watchdog-status v0.3.3` to the VS Code Marketplace for the first time since `.env` was added to the extension directory.

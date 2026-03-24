@@ -1,0 +1,80 @@
+name: Release Metadata Integrity
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  release-integrity:
+    name: Validate release metadata integrity
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag-manifest consistency (best-effort)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "Tag version: $TAG_VERSION"
+
+          found=0
+          mismatches=0
+
+          if [[ -f package.json ]]; then
+            found=1
+            V=$(node -p "require('./package.json').version")
+            [[ "$V" == "$TAG_VERSION" ]] || { echo "Mismatch: package.json=$V tag=$TAG_VERSION"; mismatches=1; }
+          fi
+
+          if [[ -f vscode-extension/package.json ]]; then
+            found=1
+            V=$(node -p "require('./vscode-extension/package.json').version")
+            [[ "$V" == "$TAG_VERSION" ]] || { echo "Mismatch: vscode-extension/package.json=$V tag=$TAG_VERSION"; mismatches=1; }
+          fi
+
+          if [[ -f pyproject.toml ]]; then
+            found=1
+            V=$(grep -E '^[[:space:]]*version[[:space:]]*=' pyproject.toml | head -n1 | sed -E "s/.*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/")
+            [[ -n "${V:-}" && "$V" == "$TAG_VERSION" ]] || { echo "Mismatch: pyproject.toml=$V tag=$TAG_VERSION"; mismatches=1; }
+          fi
+
+          if [[ -f Cargo.toml ]]; then
+            found=1
+            V=$(grep -E '^[[:space:]]*version[[:space:]]*=' Cargo.toml | head -n1 | sed -E "s/.*=[[:space:]]*['\"]([^'\"]+)['\"].*/\1/")
+            [[ -n "${V:-}" && "$V" == "$TAG_VERSION" ]] || { echo "Mismatch: Cargo.toml=$V tag=$TAG_VERSION"; mismatches=1; }
+          fi
+
+          if [[ "$found" -eq 0 ]]; then
+            echo "No recognized manifest found; skipping strict manifest check."
+            exit 0
+          fi
+
+          if [[ "$mismatches" -ne 0 ]]; then
+            echo "Release metadata integrity check failed."
+            exit 1
+          fi
+
+      - name: VSIX manifest audit (if extension repo)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f vscode-extension/package.json ]]; then
+            cd vscode-extension
+            npx --yes @vscode/vsce ls > /tmp/vsce-ls.txt
+            cat /tmp/vsce-ls.txt
+            if grep -E '(^|/)\.env($|\.|/)' /tmp/vsce-ls.txt; then
+              echo "Blocked: .env file detected in VSIX manifest"
+              exit 1
+            fi
+          else
+            echo "No vscode-extension/package.json detected; skipping VSIX audit."
+          fi
