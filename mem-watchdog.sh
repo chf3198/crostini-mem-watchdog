@@ -39,7 +39,7 @@ SIGTERM_THRESHOLD=25   # Kill Chrome with SIGTERM when MemAvailable < 25% (~1.6 
 SIGKILL_THRESHOLD=15   # Escalate to SIGKILL when MemAvailable < 15% (~945 MB)
 PSI_THRESHOLD=25       # Kill on sustained memory stall: PSI full avg10 > 25%
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260316.1   # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260324.1   # 2026-03-24: protect tsserver from kill_top_vscode_helper at normal severity   # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 # VS Code RSS thresholds (confirmed: extension host hit 4 GB, watchdog had no Chrome to kill)
@@ -369,6 +369,13 @@ kill_top_vscode_helper() {
   local mode="${2:-normal}"
   local cooldown=$HELPER_KILL_COOLDOWN
   [[ "$mode" == "emerg" ]] && cooldown=$HELPER_KILL_COOLDOWN_EMERG
+  # tsserver protection: TypeScript language server is critical to VS Code function.
+  # At "normal" (WARN) severity, killing tsserver breaks IntelliSense and crashes the
+  # session. 2026-03-24 crash: tsserver (104 MB) was the only candidate with no Chrome
+  # present — killing it at WARN level caused VS Code to lose its language server.
+  # Only allow tsserver as a kill target at "emerg" severity (true emergency).
+  local protect_tsserver=true
+  [[ "$mode" == "emerg" ]] && protect_tsserver=false
   local now
   now=$(date +%s)
   action_budget_allows "normal" || return 1
@@ -408,7 +415,7 @@ kill_top_vscode_helper() {
 
   # Preferred: language servers / extension workers, excluding recently-killed type
   line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-    | awk -v skip="$skip_type" '
+    | awk -v skip="$skip_type" -v prot="$protect_tsserver" '
       function classify(a) {
         if (a ~ /tsserver\.js/)      return "tsserver"
         if (a ~ /eslintServer\.js/)  return "eslint"
@@ -426,7 +433,8 @@ kill_top_vscode_helper() {
         if (args ~ /--type=extensionHost/) next;
         t=classify(args)
         if (skip != "" && t == skip) next;
-        if (args ~ /--node-ipc/ || args ~ /server\.bundle\.js/ || args ~ /tsserver\.js/ || args ~ /eslintServer\.js/ || args ~ /jsonServerMain/) {
+        if (prot == "true" && t == "tsserver") next;
+        if (args ~ /--node-ipc/ || args ~ /server\.bundle\.js/ || (args ~ /tsserver\.js/ && prot != "true") || args ~ /eslintServer\.js/ || args ~ /jsonServerMain/) {
           printf "%s %s %s\n", pid, rss, args;
         }
       }
@@ -435,7 +443,7 @@ kill_top_vscode_helper() {
   # Fallback: any non-main, non-zygote, non-extensionHost child
   if [[ -z "$line" ]]; then
     line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-      | awk -v skip="$skip_type" '
+      | awk -v skip="$skip_type" -v prot="$protect_tsserver" '
         function classify(a) {
           if (a ~ /tsserver\.js/)      return "tsserver"
           if (a ~ /eslintServer\.js/)  return "eslint"
@@ -453,6 +461,7 @@ kill_top_vscode_helper() {
           if (args ~ /--type=extensionHost/) next;
           t=classify(args)
           if (skip != "" && t == skip) next;
+          if (prot == "true" && t == "tsserver") next;
           printf "%s %s %s\n", pid, rss, args;
         }
       ' | sort -k2 -rn | head -1)
@@ -461,13 +470,14 @@ kill_top_vscode_helper() {
   # Last-resort fallback: include recently-killed type if nothing else found
   if [[ -z "$line" ]]; then
     line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-      | awk '{
+      | awk -v prot="$protect_tsserver" '{
           pid=$1; rss=$2;
           $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
           if (args ~ /^\/usr\/share\/code\/code$/) next;
           if (args ~ /--type=zygote/) next;
           if (args ~ /--type=gpu-process/) next;
           if (args ~ /--type=extensionHost/) next;
+          if (prot == "true" && args ~ /tsserver\.js/) next;
           printf "%s %s %s\n", pid, rss, args;
         }' | sort -k2 -rn | head -1)
     [[ -n "$line" ]] && log "  Anti-respawn: no alternative found — re-using last-killed type"

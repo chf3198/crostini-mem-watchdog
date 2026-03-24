@@ -42,6 +42,45 @@ This split avoids duplicated policy text across repositories while keeping repos
 
 ---
 
+### 2026-03-24 — tsserver must be protected from kill_top_vscode_helper at WARN severity
+
+**Context**: VS Code crashed at 12:12:22 today (2026-03-24). Watchdog stopped and was left disabled.
+
+**Crash sequence:**
+1. VS Code aggregate RSS reached 3,587,656 kB (~3.5 GB) — triggered `eff_warn` branch.
+2. `kill_browsers(TERM)` ran — no Chrome/Playwright was running (all cleared by 821 prior SIGTERM
+   and 108 prior SIGKILL events across the session).
+3. `chrome_running` was empty → fell through to `kill_top_vscode_helper("normal")`.
+4. Preferred candidate list included `tsserver.js` — tsserver PID 9775 (RSS=104,632 kB) was selected.
+5. tsserver was SIGTERMed → VS Code lost TypeScript language server → crash.
+
+**Root problem — two design gaps:**
+1. `tsserver.js` appeared in the *preferred* candidate list for `kill_top_vscode_helper` at "normal"
+   (WARN) severity. tsserver is a critical VS Code dependency — killing it breaks IntelliSense,
+   Copilot, and triggers a session crash. It should never be killed at WARN level.
+2. The high aggregate VS Code RSS (3.5 GB) was spread across multiple processes. tsserver itself
+   was only 104 MB — killing it would have freed ~100 MB while crashing the editor. The real
+   heavyweight was the extension host or renderer, which were excluded from the candidate list.
+
+**Fix applied (v20260324.1):**
+- Added `protect_tsserver=true` flag to `kill_top_vscode_helper`.
+- When mode=`normal`, tsserver is excluded from all three candidate-selection awk blocks
+  (preferred, fallback-1, last-resort).
+- When mode=`emerg`, tsserver remains available as a last-resort kill target.
+- Callers at WARN level pass mode=`normal`; only acceleration emergencies pass mode=`emerg`.
+
+**Lessons:**
+- Language server processes (tsserver, eslintServer, jsonServerMain) are not equivalent kill targets.
+  tsserver is uniquely critical — its death kills the editing session, not just a disposable worker.
+- Aggregate VS Code RSS is a leading indicator but not a target selector. A 3.5 GB total does not
+  mean any individual helper is responsible for that memory — check per-process RSS before killing.
+- The anti-respawn window (ANTI_RESPAWN_WINDOW=30s) prevented re-killing tsserver immediately but
+  did not prevent the initial kill. Protection must be mode-based, not just time-based.
+- `git branch -a` hangs on this machine (constrained Crostini network; TCP to GitHub times out
+  trying to update remote-tracking refs). Always use `git branch -l` for local-only branch listing.
+
+---
+
 ### 2026-03-19 — `.env` in VSIX bundle: credential leak blocked by vsce, silent in git
 
 **Context**: Publishing `CurtisFranks.mem-watchdog-status v0.3.3` to the VS Code Marketplace for the first time since `.env` was added to the extension directory.
