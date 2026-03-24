@@ -20,6 +20,14 @@ const { readMeminfo, sh, checkServiceStatus } = require('./utils');
 // Single source of truth — referenced by setInterval and the tooltip text.
 const POLL_INTERVAL_MS = 2000;
 
+// ── Activation/runtime singletons ───────────────────────────────────────────
+// Defensive guard: activate() should run once per extension host process.
+// If VS Code triggers activation again in the same process, avoid creating a
+// second status-bar item and timer.
+let _activated = false;
+let _statusItem = null;
+let _statusTimer = null;
+
 // ── Full status bar state cache ──────────────────────────────────────────────
 // Key encodes all visible output (svcStatus + rounded pct% + availMB).
 // When stable, skips ALL four StatusBarItem property assignments and their
@@ -40,6 +48,17 @@ let _updating = false;
 //   cacheHits:   times stateKey matched → all 4 StatusBarItem IPC calls skipped
 //   cacheMisses: times stateKey differed → full IPC round-trip fired
 const _stats = { dropped: 0, cacheHits: 0, cacheMisses: 0 };
+
+function disposeRuntimeUi() {
+    if (_statusTimer) {
+        clearInterval(_statusTimer);
+        _statusTimer = null;
+    }
+    if (_statusItem) {
+        try { _statusItem.dispose(); } catch {}
+        _statusItem = null;
+    }
+}
 
 async function update(item) {
     if (_updating) { _stats.dropped++; return; }
@@ -122,6 +141,11 @@ async function update(item) {
 // ── Extension entry points ────────────────────────────────────────────────────
 
 async function activate(context) {
+    if (_activated) {
+        return;
+    }
+    _activated = true;
+
     // ── 1. Install / upgrade the daemon ──────────────────────────────────────
     try {
         const outcome = await installer.installOrUpgrade(context);
@@ -183,6 +207,8 @@ async function activate(context) {
     );
 
     // ── 5. Status bar ─────────────────────────────────────────────────────────
+    disposeRuntimeUi();
+
     const item = vscode.window.createStatusBarItem(
         'mem-watchdog-status',
         vscode.StatusBarAlignment.Left,
@@ -191,16 +217,20 @@ async function activate(context) {
     item.name    = 'Mem Watchdog';
     item.command = 'memWatchdog.showDashboard'; // clicking opens dashboard
     item.show();
+    _statusItem = item;
 
     update(item);
     const timer = setInterval(() => update(item), POLL_INTERVAL_MS);
+    _statusTimer = timer;
 
     context.subscriptions.push(item);
     context.subscriptions.push({ dispose: () => clearInterval(timer) });
+    context.subscriptions.push({ dispose: () => { disposeRuntimeUi(); _activated = false; } });
 }
 
 function deactivate() {
-    // Subscriptions are disposed automatically via context.subscriptions.
+    disposeRuntimeUi();
+    _activated = false;
 }
 
 module.exports = { activate, deactivate };
