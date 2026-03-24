@@ -39,7 +39,7 @@ SIGTERM_THRESHOLD=25   # Kill Chrome with SIGTERM when MemAvailable < 25% (~1.6 
 SIGKILL_THRESHOLD=15   # Escalate to SIGKILL when MemAvailable < 15% (~945 MB)
 PSI_THRESHOLD=25       # Kill on sustained memory stall: PSI full avg10 > 25%
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260324.1   # 2026-03-24: protect tsserver from kill_top_vscode_helper at normal severity   # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260324.2   # 2026-03-24 v2: protect htmlServerMain, serverWorkerMain, cssServerMain at WARN   # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 # VS Code RSS thresholds (confirmed: extension host hit 4 GB, watchdog had no Chrome to kill)
@@ -369,13 +369,16 @@ kill_top_vscode_helper() {
   local mode="${2:-normal}"
   local cooldown=$HELPER_KILL_COOLDOWN
   [[ "$mode" == "emerg" ]] && cooldown=$HELPER_KILL_COOLDOWN_EMERG
-  # tsserver protection: TypeScript language server is critical to VS Code function.
-  # At "normal" (WARN) severity, killing tsserver breaks IntelliSense and crashes the
-  # session. 2026-03-24 crash: tsserver (104 MB) was the only candidate with no Chrome
-  # present — killing it at WARN level caused VS Code to lose its language server.
-  # Only allow tsserver as a kill target at "emerg" severity (true emergency).
+  # Language server protection: critical servers must not be killed at WARN severity.
+  # Crashes documented:
+  #   2026-03-24 crash #1: tsserver (104 MB) only candidate at WARN -> killed -> session crash
+  #   2026-03-24 crash #2: old watchdog (not deployed) killed tsserver; markdown/html
+  #                        servers crashed 5x each in OOM cascade.
+  # Only allow these as kill targets at "emerg" severity (true emergency).
   local protect_tsserver=true
+  local protect_langservers=true   # htmlServerMain, serverWorkerMain (markdown), cssServerMain
   [[ "$mode" == "emerg" ]] && protect_tsserver=false
+  [[ "$mode" == "emerg" ]] && protect_langservers=false
   local now
   now=$(date +%s)
   action_budget_allows "normal" || return 1
@@ -396,13 +399,16 @@ kill_top_vscode_helper() {
   # 2026-03-13 crash (2081 cooldown skips / 488 successes; 4:1 block ratio).
   _classify_helper_type() {
     local a="$1"
-    if   [[ "$a" == *"tsserver.js"* ]];      then echo "tsserver"
-    elif [[ "$a" == *"eslintServer.js"* ]];  then echo "eslint"
-    elif [[ "$a" == *"jsonServerMain"* ]];   then echo "json-server"
-    elif [[ "$a" == *"server.bundle.js"* ]]; then echo "server-bundle"
-    elif [[ "$a" == *"--node-ipc"* ]];       then echo "node-ipc"
-    elif [[ "$a" == *"--type=renderer"* ]];  then echo "renderer"
-    else                                          echo "other"
+    if   [[ "$a" == *"tsserver.js"* ]];          then echo "tsserver"
+    elif [[ "$a" == *"htmlServerMain"* ]];        then echo "html-server"
+    elif [[ "$a" == *"serverWorkerMain"* ]];      then echo "markdown-server"
+    elif [[ "$a" == *"cssServerMain"* ]];         then echo "css-server"
+    elif [[ "$a" == *"eslintServer.js"* ]];       then echo "eslint"
+    elif [[ "$a" == *"jsonServerMain"* ]];        then echo "json-server"
+    elif [[ "$a" == *"server.bundle.js"* ]];      then echo "server-bundle"
+    elif [[ "$a" == *"--node-ipc"* ]];            then echo "node-ipc"
+    elif [[ "$a" == *"--type=renderer"* ]];       then echo "renderer"
+    else                                               echo "other"
     fi
   }
 
@@ -415,13 +421,16 @@ kill_top_vscode_helper() {
 
   # Preferred: language servers / extension workers, excluding recently-killed type
   line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-    | awk -v skip="$skip_type" -v prot="$protect_tsserver" '
+    | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" '
       function classify(a) {
-        if (a ~ /tsserver\.js/)      return "tsserver"
-        if (a ~ /eslintServer\.js/)  return "eslint"
-        if (a ~ /jsonServerMain/)     return "json-server"
+        if (a ~ /tsserver\.js/)        return "tsserver"
+        if (a ~ /htmlServerMain/)       return "html-server"
+        if (a ~ /serverWorkerMain/)     return "markdown-server"
+        if (a ~ /cssServerMain/)        return "css-server"
+        if (a ~ /eslintServer\.js/)    return "eslint"
+        if (a ~ /jsonServerMain/)       return "json-server"
         if (a ~ /server\.bundle\.js/) return "server-bundle"
-        if (a ~ /--node-ipc/)         return "node-ipc"
+        if (a ~ /--node-ipc/)           return "node-ipc"
         return "other"
       }
       {
@@ -434,6 +443,7 @@ kill_top_vscode_helper() {
         t=classify(args)
         if (skip != "" && t == skip) next;
         if (prot == "true" && t == "tsserver") next;
+        if (ls == "true" && (t == "html-server" || t == "markdown-server" || t == "css-server")) next;
         if (args ~ /--node-ipc/ || args ~ /server\.bundle\.js/ || (args ~ /tsserver\.js/ && prot != "true") || args ~ /eslintServer\.js/ || args ~ /jsonServerMain/) {
           printf "%s %s %s\n", pid, rss, args;
         }
@@ -443,7 +453,7 @@ kill_top_vscode_helper() {
   # Fallback: any non-main, non-zygote, non-extensionHost child
   if [[ -z "$line" ]]; then
     line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-      | awk -v skip="$skip_type" -v prot="$protect_tsserver" '
+      | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" '
         function classify(a) {
           if (a ~ /tsserver\.js/)      return "tsserver"
           if (a ~ /eslintServer\.js/)  return "eslint"
@@ -462,6 +472,7 @@ kill_top_vscode_helper() {
           t=classify(args)
           if (skip != "" && t == skip) next;
           if (prot == "true" && t == "tsserver") next;
+          if (ls == "true" && (t == "html-server" || t == "markdown-server" || t == "css-server")) next;
           printf "%s %s %s\n", pid, rss, args;
         }
       ' | sort -k2 -rn | head -1)
@@ -470,7 +481,7 @@ kill_top_vscode_helper() {
   # Last-resort fallback: include recently-killed type if nothing else found
   if [[ -z "$line" ]]; then
     line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
-      | awk -v prot="$protect_tsserver" '{
+      | awk -v prot="$protect_tsserver" -v ls="$protect_langservers" '{
           pid=$1; rss=$2;
           $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
           if (args ~ /^\/usr\/share\/code\/code$/) next;
@@ -478,6 +489,7 @@ kill_top_vscode_helper() {
           if (args ~ /--type=gpu-process/) next;
           if (args ~ /--type=extensionHost/) next;
           if (prot == "true" && args ~ /tsserver\.js/) next;
+          if (ls == "true" && (args ~ /htmlServerMain/ || args ~ /serverWorkerMain/ || args ~ /cssServerMain/)) next;
           printf "%s %s %s\n", pid, rss, args;
         }' | sort -k2 -rn | head -1)
     [[ -n "$line" ]] && log "  Anti-respawn: no alternative found — re-using last-killed type"
