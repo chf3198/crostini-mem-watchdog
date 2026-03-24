@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.4] — 2026-03-24
+
+### Fixed
+- **Duplicate status-bar item on extension reactivation** — extension activation is now idempotent per extension-host process, preventing creation of a second Mem Watchdog UI entry in the same VS Code window.
+- **Runtime UI lifecycle cleanup** — status-bar item and poll timer are now tracked as module-level singletons and deterministically disposed on deactivation.
+
+### Tests
+- JS unit tests updated: **56 passing**.
+- Added regression test: `extension.activate.test.js` verifies repeated `activate()` calls only create one status-bar item.
+
 ## [0.3.3] — 2026-03-19
 
 ### Fixed
