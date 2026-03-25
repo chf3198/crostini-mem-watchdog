@@ -1,10 +1,18 @@
 ---
 name: Bug report
 about: Something isn't working as expected in the daemon or extension
-title: "[Bug] "
+title: ""
 labels: bug,type: bug-fix
 assignees: chf3198
 ---
+
+## Problem
+
+<!-- Describe what failed in plain language. -->
+
+## Impact
+
+<!-- Describe the user-facing or reliability impact. -->
 
 ## Environment
 
@@ -28,6 +36,12 @@ assignees: chf3198
 ## What you expected
 
 <!-- Describe what you expected to happen. -->
+
+## Acceptance criteria
+
+- [ ] Repro and environment details are complete
+- [ ] Expected behavior is stated clearly
+- [ ] Supporting logs or memory evidence are attached below
 
 ## Journal output
 

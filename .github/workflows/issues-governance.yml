@@ -48,6 +48,7 @@ jobs:
             const title = (issue.title || '').trim();
             const body = (issue.body || '').toLowerCase();
             const labels = (issue.labels || []).map(l => (l.name || '').toLowerCase());
+            const approvedDomainLabels = ['policy', 'psi', 'cgroup', 'oom', 'crostini', 'testing', 'performance', 'research'];
 
             const violations = [];
 
@@ -65,10 +66,10 @@ jobs:
             // Required labels
             const hasType = labels.some(l => l.startsWith('type:'));
             const hasPriority = labels.some(l => l.startsWith('priority:'));
-            const hasArea = labels.some(l => l.startsWith('area:'));
+            const hasDomain = labels.some(l => approvedDomainLabels.includes(l));
             if (!hasType) violations.push('Missing a type label (`type:*`).');
             if (!hasPriority) violations.push('Missing a priority label (`priority:*`).');
-            if (!hasArea) violations.push('Missing an area label (`area:*`).');
+            if (!hasDomain) violations.push('Missing an approved domain label (`policy`, `psi`, `cgroup`, `oom`, `crostini`, `testing`, `performance`, or `research`).');
 
             // Body policy
             if (!body.includes('acceptance criteria')) {
@@ -179,6 +180,7 @@ Please update the issue. This label will auto-clear when checks pass.`;
             });
 
             const disallowedTitlePrefix = /^(?:\[[^\]]+\]\s*|ticket-\d+\s*:\s*|[a-z]+-\d+\s*:\s*|(?:feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert|content|research|epic)\([^\)]+\)\s*:\s*)/i;
+            const approvedDomainLabels = ['policy', 'psi', 'cgroup', 'oom', 'crostini', 'testing', 'performance', 'research'];
             let flagged = 0;
 
             for (const issue of issues) {
@@ -191,9 +193,10 @@ Please update the issue. This label will auto-clear when checks pass.`;
               if (!title || title.length > 72 || disallowedTitlePrefix.test(title)) bad = true;
               if (!labels.some(l => l.startsWith('type:'))) bad = true;
               if (!labels.some(l => l.startsWith('priority:'))) bad = true;
-              if (!labels.some(l => l.startsWith('area:'))) bad = true;
+              if (!labels.some(l => approvedDomainLabels.includes(l))) bad = true;
               if (!body.includes('acceptance criteria')) bad = true;
               if (!(body.includes('problem') || body.includes('objective'))) bad = true;
+              if (!body.includes('impact')) bad = true;
 
               const hasNeeds = labels.includes('governance:needs-triage');
               if (bad && !hasNeeds) {

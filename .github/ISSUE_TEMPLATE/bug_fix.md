@@ -1,14 +1,18 @@
 ---
 name: Bug-fix
 about: Defect, regression, or reliability failure
-title: "[Bug-fix] "
+title: ""
 labels: type: bug-fix,bug
 assignees: chf3198
 ---
 
-## Symptom
+## Problem
 
 <!-- What failed? Include observed behavior and impact. -->
+
+## Impact
+
+<!-- What reliability, release, or user-facing harm does this bug cause? -->
 
 ## Reproduction
 
