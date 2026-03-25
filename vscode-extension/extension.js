@@ -6,6 +6,7 @@
 //   3. Registers 4 commands (commands.js)
 //   4. Watches for settings changes → rewrites config + restarts daemon
 //   5. Runs the status bar status poller every 2 s (original logic preserved)
+//   6. Deferred self-update check via GitHub Releases API (updateChecker.js)
 // ─────────────────────────────────────────────────────────────────────────────
 'use strict';
 
@@ -14,6 +15,7 @@ const vscode       = require('vscode');
 const installer    = require('./installer');
 const configWriter = require('./configWriter');
 const commands     = require('./commands');
+const updateChecker = require('./updateChecker');
 const { readMeminfo, sh, checkServiceStatus } = require('./utils');
 
 // ── Status bar poll interval ──────────────────────────────────────────────────
@@ -226,6 +228,14 @@ async function activate(context) {
     context.subscriptions.push(item);
     context.subscriptions.push({ dispose: () => clearInterval(timer) });
     context.subscriptions.push({ dispose: () => { disposeRuntimeUi(); _activated = false; } });
+
+    // ── 6. Deferred self-update check ─────────────────────────────────────────
+    // Check GitHub Releases for a newer extension version after a 10 s delay.
+    // Non-blocking, throttled to once per 24 h, silently ignores network errors.
+    // This ensures users with extensions.autoUpdate:false still learn about
+    // critical daemon fixes in newer versions.
+    const updateTimer = setTimeout(() => updateChecker.checkForUpdate(context), 10_000);
+    context.subscriptions.push({ dispose: () => clearTimeout(updateTimer) });
 }
 
 function deactivate() {

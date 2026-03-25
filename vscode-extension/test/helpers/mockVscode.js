@@ -28,12 +28,14 @@ const mockWindow = {
     _errorMessages: [],
     _warnMessages:  [],
     _infoChoices:   [],   // the button label the user "clicked" (set per-test)
+    _warnChoices:   [],   // same pattern for showWarningMessage button selection
 
     reset() {
         this._infoMessages  = [];
         this._errorMessages = [];
         this._warnMessages  = [];
         this._infoChoices   = [];
+        this._warnChoices   = [];
     },
 
     showInformationMessage(msg, ...rest) {
@@ -45,9 +47,9 @@ const mockWindow = {
         this._errorMessages.push(msg);
         return Promise.resolve(undefined);
     },
-    showWarningMessage(msg) {
+    showWarningMessage(msg, ...buttons) {
         this._warnMessages.push(msg);
-        return Promise.resolve(undefined);
+        return Promise.resolve(this._warnChoices.shift() || undefined);
     },
     createOutputChannel() {
         return { appendLine() {}, clear() {}, show() {}, dispose() {} };
@@ -92,7 +94,19 @@ const mockVscode = {
     ThemeColor:     MockThemeColor,
     MarkdownString: MockMarkdownString,
     commands: {
+        _executedCommands: [],
         registerCommand(id, handler) { return { dispose() {} }; },
+        executeCommand(...args) {
+            this._executedCommands.push(args);
+            return Promise.resolve();
+        },
+        reset() { this._executedCommands = []; },
+    },
+    Uri: {
+        parse(str) { return { toString: () => str }; },
+    },
+    env: {
+        openExternal() { return Promise.resolve(true); },
     },
     ExtensionContext: {},
 };

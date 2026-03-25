@@ -14,10 +14,11 @@ mem-watchdog.service     ← systemd user unit (systemctl --user, NOT system)
 install.sh               ← shell-only installer (no VS Code required)
 test-watchdog.sh         ← 15-test suite; exits 0/1; logs to scratch/
 vscode-extension/
-  extension.js           ← activate(): install → config → commands → status bar (2s poll)
-  installer.js           ← SHA-256 hash-based daemon auto-install/upgrade
+  extension.js           ← activate(): install → config → commands → status bar (2s poll) → update check
+  installer.js           ← SHA-256 hash-based daemon auto-install/upgrade + MIN_SAFE guard
   configWriter.js        ← VS Code Settings → ~/.config/mem-watchdog/config.sh
   commands.js            ← 4 commands: dashboard, preflight, killChrome, restartService
+  updateChecker.js       ← GitHub Releases API self-update check (24h throttled, non-blocking)
   utils.js               ← readMeminfo(), sh(), checkServiceStatus() — shared helpers
   lifecycle.js           ← vscode:uninstall hook; stops + disables the service
   scripts/prepare.js     ← vscode:prepublish: copies daemon files → resources/
@@ -72,7 +73,7 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
 bash test-watchdog.sh                                                          # 15 bash tests, ~3s
 bash -n mem-watchdog.sh                                                        # syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
-cd vscode-extension && npm test                                                # 55 JS unit tests, ~1s
+cd vscode-extension && npm test                                                # 75 JS unit tests, ~1s
 ```
 
 **Gate failure rules**: Fix root cause — never `|| true`, skip flags, or `exit 0` overrides. A previously passing test that now fails means the change broke it; fix the change, not the test.

@@ -198,4 +198,33 @@ describe('installOrUpgrade — hash comparison paths', () => {
         const didRestart = _installerShCallLog.some(c => c.includes('restart mem-watchdog'));
         assert.equal(didRestart, false, 'should not restart service when guarding against downgrade');
     });
+
+    test('installed daemon below MIN_SAFE_DAEMON_VERSION: shows warning', async (t) => {
+        // Scenario: bundled daemon is old (below MIN_SAFE) AND installed is also
+        // old — the hashes match (same file), so installer returns 'current' but
+        // _warnIfOutdated fires because both are below MIN_SAFE.
+        const OLD_DAEMON = '#!/usr/bin/env bash\nWATCHDOG_VERSION=20260316.1\n';
+        const oldHash = crypto.createHash('sha256').update(OLD_DAEMON).digest('hex');
+
+        t.mock.method(fs, 'existsSync', () => true);
+        t.mock.method(fs, 'readFileSync', (p) => {
+            // Both bundled and installed return the same old daemon
+            if (typeof p === 'string' && p.includes('mem-watchdog.sh')) {
+                return OLD_DAEMON;
+            }
+            throw new Error(`unexpected readFileSync: ${p}`);
+        });
+
+        const ctx = makeContext(oldHash);
+        const result = await installOrUpgrade(ctx);
+
+        assert.equal(result, 'current');
+        // _warnIfOutdated should have fired
+        assert.equal(mockWindow._warnMessages.length, 1,
+            'should warn when daemon is below MIN_SAFE_DAEMON_VERSION');
+        assert.ok(mockWindow._warnMessages[0].includes('critical bugs'),
+            'warning should mention critical bugs');
+        assert.ok(mockWindow._warnMessages[0].includes('20260316.1'),
+            'warning should mention the outdated version');
+    });
 });

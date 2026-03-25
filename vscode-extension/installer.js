@@ -27,6 +27,12 @@ const INSTALL_SVC_DIR    = path.join(process.env.HOME || '/root', '.config', 'sy
 const INSTALLED_SCRIPT   = path.join(INSTALL_BIN_DIR, 'mem-watchdog.sh');
 const INSTALLED_SERVICE  = path.join(INSTALL_SVC_DIR, 'mem-watchdog.service');
 
+// Minimum daemon version that is considered safe. Daemons below this version
+// have known critical bugs (language-server kills, Extension Host kills via
+// blind process-type guards — issues #45, #46, #47). When the installed daemon
+// is below this floor, the user is warned to update the extension.
+const MIN_SAFE_DAEMON_VERSION = 20260324.3;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function sha256(filePath) {
@@ -46,6 +52,29 @@ function watchdogVersion(filePath) {
         return m ? Number(m[1]) : 0;
     } catch (_) {
         return 0;
+    }
+}
+
+/**
+ * If the installed daemon is below MIN_SAFE_DAEMON_VERSION, show a warning
+ * notification with a button to open the extension Marketplace page.
+ * Fire-and-forget — the .then() runs after installOrUpgrade returns.
+ */
+function _warnIfOutdated(version) {
+    if (version > 0 && version < MIN_SAFE_DAEMON_VERSION) {
+        vscode.window.showWarningMessage(
+            `Mem Watchdog: installed daemon (v${version}) has known critical bugs. ` +
+            `Minimum safe version: ${MIN_SAFE_DAEMON_VERSION}. ` +
+            'Update the Mem Watchdog extension to receive fixes.',
+            'Check for Updates'
+        ).then(choice => {
+            if (choice === 'Check for Updates') {
+                vscode.commands.executeCommand(
+                    'workbench.extensions.search',
+                    'CurtisFranks.mem-watchdog-status'
+                );
+            }
+        });
     }
 }
 
@@ -83,6 +112,7 @@ async function installOrUpgrade(context) {
     // This can happen when the user has manually patched ~/.local/bin or when
     // the extension bundle is behind the repo hotfix level.
     if (!isFirstInstall && installedVersion > bundledVersion) {
+        _warnIfOutdated(installedVersion);
         await ensureRunning();
         return 'current';
     }
@@ -94,6 +124,7 @@ async function installOrUpgrade(context) {
         bundledHash === installedHash &&
         bundledHash === installedOnDisk) {
         // Daemon is current — ensure service is running but don't reinstall.
+        _warnIfOutdated(installedVersion);
         await ensureRunning();
         return 'current';
     }

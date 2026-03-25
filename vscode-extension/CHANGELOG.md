@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.6] — 2026-03-25
+
+### Added
+- **Self-update checker** (`updateChecker.js`) — on activation (10 s deferred), checks the GitHub Releases API for a newer extension version. Shows a non-modal notification with "Update Now" (opens Marketplace) and "Dismiss" (per-version, stored in globalState) buttons. Throttled to once per 24 hours. Silently ignores all network errors. This ensures users with `extensions.autoUpdate: false` are always notified about critical daemon fixes in newer versions.
+- **Minimum safe daemon version** (`MIN_SAFE_DAEMON_VERSION = 20260324.3` in `installer.js`) — if the installed daemon is below this floor after the install/upgrade check, a warning notification directs the user to update the extension. Defense-in-depth against scenarios where the hash-match or anti-downgrade guard leaves a critically outdated daemon in place.
+
+### Tests
+- JS unit tests: 55 → **75 passing**.
+- Added `updateChecker.test.js` — 20 tests covering version comparison, 24 h throttling, button actions (Update Now / Dismiss), dismissal persistence, and error handling (network failure, 404, invalid JSON, timeout, missing tag_name).
+- Added `installer.test.js` — MIN_SAFE_DAEMON_VERSION regression test: installed daemon below floor triggers warning notification.
+- Updated `mockVscode.js` — added `_warnChoices` for warning-message button simulation, `commands.executeCommand` spy, `Uri.parse` stub.
+
 ## [0.3.5] — 2026-03-25
 
 ### Fixed
