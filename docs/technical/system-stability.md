@@ -166,6 +166,9 @@ Setting this to **512 MB** (the original value) was counterproductive:
 | 2026-03-04 | 0 | earlyoom disabled, mem-watchdog active, Playwright headless, 16 GB zram enabled |
 | 2026-03-05 13:02:25 | 1 | OOM — extension host spiked to 4.0 GB in <4s. Watchdog interval was 4s — fired 7s after crash. No Chrome to kill. |
 | 2026-03-06 | 0 | Watchdog: interval 2s, startup mode 0.5s, ext host SIGTERM as last resort |
+| 2026-03-24 | 1 | Language-server and Extension Host kills — three `kill_top_vscode_helper` bugs (issues #45–#47, daemon v20260324.3) |
+| 2026-03-25 15:07:53 | 1 | EMERGENCY at 3.5 GB — action budget exhausted by no-op `kill_browsers()` calls; watchdog blocked for 27s during 2.8→3.5 GB climb (issue #49, daemon v20260325.1) |
+| 2026-03-25 post-fix | 0 | Daemon v20260325.1: no-ops don't consume budget, `chrome_running` checked before `kill_browsers`, `STARTUP_BURST_RSS_KB` raised to 2.2 GB |
 
 ### The 2026-03-05 crash — what was fixed
 
@@ -185,6 +188,7 @@ Three root causes:
 | mem-watchdog startup mode (0.5s for 90s) | Pathway #1 — catches 0→4 GB spike on extension host load | ✅ Active |
 | Playwright headless mode | Pathways #1, #2 — saves ~800 MB per automation run | ✅ Default |
 | ChromeOS zram 16 GB | Pathway #2 only — host-level balloon pressure | ✅ Active |
+| Action-budget no-op fix (v20260325.1) | Pathway #1 — no-op `kill_browsers()` no longer exhausts budget; fallback kills always reachable | ✅ Fixed |
 | Container swap | Pathway #1 — direct relief for container kernel OOM | ❌ Blocked (CapEff=0, see §4) |
 
 **Residual risk:** The container kernel can still OOM if VS Code + idle MCP browser + a Playwright session all run simultaneously without the MCP browser being killed first. The watchdog mitigates this but cannot guarantee prevention if the spike is faster than the 2s polling interval.

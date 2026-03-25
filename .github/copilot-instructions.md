@@ -85,7 +85,7 @@ cd vscode-extension && npm test                                                #
 ```bash
 cd vscode-extension
 npm run build              # populate resources/ for dev (gitignored; required before vsce package)
-npm test                   # 55 unit tests via node:test (~1s)
+npm test                   # 75 unit tests via node:test (~1s)
 npm run test:coverage      # + c8 V8 lcov output
 npm run test:stress        # pileup guard + event-loop lag + heap scenarios
 npx vsce package           # → mem-watchdog-status-x.y.z.vsix

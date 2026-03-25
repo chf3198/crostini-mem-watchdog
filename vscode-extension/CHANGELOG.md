@@ -6,6 +6,12 @@
 - **Self-update checker** (`updateChecker.js`) — on activation (10 s deferred), checks the GitHub Releases API for a newer extension version. Shows a non-modal notification with "Update Now" (opens Marketplace) and "Dismiss" (per-version, stored in globalState) buttons. Throttled to once per 24 hours. Silently ignores all network errors. This ensures users with `extensions.autoUpdate: false` are always notified about critical daemon fixes in newer versions.
 - **Minimum safe daemon version** (`MIN_SAFE_DAEMON_VERSION = 20260324.3` in `installer.js`) — if the installed daemon is below this floor after the install/upgrade check, a warning notification directs the user to update the extension. Defense-in-depth against scenarios where the hash-match or anti-downgrade guard leaves a critically outdated daemon in place.
 
+### Daemon (v20260325.1)
+- **Action budget no longer exhausted by no-op browser kills** ([#49](https://github.com/chf3198/crostini-mem-watchdog/issues/49)) — `record_action()` in `kill_browsers()` moved after the kill verification check. Previously, every no-op call (no Chrome running) consumed the action budget and set `_action_taken=true`, exhausting the 30s budget in 3 seconds during 0.5s startup polling and blocking all fallback interventions for 27 seconds.
+- **WARN/SIGTERM/SIGKILL paths check `chrome_running` before calling `kill_browsers`** ([#49](https://github.com/chf3198/crostini-mem-watchdog/issues/49)) — when no Chrome is running, the code now skips directly to the correct fallback (`kill_top_vscode_helper` or `kill_vscode_main`) instead of wasting the action budget on a guaranteed no-op.
+- **`STARTUP_BURST_RSS_KB` raised from 1.6 GB to 2.2 GB** ([#49](https://github.com/chf3198/crostini-mem-watchdog/issues/49)) — 1.6 GB is normal VS Code steady state on this hardware; the previous threshold caused false-positive BURST kills after crash recovery.
+- `MIN_SAFE_DAEMON_VERSION` updated to `20260325.1`.
+
 ### Tests
 - JS unit tests: 55 → **75 passing**.
 - Added `updateChecker.test.js` — 20 tests covering version comparison, 24 h throttling, button actions (Update Now / Dismiss), dismissal persistence, and error handling (network failure, 404, invalid JSON, timeout, missing tag_name).
