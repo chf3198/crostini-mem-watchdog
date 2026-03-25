@@ -39,7 +39,7 @@ SIGTERM_THRESHOLD=25   # Kill Chrome with SIGTERM when MemAvailable < 25% (~1.6 
 SIGKILL_THRESHOLD=15   # Escalate to SIGKILL when MemAvailable < 15% (~945 MB)
 PSI_THRESHOLD=25       # Kill on sustained memory stall: PSI full avg10 > 25%
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260325.1   # 2026-03-25 v1: fix action budget exhaustion by no-op browser kills, skip kill_browsers when no Chrome, raise STARTUP_BURST_RSS_KB   # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260325.2   # 2026-03-25 v2: add kill cooldown, hysteresis counters, recovery confirmation (#5)   # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 # VS Code RSS thresholds (confirmed: extension host hit 4 GB, watchdog had no Chrome to kill)
@@ -102,6 +102,18 @@ RESTART_LOOP_WINDOW_S=600       # 10-minute sliding window for restart counting
 RESTART_LOOP_THRESHOLD=5        # VS Code startup events in window → declare restart loop
 RESTART_LOOP_COOLDOWN_S=120     # suppress further Chrome kills for this many seconds
 
+# ── Kill cooldown and hysteresis (Issue #5) ───────────────────────────────
+# After ANY successful kill action, suppress non-critical re-evaluation for
+# KILL_COOLDOWN seconds. This prevents kill-loops where freed memory hasn't
+# propagated to MemAvailable within the next poll. EMERGENCY (≥eff_emerg) and
+# SIGKILL (≤SIGKILL_THRESHOLD) paths bypass this — they are critical.
+KILL_COOLDOWN=15                # seconds to skip non-critical kill evaluation after any action
+HYSTERESIS_POLLS=3              # consecutive polls above threshold before non-critical action
+                                # at 2s interval = 6s sustained pressure before acting
+RECOVERY_POLLS=5                # consecutive clean polls to confirm recovery (10s at 2s)
+RECOVERY_PSI_X100=500           # PSI full avg10 < 5.00% to count as clean (scaled ×100)
+RECOVERY_MEM_PCT=35             # MemAvailable > 35% to count as clean
+
 # ── Chrome process count cap — accumulation guard (Issue #26) ─────────────
 # Discovered 2026-03-10: 12+ Chrome scopes accumulated over 3.5 hours.
 # SIGTERM-on-startup only clears Chrome at restart moments, not between them.
@@ -136,7 +148,13 @@ _last_status_log=0            # epoch seconds of last periodic status snapshot
 _restart_timestamps=""        # space-separated epoch seconds of recent VS Code restart events
 _restart_loop_cooldown_end=0  # epoch seconds until restart-loop cooldown expires
 
-# ── Runtime counters: restart-loop and chrome-excess ─────────────────────
+# ── Cooldown / hysteresis / recovery state (Issue #5) ────────────────────
+_last_kill_action_time=0        # epoch seconds of last successful kill of any type
+_hyst_warn_count=0              # consecutive polls with vscode_rss >= eff_warn
+_hyst_lowmem_count=0            # consecutive polls with pct <= SIGTERM_THRESHOLD
+_hyst_psi_count=0               # consecutive polls with psi_x100 >= PSI_THRESHOLD*100
+_recovery_clean_count=0         # consecutive clean polls (no pressure condition true)
+_pressure_active=false          # true when any non-critical intervention fired
 
 # ── Runtime counters / observability ─────────────────────────────────────────
 _loops=0
@@ -163,6 +181,9 @@ _psi_events=0
 _restart_loop_events=0
 _chrome_excess_events=0
 _code_recovery_events=0
+_cooldown_skips=0
+_hysteresis_skips=0
+_recovery_confirmations=0
 _action_budget_window_start=0
 _action_budget_count=0
 _action_taken=false
@@ -201,7 +222,7 @@ log_status_snapshot() {
   if (( now < _startup_mode_end )); then
     startup_left=$(( _startup_mode_end - now ))
   fi
-  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} rss_accel=${_rss_accel_events} rss_runaway_streak=${_runaway_streak} code_recoveries=${_code_recovery_events} exthost_escal=${_ext_host_escalation_events} anti_respawn_type=${_last_killed_type} helper_kills_window=${_helper_kills_in_window} action_budget_used=${_action_budget_count} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
+  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} rss_accel=${_rss_accel_events} rss_runaway_streak=${_runaway_streak} code_recoveries=${_code_recovery_events} exthost_escal=${_ext_host_escalation_events} anti_respawn_type=${_last_killed_type} helper_kills_window=${_helper_kills_in_window} action_budget_used=${_action_budget_count} cooldown_skips=${_cooldown_skips} hyst_skips=${_hysteresis_skips} recovery_confirms=${_recovery_confirmations} hyst_warn=${_hyst_warn_count} hyst_lowmem=${_hyst_lowmem_count} hyst_psi=${_hyst_psi_count} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
   _last_status_log=$now
 }
 
@@ -231,6 +252,7 @@ action_budget_allows() {
 record_action() {
   _action_taken=true
   _action_budget_count=$(( _action_budget_count + 1 ))
+  _last_kill_action_time=$(date +%s)
 }
 
 # ── Desktop notification (notify-send) with per-severity throttle ───────────────
@@ -674,6 +696,23 @@ check_chrome_cap() {
   fi
 }
 
+# ── Kill cooldown check (Issue #5) ──────────────────────────────────────────
+# Returns 0 (allow) if cooldown has expired, 1 (skip) if still in cooldown.
+# EMERGENCY and SIGKILL callers pass mode="critical" to bypass.
+kill_cooldown_allows() {
+  local mode="${1:-normal}"
+  [[ "$mode" == "critical" ]] && return 0
+  local now
+  now=$(date +%s)
+  if (( now - _last_kill_action_time < KILL_COOLDOWN )); then
+    local remaining=$(( KILL_COOLDOWN - (now - _last_kill_action_time) ))
+    incr_counter _cooldown_skips
+    log "  [COOLDOWN] Skipping non-critical kill evaluation — ${remaining}s remaining"
+    return 1
+  fi
+  return 0
+}
+
 # ── Main loop ────────────────────────────────────────────────────────────────
 # ── SIGTERM / SIGINT trap ─────────────────────────────────────────────────────
 # Without this, systemd's SIGTERM to the main bash process is deferred until
@@ -821,6 +860,10 @@ while true; do
   fi
 
   if (( vscode_rss >= eff_emerg )); then
+    # ── EMERGENCY — bypasses cooldown and hysteresis (critical) ──────────
+    _hyst_warn_count=0
+    _recovery_clean_count=0
+    _pressure_active=true
     incr_counter _rss_emergency_events
     log "EMERGENCY: VS Code RSS ${vscode_rss} kB (≥${eff_emerg} kB) — attempting to save VS Code window"
     notify_desktop "crit" "🚨 VS Code Memory EMERGENCY" \
@@ -832,24 +875,36 @@ while true; do
       kill_browsers "KILL" "VS Code RSS emergency: ${vscode_rss} kB" "critical"
     fi
   elif (( vscode_rss >= eff_warn )); then
-    incr_counter _rss_warn_events
-    log "WARNING: VS Code RSS ${vscode_rss} kB (≥${eff_warn} kB) — SIGTERMing Chrome, restart ext host soon"
-    notify_desktop "warn" "⚠️ VS Code Memory High" \
-      "VS Code RSS: $(( vscode_rss / 1024 )) MB — terminating Chrome.\nConsider: Developer: Restart Extension Host"
-    # 2026-03-25 crash fix: check chrome_running BEFORE calling kill_browsers.
-    # Previously, kill_browsers consumed the action budget on no-op kills (no Chrome),
-    # blocking the fallback helper/ext-host kill that actually reduces RSS.
-    if [[ -n "$chrome_running" ]]; then
-      kill_browsers "TERM" "VS Code RSS high: ${vscode_rss} kB"
-    else
-      if ! kill_top_vscode_helper "VS Code RSS warn: no Chrome to SIGTERM (${vscode_rss} kB)" "normal"; then
-        kill_extension_host "warn fallback: helper unavailable while RSS high (${vscode_rss} kB)"
+    # ── WARN — requires hysteresis and cooldown ─────────────────────────
+    _recovery_clean_count=0
+    _hyst_warn_count=$(( _hyst_warn_count + 1 ))
+    if (( _hyst_warn_count < HYSTERESIS_POLLS )); then
+      incr_counter _hysteresis_skips
+      log "  [HYSTERESIS] RSS WARN ${vscode_rss} kB — poll ${_hyst_warn_count}/${HYSTERESIS_POLLS} (waiting for sustained pressure)"
+    elif kill_cooldown_allows "normal"; then
+      incr_counter _rss_warn_events
+      _pressure_active=true
+      log "WARNING: VS Code RSS ${vscode_rss} kB (≥${eff_warn} kB) sustained for ${_hyst_warn_count} polls — SIGTERMing Chrome, restart ext host soon"
+      notify_desktop "warn" "⚠️ VS Code Memory High" \
+        "VS Code RSS: $(( vscode_rss / 1024 )) MB — terminating Chrome.\nConsider: Developer: Restart Extension Host"
+      # 2026-03-25 crash fix: check chrome_running BEFORE calling kill_browsers.
+      if [[ -n "$chrome_running" ]]; then
+        kill_browsers "TERM" "VS Code RSS high: ${vscode_rss} kB (sustained ${_hyst_warn_count} polls)"
+      else
+        if ! kill_top_vscode_helper "VS Code RSS warn: no Chrome to SIGTERM (${vscode_rss} kB)" "normal"; then
+          kill_extension_host "warn fallback: helper unavailable while RSS high (${vscode_rss} kB)"
+        fi
       fi
     fi
+  else
+    _hyst_warn_count=0
   fi
 
-  # Escalate: SIGKILL at critical threshold
+  # Escalate: SIGKILL at critical threshold — bypasses cooldown and hysteresis (critical)
   if (( pct <= SIGKILL_THRESHOLD )); then
+    _hyst_lowmem_count=0
+    _recovery_clean_count=0
+    _pressure_active=true
     incr_counter _critical_kill_events
     notify_desktop "crit" "🚨 Critical Memory: ${pct}% free" \
       "Force-killing Chrome/Playwright.\nClose ChromeOS tabs if crash persists."
@@ -859,25 +914,68 @@ while true; do
       kill_vscode_main "CRITICAL low-mem with no browser target (${avail} kB free)" "critical"
     fi
 
-  # Intervene: SIGTERM at low-memory threshold
+  # Intervene: SIGTERM at low-memory threshold — requires hysteresis and cooldown
   elif (( pct <= SIGTERM_THRESHOLD )); then
-    incr_counter _low_mem_term_events
-    notify_desktop "warn" "⚠️ Low Memory: ${pct}% free" \
-      "Terminating Chrome/Playwright to protect VS Code."
-    if [[ -n "$chrome_running" ]]; then
-      kill_browsers "TERM" "LOW: ${pct}% MemAvailable (${avail} kB)"
-    else
-      if ! kill_top_vscode_helper "LOW mem: no Chrome to SIGTERM (${avail} kB free)" "normal"; then
-        kill_extension_host "low-mem fallback: helper unavailable (${avail} kB free)"
+    _recovery_clean_count=0
+    _hyst_lowmem_count=$(( _hyst_lowmem_count + 1 ))
+    if (( _hyst_lowmem_count < HYSTERESIS_POLLS )); then
+      incr_counter _hysteresis_skips
+      log "  [HYSTERESIS] Low memory ${pct}% — poll ${_hyst_lowmem_count}/${HYSTERESIS_POLLS} (waiting for sustained pressure)"
+    elif kill_cooldown_allows "normal"; then
+      incr_counter _low_mem_term_events
+      _pressure_active=true
+      log "LOW: ${pct}% MemAvailable sustained for ${_hyst_lowmem_count} polls — SIGTERMing Chrome"
+      notify_desktop "warn" "⚠️ Low Memory: ${pct}% free" \
+        "Terminating Chrome/Playwright to protect VS Code."
+      if [[ -n "$chrome_running" ]]; then
+        kill_browsers "TERM" "LOW: ${pct}% MemAvailable (${avail} kB) sustained ${_hyst_lowmem_count} polls"
+      else
+        if ! kill_top_vscode_helper "LOW mem: no Chrome to SIGTERM (${avail} kB free)" "normal"; then
+          kill_extension_host "low-mem fallback: helper unavailable (${avail} kB free)"
+        fi
       fi
     fi
 
-  # Intervene: SIGTERM on sustained PSI pressure spike
+  # Intervene: SIGTERM on sustained PSI pressure spike — requires hysteresis and cooldown
   elif (( psi_x100 >= PSI_THRESHOLD * 100 )); then
-    incr_counter _psi_events
-    notify_desktop "warn" "⚠️ Memory Stall Detected" \
-      "PSI full avg10=$(( psi_x100 / 100 ))% — terminating Chrome/Playwright."
-    kill_browsers "TERM" "PSI stall: ${psi_x100}x (${pct}% RAM free)"
+    _recovery_clean_count=0
+    _hyst_psi_count=$(( _hyst_psi_count + 1 ))
+    if (( _hyst_psi_count < HYSTERESIS_POLLS )); then
+      incr_counter _hysteresis_skips
+      log "  [HYSTERESIS] PSI full avg10=$(( psi_x100 / 100 )).$(( psi_x100 % 100 ))% — poll ${_hyst_psi_count}/${HYSTERESIS_POLLS} (waiting for sustained stall)"
+    elif kill_cooldown_allows "normal"; then
+      incr_counter _psi_events
+      _pressure_active=true
+      notify_desktop "warn" "⚠️ Memory Stall Detected" \
+        "PSI full avg10=$(( psi_x100 / 100 ))% — terminating Chrome/Playwright."
+      kill_browsers "TERM" "PSI stall: ${psi_x100}x sustained ${_hyst_psi_count} polls (${pct}% RAM free)"
+    fi
+  else
+    _hyst_lowmem_count=0
+    _hyst_psi_count=0
+  fi
+
+  # ── Recovery confirmation (Issue #5) ──────────────────────────────────────
+  # When all pressure conditions are clear (RSS below WARN, MemAvail above
+  # SIGTERM threshold, PSI below threshold), count consecutive clean polls.
+  # At RECOVERY_POLLS, log confirmed recovery and reset pressure tracking.
+  if (( vscode_rss < eff_warn && pct > SIGTERM_THRESHOLD && psi_x100 < PSI_THRESHOLD * 100 )); then
+    # Additional recovery quality check: PSI and memory must be well clear
+    if (( psi_x100 < RECOVERY_PSI_X100 && pct > RECOVERY_MEM_PCT )); then
+      _recovery_clean_count=$(( _recovery_clean_count + 1 ))
+      if $_pressure_active && (( _recovery_clean_count >= RECOVERY_POLLS )); then
+        incr_counter _recovery_confirmations
+        log "RECOVERY: ${_recovery_clean_count} consecutive clean polls (psi_x100=${psi_x100}, mem_pct=${pct}%) — pressure cleared"
+        _pressure_active=false
+        _recovery_clean_count=0
+        log_status_snapshot "recovery"
+      fi
+    else
+      # Partially clear — don't count toward recovery
+      _recovery_clean_count=0
+    fi
+  else
+    _recovery_clean_count=0
   fi
 
   if (( local_now - _last_status_log >= STATUS_INTERVAL )); then
