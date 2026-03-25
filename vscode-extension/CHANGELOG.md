@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.5] — 2026-03-25
+
+### Fixed
+- **Bundled daemon version corrected** — v0.3.4 was published with a stale daemon (`20260316.1`) that did not include the language-server protection fixes from [#45](https://github.com/chf3198/crostini-mem-watchdog/issues/45), [#46](https://github.com/chf3198/crostini-mem-watchdog/issues/46), [#47](https://github.com/chf3198/crostini-mem-watchdog/issues/47). The extension installer's SHA-256 upgrade check would overwrite a manually deployed fix with the broken version. This release bundles daemon `20260324.3` with all three fixes.
+
 ## [0.3.4] — 2026-03-24
 
 ### Fixed
