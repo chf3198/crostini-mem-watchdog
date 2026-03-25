@@ -20,6 +20,32 @@
 
 ---
 
+### 2026-03-25 — Action budget exhaustion by no-op kill_browsers calls caused VS Code crash
+
+**Context**: VS Code crashed at 15:07:53. Journal investigation revealed 49 `rss_warn` events across the session, with `action_budget_used=6` (saturated) during every WARN spike.
+
+**Discovery**: Three independent bugs caused the watchdog to be unable to intervene during a 2.8→3.5 GB RSS climb:
+
+1. **`kill_browsers()` called `record_action()` BEFORE verifying targets existed.** Every no-op (no Chrome running) set `_action_taken=true` and incremented `_action_budget_count`. At 0.5s startup polling, 6 no-op calls exhausted the 30s budget in 3 seconds. All subsequent actions (including `kill_top_vscode_helper`) were blocked for 27 seconds — exactly the window where RSS grew unimpeded from 2.8 GB past the 3.4 GB emergency threshold.
+
+2. **WARN/SIGTERM paths called `kill_browsers` before checking `chrome_running`.** The code had `kill_browsers(...); if [[ -z "$chrome_running" ]]; then kill_top_vscode_helper(...)`. But `kill_browsers` already consumed the action budget, so the fallback `kill_top_vscode_helper` was always blocked by `_action_taken=true` — even though the preceding kill was a no-op.
+
+3. **`STARTUP_BURST_RSS_KB=1600000` was normal steady state, not elevated.** After the crash recovery at 15:08:42, the BURST logic killed the Extension Host (233 MB, `--type=utility`) at 89% free memory and RSS 1641544 kB. Normal VS Code steady state on this system is 1.6–2.5 GB, so the burst threshold was always true.
+
+**Additional finding**: The config override file (`~/.config/mem-watchdog/config.sh`) had `VSCODE_RSS_WARN_KB=3584000` (3.5 GB) and `VSCODE_RSS_EMERG_KB=5632000` (5.5 GB) — far above the daemon defaults (2.2/3.2 GB). These didn't cause the crash directly (startup mode uses its own thresholds), but they disabled all WARN-level intervention during normal (non-startup) operation, allowing RSS to creep to 3.0 GB before the next startup trigger escalated to EMERGENCY.
+
+**Fixes applied (v20260325.1)**:
+- Moved `record_action()` in `kill_browsers()` after the kill check — no-ops don't consume the budget or block fallbacks.
+- WARN/SIGTERM/SIGKILL paths now check `chrome_running` first and skip `kill_browsers` when empty, going directly to the correct fallback.
+- Raised `STARTUP_BURST_RSS_KB` from 1600000 to 2200000 to match `VSCODE_RSS_WARN_KB`.
+
+**Application**:
+- Any function that gates action budget must not consume the budget before confirming it actually DID something. The "try → record" pattern is wrong; "try → verify → record" is correct.
+- When a fallback chain has `A(); if (!A_worked) B();`, never let `A()` consume shared state that blocks `B()`. Either make `A()` not consume the shared state on failure, or skip `A()` when it's known to be a no-op.
+- Startup-mode thresholds (STARTUP_BURST_RSS_KB, STARTUP_RSS_WARN_KB) should be validated against the system's actual baseline RSS, not theoretical minimums.
+
+---
+
 ### 2026-03-25 — Three independent failures in the 4-layer Copilot governance model caused post-merge governance to be silently skipped
 
 **Context**: After merging PR #48 (three critical daemon bug fixes: #45, #46, #47) and deploying the daemon, the agent declared the task complete without updating CHANGELOG, READMEs, or running `repo-profile-governance`. The user had to explicitly prompt: "Did you follow the governance skill?"
