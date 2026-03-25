@@ -1,14 +1,18 @@
 ---
 name: Epic
 about: Multi-issue initiative tracked across milestones
-title: "[Epic] "
+title: ""
 labels: type: epic
 assignees: chf3198
 ---
 
-## Outcome
+## Objective
 
 <!-- What business/technical outcome must this epic deliver? -->
+
+## Impact
+
+<!-- Why does this epic matter now? What risk, user pain, or delivery goal does it address? -->
 
 ## Scope
 

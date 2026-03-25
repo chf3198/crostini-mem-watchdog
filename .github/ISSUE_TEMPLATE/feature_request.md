@@ -1,21 +1,31 @@
 ---
 name: Feature request
 about: Suggest an improvement or new capability
-title: "[Feature] "
+title: ""
 labels: enhancement,type: task
 assignees: chf3198
 ---
 
-## Problem statement
+## Problem
 
 <!-- What problem would this feature solve? Be specific: what crash, failure mode,
 or workflow gap are you experiencing? -->
+
+## Impact
+
+<!-- Why does this need to happen now, and what improves if it lands? -->
 
 ## Proposed solution
 
 <!-- Describe the change you'd like. If it touches mem-watchdog.sh, note whether
 it keeps to bash + coreutils with no external deps. If it touches the extension,
 note whether it affects the statusbar poll path (hot path — every 2 s). -->
+
+## Acceptance criteria
+
+- [ ] Desired outcome is clear and measurable
+- [ ] Constraints and affected surfaces are identified
+- [ ] Follow-up validation approach is stated
 
 ## Alternatives considered
 

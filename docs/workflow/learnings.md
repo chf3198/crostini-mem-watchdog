@@ -20,6 +20,16 @@
 
 ---
 
+### 2026-03-24 — Issues governance workflow drifted from repo taxonomy and templates
+
+**Context**: Verifying the `v0.3.4` release surfaced repeated failures from `.github/workflows/issues-governance.yml` while the release itself was healthy.
+
+**Discovery**: The workflow had been enforcing an `area:*` label and rejecting prefixed issue titles, but this repository's documented governance model requires one taxonomy label, one priority label, and at least one domain label from the established set (`policy`, `psi`, `cgroup`, `oom`, `crostini`, `testing`, `performance`, `research`). At the same time, several shipped issue templates still defaulted to prefixed titles like `[Epic]` and `[Task]`, and some templates omitted the `Impact` / `Acceptance criteria` sections the workflow expected. The result was self-inflicted governance noise: the workflow, docs, and templates were contradicting one another.
+
+**Application**: Keep the governance workflow, issue templates, and contributor/admin docs aligned as one change set. For this repository, validate domain labels explicitly instead of `area:*`, keep issue titles plain imperative in templates, and ensure every template includes `Problem` or `Objective`, `Impact`, and `Acceptance criteria` so automation and human policy agree.
+
+---
+
 ### 2026-03-19 — Global Copilot standards require a 4-layer model (instructions + skills + hooks + CI)
 
 **Context**: Expanding automation strategy from repo-only CI checks to cross-repository adoption for current and future repositories.
