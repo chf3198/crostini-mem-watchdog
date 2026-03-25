@@ -67,13 +67,14 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
 ```
 
 **IMPLEMENT**: After every shell file edit, run `bash -n <file>` immediately.  
-**GATE**: All four checks must exit 0 — no exceptions, no skips:
+**GATE**: All five checks must exit 0 — no exceptions, no skips:
 
 ```bash
 bash test-watchdog.sh                                                          # 15 bash tests, ~3s
 bash -n mem-watchdog.sh                                                        # syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
 cd vscode-extension && npm test                                                # 75 JS unit tests, ~1s
+bash scripts/docs-integrity-check.sh                                           # docs drift check
 ```
 
 **Gate failure rules**: Fix root cause — never `|| true`, skip flags, or `exit 0` overrides. A previously passing test that now fails means the change broke it; fix the change, not the test.
@@ -117,6 +118,14 @@ Valid scopes: `daemon` `extension` `installer` `config` `tests` `tray`
 ## Repository Admin & Client Interaction
 
 **Issue-first**: every change needs a linked issue with taxonomy label (`type: epic|research|task|bug-fix`), priority label, domain label, milestone, and roadmap project assignment before coding. PR requires `Closes #N`, milestone, labels, and gate-suite evidence. Record assumption mismatches in `docs/workflow/learnings.md`.
+
+**Branch protection is active on `main`.** Direct push is blocked — all changes require a PR with 4 CI status checks passing:
+- `Daemon — bash -n + shellcheck`
+- `Extension — node:test (Node 20)`
+- `Docs integrity check` (scripts/docs-integrity-check.sh)
+- `Secret scan — gitleaks`
+
+`enforce_admins: true` — even the repo owner cannot bypass. The workflow is: branch → commit → push → PR → CI green → merge.
 
 **The client performs UAT only.** The agent never asks the client to run shell commands, perform git operations, or interpret errors. Git operations are entirely the agent's responsibility. The one permitted client action: visiting a browser URL to authorize GitHub `workflow` OAuth scope for CI/CD pushes.
 
