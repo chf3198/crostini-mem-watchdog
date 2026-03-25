@@ -20,6 +20,30 @@
 
 ---
 
+### 2026-03-25 — VS Code Extension Host migrated from --type=extensionHost to --type=utility with --inspect-port
+
+**Context**: VS Code crashed twice at 17:33 and 17:39. Journal showed `helper_no_candidate=759` and `exthost_escal=753` (all failed) over 25 minutes. The watchdog detected RSS at 2.5–3.58 GB but could not intervene at WARN level.
+
+**Discovery**: VS Code 1.90+ migrated the Extension Host from `child_process.fork()` to Electron's `UtilityProcess` API. The Extension Host process now shows as `--type=utility --utility-sub-type=node.mojom.NodeService` instead of `--type=extensionHost`. Two bugs resulted:
+
+1. **Blanket `--type=utility` exclusion** (from #47): `kill_top_vscode_helper()` excluded all utility processes to protect the Extension Host, but this also excluded the shared process (141 MB), PTY host (116 MB), file watcher (112 MB), and network service (111 MB) — all non-critical, auto-recoverable processes that should be killable. Combined with zygote/GPU/main-process exclusions and language-server protections, literally zero candidates remained.
+
+2. **Stale `--type=extensionHost` pattern**: `kill_extension_host()` searched for `--type=extensionHost` which no longer appears in the process list. Every escalation attempt failed silently.
+
+**Extension Host differentiator**: `--inspect-port` is present on exactly one `--type=utility` process — the Extension Host. VS Code always enables `--inspect-port=0` for debugger attachment regardless of whether debugging is active. This was confirmed empirically: 5 utility processes, only 1 has `--inspect-port`. Other utility processes (shared process, PTY host, network service) do not have this flag.
+
+**Fixes applied (v20260325.5)**:
+- `kill_top_vscode_helper`: Exclude only `--type=utility` + `--inspect-port` (Extension Host); other utility processes now eligible
+- `kill_extension_host`: Match `--type=utility` + `--inspect-port`, with fallback to legacy `--type=extensionHost`
+
+**Application**:
+- VS Code's process model evolves across versions. Process-type guards (`--type=X`) must be audited against live `ps` output periodically, not assumed stable.
+- When protecting a specific process by excluding a broad category, always use the most specific differentiator available (e.g., `--inspect-port`) rather than a broad type flag (`--type=utility`).
+- The Electron `UtilityProcess` API is the future — any code that matches VS Code process types should prefer utility-subtype + flag matching over legacy type enums.
+- After any protective exclusion change (#46, #47), always verify the fallback path: what becomes the NEXT candidate? If the answer is "nothing", the protection is too broad.
+
+---
+
 ### 2026-03-25 — Action budget exhaustion by no-op kill_browsers calls caused VS Code crash
 
 **Context**: VS Code crashed at 15:07:53. Journal investigation revealed 49 `rss_warn` events across the session, with `action_budget_used=6` (saturated) during every WARN spike.

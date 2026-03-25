@@ -1,7 +1,7 @@
 # VS Code / Crostini Memory Stability — Technical Reference
 
 **Environment:** Chromebook (i3-N305, 8 cores, 6.3 GB RAM) · ChromeOS Crostini (Debian 12 Bookworm, kernel 6.6.99) · VS Code 1.108.0  
-**Last updated:** 2026-03-06  
+**Last updated:** 2026-03-25  
 **Swap status:** 16 GB zram enabled at ChromeOS host layer via `crosh swap enable 16384` (2026-03-04). `free -h` inside the container always shows `Swap: 0B` — this is **NOT cosmetic** (see §3).
 
 ---
@@ -169,6 +169,8 @@ Setting this to **512 MB** (the original value) was counterproductive:
 | 2026-03-24 | 1 | Language-server and Extension Host kills — three `kill_top_vscode_helper` bugs (issues #45–#47, daemon v20260324.3) |
 | 2026-03-25 15:07:53 | 1 | EMERGENCY at 3.5 GB — action budget exhausted by no-op `kill_browsers()` calls; watchdog blocked for 27s during 2.8→3.5 GB climb (issue #49, daemon v20260325.1) |
 | 2026-03-25 post-fix | 0 | Daemon v20260325.1: no-ops don't consume budget, `chrome_running` checked before `kill_browsers`, `STARTUP_BURST_RSS_KB` raised to 2.2 GB |
+| 2026-03-25 17:33 | 2 | Watchdog blind at WARN level for 25 min: `kill_top_vscode_helper` blanket-excluded `--type=utility` (759 no-candidate polls), `kill_extension_host` used stale `--type=extensionHost` pattern (753 failed escalations). RSS grew 2.5→3.58 GB → EMERGENCY `kill_vscode_main`. (issue #55, daemon v20260325.5) |
+| 2026-03-25 post-#55 | 0 | Daemon v20260325.5: Extension Host identified by `--type=utility` + `--inspect-port`; other utility processes now eligible kill candidates; `helper_no_candidate=0` |
 
 ### The 2026-03-05 crash — what was fixed
 
@@ -189,6 +191,7 @@ Three root causes:
 | Playwright headless mode | Pathways #1, #2 — saves ~800 MB per automation run | ✅ Default |
 | ChromeOS zram 16 GB | Pathway #2 only — host-level balloon pressure | ✅ Active |
 | Action-budget no-op fix (v20260325.1) | Pathway #1 — no-op `kill_browsers()` no longer exhausts budget; fallback kills always reachable | ✅ Fixed |
+| Utility-process detection fix (v20260325.5) | Pathway #1 — Extension Host identified by `--inspect-port`; non-ExtHost utility processes eligible as kill candidates; `kill_extension_host()` finds modern Extension Host | ✅ Fixed |
 | Container swap | Pathway #1 — direct relief for container kernel OOM | ❌ Blocked (CapEff=0, see §4) |
 
 **Residual risk:** The container kernel can still OOM if VS Code + idle MCP browser + a Playwright session all run simultaneously without the MCP browser being killed first. The watchdog mitigates this but cannot guarantee prevention if the spike is faster than the 2s polling interval.
