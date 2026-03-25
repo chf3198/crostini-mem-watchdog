@@ -12,6 +12,13 @@ permissions:
   contents: read
 
 jobs:
+  ignore_unexpected_event:
+    if: github.event_name != 'issues' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ignore unsupported event
+        run: echo "Skipping issues governance for unsupported event: ${GITHUB_EVENT_NAME}"
+
   validate_issue_event:
     if: github.event_name == 'issues'
     runs-on: ubuntu-latest
