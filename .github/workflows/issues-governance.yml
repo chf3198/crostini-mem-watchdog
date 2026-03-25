@@ -1,6 +1,8 @@
 name: Issues Governance
 
 on:
+  push:
+    branches: [main]
   issues:
     types: [opened, edited, reopened, labeled, unlabeled]
   schedule:
