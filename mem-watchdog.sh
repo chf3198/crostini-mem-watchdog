@@ -65,7 +65,7 @@ STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260325.4   # 2026-03-25 v4: 4-stage pressure response model (#4)   # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260325.5   # 2026-03-25 v5: fix utility-process detection (#55)     # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 # VS Code RSS thresholds (confirmed: extension host hit 4 GB, watchdog had no Chrome to kill)
@@ -341,8 +341,15 @@ kill_extension_host() {
   action_budget_allows "normal" || return 1
   incr_counter _ext_host_escalation_events
   local exthost_pid
+  # VS Code 1.90+: Extension Host runs as --type=utility with --inspect-port.
+  # --inspect-port is present on exactly one utility process (the Extension Host).
   exthost_pid=$(ps -C code -o pid=,args= 2>/dev/null \
-    | awk '$0 ~ /--type=extensionHost/ {print $1; exit}')
+    | awk '$0 ~ /--type=utility/ && $0 ~ /--inspect-port/ {print $1; exit}')
+  # Fallback: legacy VS Code uses --type=extensionHost
+  if [[ -z "$exthost_pid" ]]; then
+    exthost_pid=$(ps -C code -o pid=,args= 2>/dev/null \
+      | awk '$0 ~ /--type=extensionHost/ {print $1; exit}')
+  fi
   if [[ -z "$exthost_pid" ]]; then
     log "  ESCALATION: no extensionHost process found"
     return 1
@@ -515,7 +522,8 @@ kill_top_vscode_helper() {
         if (args ~ /^\/usr\/share\/code\/code$/) next;
         if (args ~ /--type=zygote/) next;
         if (args ~ /--type=gpu-process/) next;
-        if (args ~ /--type=extensionHost/ || args ~ /--type=utility/) next;
+        if (args ~ /--type=extensionHost/) next;
+        if (args ~ /--type=utility/ && args ~ /--inspect-port/) next;
         t=classify(args)
         if (skip != "" && t == skip) next;
         if (prot == "true" && t == "tsserver") next;
@@ -544,7 +552,8 @@ kill_top_vscode_helper() {
           if (args ~ /^\/usr\/share\/code\/code$/) next;
           if (args ~ /--type=zygote/) next;
           if (args ~ /--type=gpu-process/) next;
-          if (args ~ /--type=extensionHost/ || args ~ /--type=utility/) next;
+          if (args ~ /--type=extensionHost/) next;
+          if (args ~ /--type=utility/ && args ~ /--inspect-port/) next;
           t=classify(args)
           if (skip != "" && t == skip) next;
           if (prot == "true" && t == "tsserver") next;
@@ -563,7 +572,8 @@ kill_top_vscode_helper() {
           if (args ~ /^\/usr\/share\/code\/code$/) next;
           if (args ~ /--type=zygote/) next;
           if (args ~ /--type=gpu-process/) next;
-          if (args ~ /--type=extensionHost/ || args ~ /--type=utility/) next;
+          if (args ~ /--type=extensionHost/) next;
+          if (args ~ /--type=utility/ && args ~ /--inspect-port/) next;
           if (prot == "true" && args ~ /tsserver\.js/) next;
           if (ls == "true" && (args ~ /htmlServerMain/ || args ~ /serverWorkerMain/ || args ~ /cssServerMain/ || args ~ /jsonServerMain/ || args ~ /eslintServer/)) next;
           printf "%s %s %s\n", pid, rss, args;
