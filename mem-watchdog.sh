@@ -18,6 +18,7 @@
 #   - Also reads /proc/pressure/memory (PSI) for sustained-pressure detection.
 #   - Sends SIGTERM to chrome/playwright at ≤25% free RAM.
 #   - Escalates to SIGKILL at ≤15% free RAM.
+#   - PSI full avg10 > 5% triggers SIGTERM (calibrated for Crostini no-swap).
 #   - VS Code RSS warning at 2.5 GB: SIGTERM Chrome + desktop alert + journal.
 #   - VS Code RSS emergency at 3.5 GB: SIGKILL Chrome; if no Chrome, SIGTERM
 #     the highest-RSS `code` process (extension host) to save the VS Code window.
@@ -37,7 +38,10 @@
 
 SIGTERM_THRESHOLD=25   # Kill Chrome with SIGTERM when MemAvailable < 25% (~1.6 GB)
 SIGKILL_THRESHOLD=15   # Escalate to SIGKILL when MemAvailable < 15% (~945 MB)
-PSI_THRESHOLD=25       # Kill on sustained memory stall: PSI full avg10 > 25%
+PSI_THRESHOLD=5        # Kill on sustained memory stall: PSI full avg10 > 5%
+                       # Calibrated for Crostini (Issue #14): no visible swap means PSI stays
+                       # near 0% until OOM. 5% detects any sustained stall; 25% was unreachable.
+                       # See docs/technical/psi-calibration.md for experimental data.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
 export WATCHDOG_VERSION=20260325.2   # 2026-03-25 v2: add kill cooldown, hysteresis counters, recovery confirmation (#5)   # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
