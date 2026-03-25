@@ -3,10 +3,11 @@
 # CI — runs on every push to main and on every pull request targeting main.
 #
 # Job topology:
-#   lint-daemon   — bash -n syntax check + shellcheck (static; fast)
-#   test-extension — npm test on Node 18/20/22 matrix (~1 s each)
-#   secret-scan   — gitleaks scan of repository history and workspace files
-#   package       — vsce package + upload .vsix artifact (PR only)
+#   lint-daemon      — bash -n syntax check + shellcheck (static; fast)
+#   test-extension   — npm test on Node 18/20/22 matrix (~1 s each)
+#   secret-scan      — gitleaks scan of repository history and workspace files
+#   docs-integrity   — verify README badges, CHANGELOG, and instruction test counts
+#   package          — vsce package + upload .vsix artifact (PR only)
 #
 # NOTE: test-watchdog.sh is intentionally NOT run here.
 # It is a live integration test that requires an active systemd user session,
@@ -15,7 +16,7 @@
 #
 #   bash test-watchdog.sh   # on your Crostini machine
 #
-# The CI gate covers: daemon syntax, shellcheck, and all 54 JS unit tests.
+# The CI gate covers: daemon syntax, shellcheck, all 75 JS unit tests, and docs integrity.
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: CI
@@ -73,7 +74,7 @@ jobs:
         run: npm ci
         working-directory: vscode-extension
 
-      - name: npm test (54 unit tests)
+      - name: npm test (75 unit tests)
         run: npm test
         working-directory: vscode-extension
 
@@ -94,13 +95,39 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── Job 4: vsce package — PR artifact upload ────────────────────────────
+  # ── Job 4: Docs integrity — badge / CHANGELOG / instruction drift ──────
+  # Runs scripts/docs-integrity-check.sh to verify that README badges,
+  # copilot-instructions test counts, ci.yml comments, and CHANGELOG
+  # version entries stay in sync with the actual npm test output.
+  docs-integrity:
+    name: Docs integrity check
+    needs: [test-extension]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+        working-directory: vscode-extension
+
+      - name: Docs integrity
+        run: bash scripts/docs-integrity-check.sh
+
+  # ── Job 5: vsce package — PR artifact upload ────────────────────────────
   # Builds the .vsix and uploads it as a PR artifact so reviewers can
   # install and test the exact version before merging.
   # Skipped on push to main (publish.yml handles tagged releases).
   package:
     name: Extension — vsce package
-    needs: [lint-daemon, test-extension, secret-scan]
+    needs: [lint-daemon, test-extension, secret-scan, docs-integrity]
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     permissions:
@@ -145,7 +172,7 @@ jobs:
           path: vscode-extension/*.vsix
           retention-days: 14
 
-  # ── Job 5: Dependency review — PR only ──────────────────────────────────────
+  # ── Job 6: Dependency review — PR only ──────────────────────────────────────
   # Compares the dependency tree before and after the PR and fails if any
   # newly introduced package has a known CVE. Uses the GitHub Advisory Database.
   dependency-review:
