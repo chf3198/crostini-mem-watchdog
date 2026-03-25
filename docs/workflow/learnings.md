@@ -22,11 +22,11 @@
 
 ### 2026-03-24 — Issues governance workflow drifted from repo taxonomy and templates
 
-**Context**: Verifying the `v0.3.4` release surfaced repeated failures from `.github/workflows/issues-governance.yml` while the release itself was healthy.
+**Context**: Verifying the `v0.3.4` release surfaced repeated failures from the issue-governance workflow while the release itself was healthy.
 
 **Discovery**: The workflow had been enforcing an `area:*` label and rejecting prefixed issue titles, but this repository's documented governance model requires one taxonomy label, one priority label, and at least one domain label from the established set (`policy`, `psi`, `cgroup`, `oom`, `crostini`, `testing`, `performance`, `research`). At the same time, several shipped issue templates still defaulted to prefixed titles like `[Epic]` and `[Task]`, and some templates omitted the `Impact` / `Acceptance criteria` sections the workflow expected. In addition, GitHub was registering zero-job `push` runs against this workflow file; with no eligible jobs, those runs were marked failed and created more governance noise even though the real issue/schedule logic was fine. The result was self-inflicted governance noise: the workflow, docs, templates, and GitHub runtime behavior were contradicting one another.
 
-**Application**: Keep the governance workflow, issue templates, and contributor/admin docs aligned as one change set. For this repository, validate domain labels explicitly instead of `area:*`, keep issue titles plain imperative in templates, ensure every template includes `Problem` or `Objective`, `Impact`, and `Acceptance criteria`, and add an explicit green no-op guard for unsupported events so zero-job workflow runs cannot show up as false failures.
+**Application**: Keep the governance workflow, issue templates, and contributor/admin docs aligned as one change set. For this repository, validate domain labels explicitly instead of `area:*`, keep issue titles plain imperative in templates, ensure every template includes `Problem` or `Objective`, `Impact`, and `Acceptance criteria`, add an explicit green no-op guard for unsupported events, and reset the workflow file registration if GitHub keeps emitting zero-job false failures against a stale filename-keyed workflow.
 
 ---
 
