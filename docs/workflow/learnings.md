@@ -20,6 +20,28 @@
 
 ---
 
+### 2026-03-24 — Three kill_top_vscode_helper bugs caused language server and Extension Host kills
+
+**Context**: HTML Language Server and JSON Language Server both hit VS Code's 5-crash-in-3-minutes permanent death threshold. Journal showed the watchdog killing jsonServerMain 5× in 2 min and htmlServerMain 5× in 1 min via the RSS acceleration path.
+
+**Discovery**: Three independent bugs in `kill_top_vscode_helper` caused the watchdog to kill the very processes it exists to protect:
+
+1. **RSS accel path used `"emerg"` mode unconditionally** (#45). The RSS velocity check fires when `vscode_rss >= eff_warn` (~2.2 GB) AND `_rss_delta >= RSS_ACCEL_KB` (300 MB). When no Chrome was running, it called `kill_top_vscode_helper` with hardcoded `"emerg"`, which disables all language-server and tsserver protection — even though 2.2 GB is 1 GB below the true emergency threshold (3.2 GB). Fix: use `"normal"` mode when `vscode_rss < eff_emerg`; `"emerg"` only at/above.
+
+2. **`json-server` and `eslint` missing from `protect_langservers`** (#46). The guard covered `html-server`, `markdown-server`, `css-server` but not `json-server` or `eslint`. jsonServerMain (86 MB) provides schema validation for `package.json`, `tsconfig.json`, `mcp.json`, `settings.json` — all files Copilot reads constantly. eslintServer was a *preferred* kill target in the first awk block, making it the first to die on any RSS spike. Both are subject to VS Code's permanent 5-crash death threshold. Fix: add both to `protect_langservers` guard in all 3 awk blocks.
+
+3. **`--type=extensionHost` guard blind to modern VS Code process model** (#47). VS Code 1.90+ runs the Extension Host as `--type=utility --utility-sub-type=node.mojom.NodeService`, not `--type=extensionHost`. The 489 MB process hosting Copilot Chat, Playwright MCP, and every extension passed all awk guards and was the top-ranked fallback kill candidate. Killing it via the helper path bypassed `kill_extension_host`'s cooldown, escalation tracking, and journal logging. Fix: add `--type=utility` exclusion alongside `--type=extensionHost` in all 3 awk blocks.
+
+**The critical interaction**: Fix 2 without Fix 3 would have been *worse* than the status quo. Protecting language servers removes them from the candidate pool, causing the fallback block to select the Extension Host (489 MB) instead — killing Copilot and all extensions. All three fixes must be applied as a set.
+
+**Application**:
+- Killing an 80-120 MB language server during a multi-GB RSS spike saves <2% of memory for 2 seconds (the server respawns immediately), but costs VS Code its language intelligence permanently until full restart.
+- VS Code's process model evolves across versions. Process-type guards (`--type=X`) must be audited against live `ps` output, not assumed stable.
+- When adding new process protections, always trace the fallback path to see what becomes the *next* highest-RSS candidate — protection changes can redirect kills to worse targets.
+- `accel_mode` variable declared without `local` because the RSS accel path is in the main loop, not a function — shellcheck SC2168 catches this.
+
+---
+
 ### 2026-03-24 — Issues governance workflow drifted from repo taxonomy and templates
 
 **Context**: Verifying the `v0.3.4` release surfaced repeated failures from the issue-governance workflow while the release itself was healthy.
