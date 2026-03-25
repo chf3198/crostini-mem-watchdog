@@ -39,7 +39,7 @@ SIGTERM_THRESHOLD=25   # Kill Chrome with SIGTERM when MemAvailable < 25% (~1.6 
 SIGKILL_THRESHOLD=15   # Escalate to SIGKILL when MemAvailable < 15% (~945 MB)
 PSI_THRESHOLD=25       # Kill on sustained memory stall: PSI full avg10 > 25%
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260324.2   # 2026-03-24 v2: protect htmlServerMain, serverWorkerMain, cssServerMain at WARN   # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260324.3   # 2026-03-24 v3: fix accel mode, protect json/eslint servers, guard utility processes   # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 # VS Code RSS thresholds (confirmed: extension host hit 4 GB, watchdog had no Chrome to kill)
@@ -376,7 +376,7 @@ kill_top_vscode_helper() {
   #                        servers crashed 5x each in OOM cascade.
   # Only allow these as kill targets at "emerg" severity (true emergency).
   local protect_tsserver=true
-  local protect_langservers=true   # htmlServerMain, serverWorkerMain (markdown), cssServerMain
+  local protect_langservers=true   # htmlServerMain, serverWorkerMain (markdown), cssServerMain, jsonServerMain, eslintServer
   [[ "$mode" == "emerg" ]] && protect_tsserver=false
   [[ "$mode" == "emerg" ]] && protect_langservers=false
   local now
@@ -439,12 +439,12 @@ kill_top_vscode_helper() {
         if (args ~ /^\/usr\/share\/code\/code$/) next;
         if (args ~ /--type=zygote/) next;
         if (args ~ /--type=gpu-process/) next;
-        if (args ~ /--type=extensionHost/) next;
+        if (args ~ /--type=extensionHost/ || args ~ /--type=utility/) next;
         t=classify(args)
         if (skip != "" && t == skip) next;
         if (prot == "true" && t == "tsserver") next;
-        if (ls == "true" && (t == "html-server" || t == "markdown-server" || t == "css-server")) next;
-        if (args ~ /--node-ipc/ || args ~ /server\.bundle\.js/ || (args ~ /tsserver\.js/ && prot != "true") || args ~ /eslintServer\.js/ || args ~ /jsonServerMain/) {
+        if (ls == "true" && (t == "html-server" || t == "markdown-server" || t == "css-server" || t == "json-server" || t == "eslint")) next;
+        if (args ~ /--node-ipc/ || args ~ /server\.bundle\.js/ || (args ~ /tsserver\.js/ && prot != "true") || (args ~ /eslintServer\.js/ && ls != "true") || (args ~ /jsonServerMain/ && ls != "true")) {
           printf "%s %s %s\n", pid, rss, args;
         }
       }
@@ -468,11 +468,11 @@ kill_top_vscode_helper() {
           if (args ~ /^\/usr\/share\/code\/code$/) next;
           if (args ~ /--type=zygote/) next;
           if (args ~ /--type=gpu-process/) next;
-          if (args ~ /--type=extensionHost/) next;
+          if (args ~ /--type=extensionHost/ || args ~ /--type=utility/) next;
           t=classify(args)
           if (skip != "" && t == skip) next;
           if (prot == "true" && t == "tsserver") next;
-          if (ls == "true" && (t == "html-server" || t == "markdown-server" || t == "css-server")) next;
+          if (ls == "true" && (t == "html-server" || t == "markdown-server" || t == "css-server" || t == "json-server" || t == "eslint")) next;
           printf "%s %s %s\n", pid, rss, args;
         }
       ' | sort -k2 -rn | head -1)
@@ -487,9 +487,9 @@ kill_top_vscode_helper() {
           if (args ~ /^\/usr\/share\/code\/code$/) next;
           if (args ~ /--type=zygote/) next;
           if (args ~ /--type=gpu-process/) next;
-          if (args ~ /--type=extensionHost/) next;
+          if (args ~ /--type=extensionHost/ || args ~ /--type=utility/) next;
           if (prot == "true" && args ~ /tsserver\.js/) next;
-          if (ls == "true" && (args ~ /htmlServerMain/ || args ~ /serverWorkerMain/ || args ~ /cssServerMain/)) next;
+          if (ls == "true" && (args ~ /htmlServerMain/ || args ~ /serverWorkerMain/ || args ~ /cssServerMain/ || args ~ /jsonServerMain/ || args ~ /eslintServer/)) next;
           printf "%s %s %s\n", pid, rss, args;
         }' | sort -k2 -rn | head -1)
     [[ -n "$line" ]] && log "  Anti-respawn: no alternative found — re-using last-killed type"
@@ -771,7 +771,13 @@ while true; do
         _runaway_streak=$(( _runaway_streak + 1 ))
       fi
       if [[ -z "$chrome_running" ]]; then
-        kill_top_vscode_helper "RSS acceleration: +${_rss_delta} kB/cycle (${vscode_rss} kB total)" "emerg"
+        # Use normal mode (language-server protection ON) unless RSS has actually
+        # reached emergency level. Without this, WARN-range spikes (~2.2 GB)
+        # bypass all protection and kill language servers that only use ~80-120 MB.
+        # Fix: issue #45 — confirmed 2026-03-24 crash from emerg at WARN range.
+        accel_mode="normal"
+        (( vscode_rss >= eff_emerg )) && accel_mode="emerg"
+        kill_top_vscode_helper "RSS acceleration: +${_rss_delta} kB/cycle (${vscode_rss} kB total)" "$accel_mode"
       else
         kill_browsers "TERM" "RSS acceleration: +${_rss_delta} kB/cycle (${vscode_rss} kB total)"
       fi
