@@ -81,8 +81,11 @@ This watchdog reads only `MemAvailable` and `MemTotal` — both correct on this 
 | PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall)                                                        |
 | VS Code RSS > 2.2 GB   | `SIGTERM` Chrome + desktop notification                                                          |
 | VS Code RSS > 3.2 GB   | `SIGKILL` Chrome; if no Chrome → `SIGTERM` highest-RSS extension host to save the VS Code window |
+| RSS velocity spike     | Kill lowest-value VS Code helper — **never** a language server or Extension Host at normal severity |
 | Every loop             | Set `oom_score_adj=0` on VS Code PIDs (counters Electron's 200–300 default)                      |
 | Every loop             | Set `oom_score_adj=1000` on Chrome PIDs (kernel kills it first)                                  |
+
+**Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process are excluded from the helper-kill candidate pool at normal severity. These 80–120 MB processes are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing them saves <2% of memory for 2 seconds (they respawn immediately) while permanently disabling language intelligence until a full VS Code restart. Only at true emergency severity (RSS ≥ 3.2 GB) are they considered as last-resort targets.
 
 - Checks every **2 seconds** (4s was confirmed too slow — missed a 4 GB spike in < 4s on 2026-03-05)
 - **Startup mode**: 0.5 s polling for 90 s after new VS Code PIDs detected — catches extension-host spikes during startup

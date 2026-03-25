@@ -17,6 +17,9 @@ The daemon acts on these conditions (checked every 2 seconds):
 | PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall) |
 | VS Code RSS > 2.5 GB | `SIGTERM` Chrome + desktop notification |
 | VS Code RSS > 3.5 GB | `SIGKILL` Chrome; if no Chrome → `SIGTERM` the highest-RSS extension host process to save the VS Code window |
+| RSS velocity spike | Kill lowest-value VS Code helper — **never** a language server or Extension Host at normal severity |
+
+**Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process (hosting Copilot, Playwright MCP, and all extensions) are excluded from the helper-kill candidate pool at normal severity. These small processes (80–120 MB) are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing one saves negligible memory while permanently disabling language intelligence or all extensions. They are only considered as last-resort targets at true emergency severity (RSS ≥ 3.5 GB).
 
 **Startup mode:** when new VS Code PIDs appear, the daemon switches to **0.5 s polling for 90 s** and drops the RSS emergency threshold to 2.0 GB — catching the extension-host spike that caused the crash this tool was built to prevent (0 → 4 GB RSS in under 2 seconds during startup).
 

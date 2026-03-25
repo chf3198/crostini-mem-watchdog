@@ -6,6 +6,11 @@
 - **Duplicate status-bar item on extension reactivation** — extension activation is now idempotent per extension-host process, preventing creation of a second Mem Watchdog UI entry in the same VS Code window.
 - **Runtime UI lifecycle cleanup** — status-bar item and poll timer are now tracked as module-level singletons and deterministically disposed on deactivation.
 
+### Daemon (v20260324.3)
+- **RSS acceleration path no longer uses emergency mode unconditionally** ([#45](https://github.com/chf3198/crostini-mem-watchdog/issues/45)) — the RSS velocity check at `eff_warn` (~2.2 GB) now uses `"normal"` kill mode, reserving `"emerg"` for when `vscode_rss ≥ eff_emerg` (~3.2 GB). Previously, the hardcoded `"emerg"` mode disabled all language-server protection even 1 GB below the true emergency threshold.
+- **json-server and eslint added to language-server protection guard** ([#46](https://github.com/chf3198/crostini-mem-watchdog/issues/46)) — `jsonServerMain` and `eslintServer` are now excluded from `kill_top_vscode_helper` at normal severity. Before this fix, these processes were preferred kill targets despite being only 80–120 MB and subject to VS Code's 5-crash-in-3-minutes permanent death threshold.
+- **Extension Host (utility process) excluded from helper kill path** ([#47](https://github.com/chf3198/crostini-mem-watchdog/issues/47)) — VS Code 1.90+ runs the Extension Host as `--type=utility --utility-sub-type=node.mojom.NodeService`, not the legacy `--type=extensionHost`. The 489 MB process hosting Copilot Chat, Playwright MCP, and all extensions now bypasses the helper-kill candidate pool at all severities below emergency.
+
 ### Tests
 - JS unit tests updated: **56 passing**.
 - Added regression test: `extension.activate.test.js` verifies repeated `activate()` calls only create one status-bar item.
