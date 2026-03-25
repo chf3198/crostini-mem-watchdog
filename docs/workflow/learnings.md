@@ -20,6 +20,33 @@
 
 ---
 
+### 2026-03-25 — Three independent failures in the 4-layer Copilot governance model caused post-merge governance to be silently skipped
+
+**Context**: After merging PR #48 (three critical daemon bug fixes: #45, #46, #47) and deploying the daemon, the agent declared the task complete without updating CHANGELOG, READMEs, or running `repo-profile-governance`. The user had to explicitly prompt: "Did you follow the governance skill?"
+
+**Discovery**: Three independent failures in the customization layer stack caused the governance miss:
+
+1. **Hooks not loading (CRITICAL)**: `~/.copilot/hooks/global-standards.json` contained `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` hooks, but `chat.hookFilesLocations` in VS Code settings did not include `~/.copilot/hooks`. The default only includes `.github/hooks`, `.claude/settings.json`, `.claude/settings.local.json`, and `~/.claude/settings.json`. All 4 hooks had **never executed** since creation — the entire deterministic enforcement layer was dead.
+
+2. **Skills are on-demand by design**: The VS Code docs are explicit: skills have "Scope: Task-specific, loaded on-demand." `repo-profile-governance` has `disable-model-invocation: false` (allowing auto-load), but the model's task focus ("fix crashes → merge → deploy") completed without the model determining profile governance was relevant. Skills are procedural knowledge, not enforcement gates.
+
+3. **Instructions were too generic**: `release-docs-hygiene.instructions.md` said "update README/CHANGELOG" but never named specific skills (`repo-profile-governance`, `docs-drift-maintenance`) or provided a concrete post-merge checklist. `skill-routing.instructions.md` said "invoke `repo-standards-router`" but that skill routes to standards branches, not profile governance.
+
+**Fixes applied**:
+- Added `"~/.copilot/hooks": true` to `chat.hookFilesLocations` in VS Code settings — hooks now load.
+- Enhanced `release-docs-hygiene.instructions.md` with a concrete 5-step "Post-Merge / Post-Deploy Governance Checklist (Mandatory)" naming specific skills.
+- Enhanced `session_context.py` (SessionStart hook) to detect community health gaps and inject post-merge governance routing at session start.
+- Enhanced `stop_reminder.py` (Stop hook) to detect git code changes and issue a specific 5-point governance checklist reminder at session end.
+- Added step 6 to `skill-routing.instructions.md` with the post-merge governance checklist.
+
+**Application**: The 4-layer model must use each layer for what it's designed for:
+- **Instructions** (always-on): List the actual rules and checklist, not "invoke skill X"
+- **Hooks** (deterministic): Enforce by detecting state (git changes, community health gaps) and injecting specific reminders
+- **Skills** (on-demand): Provide detailed procedures for HOW to execute each governance task
+- **CI** (pass/fail): Validate objective code quality gates
+
+Never rely solely on instructions telling the model to invoke skills — skills are suggestions, hooks are enforcement. Always verify `chat.hookFilesLocations` includes `~/.copilot/hooks` after creating user-level hooks.
+
 ### 2026-03-24 — Three kill_top_vscode_helper bugs caused language server and Extension Host kills
 
 **Context**: HTML Language Server and JSON Language Server both hit VS Code's 5-crash-in-3-minutes permanent death threshold. Journal showed the watchdog killing jsonServerMain 5× in 2 min and htmlServerMain 5× in 1 min via the RSS acceleration path.
