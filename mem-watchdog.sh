@@ -16,18 +16,20 @@
 # WHAT THIS DOES:
 #   - Reads ONLY MemAvailable and MemTotal — both correct on this kernel.
 #   - Also reads /proc/pressure/memory (PSI) for sustained-pressure detection.
-#   - Sends SIGTERM to chrome/playwright at ≤25% free RAM.
-#   - Escalates to SIGKILL at ≤15% free RAM.
-#   - PSI full avg10 > 5% triggers SIGTERM (calibrated for Crostini no-swap).
-#   - VS Code RSS warning at 2.5 GB: SIGTERM Chrome + desktop alert + journal.
-#   - VS Code RSS emergency at 3.5 GB: SIGKILL Chrome; if no Chrome, SIGTERM
+#   - 4-stage graduated pressure response (Issue #4):
+#     Stage 1 (Monitor):   PSI some > 1% OR MemAvail < 35% → log + raise Chrome oom_score_adj
+#     Stage 2 (Throttle):  PSI some > 3% OR MemAvail < 30% → cgroup soft_limit + SIGTERM Chrome
+#     Stage 3 (Reclaim):   PSI full > 2% OR MemAvail < 25% → cgroup force_empty + SIGTERM Chrome + helpers
+#     Stage 4 (Terminate): PSI full > 5% OR MemAvail < 15% → SIGKILL Chrome; VS Code recovery if needed
+#   - VS Code RSS warning at 2.2 GB: SIGTERM Chrome + desktop alert + journal.
+#   - VS Code RSS emergency at 3.2 GB: SIGKILL Chrome; if no Chrome, SIGTERM
 #     the highest-RSS `code` process (extension host) to save the VS Code window.
 #   - Sets oom_score_adj=0 on VS Code (lowers Electron's default 200-300).
 #   - Sets oom_score_adj=+1000 on Chrome (kernel kills it first).
 #   - Checks every 2 seconds (was 4s — confirmed too slow to catch rapid spike).
 #   - STARTUP MODE: switches to 0.5s checks for 90s when new VS Code PIDs detected.
 #   - STARTUP MODE: proactively SIGTERMs Chrome the moment VS Code starts loading.
-#   - STARTUP MODE: uses 2.0 GB emergency threshold (vs 3.5 GB normal).
+#   - STARTUP MODE: uses 2.0 GB emergency threshold (vs 3.2 GB normal).
 #   - Sends desktop notifications (notify-send) throttled to once per 5 min.
 #   - Logs all actions via systemd journal (logger -t mem-watchdog).
 #
@@ -36,14 +38,34 @@
 #   Manual test:   ./scripts/mem-watchdog.sh --dry-run
 # ─────────────────────────────────────────────────────────────────────────────
 
-SIGTERM_THRESHOLD=25   # Kill Chrome with SIGTERM when MemAvailable < 25% (~1.6 GB)
-SIGKILL_THRESHOLD=15   # Escalate to SIGKILL when MemAvailable < 15% (~945 MB)
-PSI_THRESHOLD=5        # Kill on sustained memory stall: PSI full avg10 > 5%
-                       # Calibrated for Crostini (Issue #14): no visible swap means PSI stays
-                       # near 0% until OOM. 5% detects any sustained stall; 25% was unreachable.
-                       # See docs/technical/psi-calibration.md for experimental data.
+# ── 4-stage pressure response model (Issue #4) ────────────────────────────────
+# Replaces binary kill-or-wait with graduated response.
+# PSI thresholds calibrated for Crostini (Issue #14): no-swap means PSI
+# stays near 0% until OOM. See docs/technical/psi-calibration.md.
+# cgroup v1: memory.soft_limit_in_bytes (throttle), memory.force_empty (reclaim).
+#
+# Stage 1 — Monitor: log + raise Chrome oom_score_adj
+STAGE1_PSI_SOME_X100=100       # PSI some avg10 > 1.00%
+STAGE1_MEM_PCT=35              # OR MemAvailable < 35%
+#
+# Stage 2 — Throttle: write memory.soft_limit_in_bytes + SIGTERM Chrome
+STAGE2_PSI_SOME_X100=300       # PSI some avg10 > 3.00%
+STAGE2_MEM_PCT=30              # OR MemAvailable < 30%
+STAGE2_SOFT_LIMIT_PCT=80       # soft_limit = 80% of MemTotal (creates reclaim pressure)
+#
+# Stage 3 — Reclaim: write memory.force_empty + SIGTERM Chrome + helpers
+STAGE3_PSI_FULL_X100=200       # PSI full avg10 > 2.00%
+STAGE3_MEM_PCT=25              # OR MemAvailable < 25%
+#
+# Stage 4 — Terminate: SIGKILL Chrome + VS Code recovery if needed
+STAGE4_PSI_FULL_X100=500       # PSI full avg10 > 5.00%
+STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
+
+# Backward-compatible names — NOT used directly in the daemon.
+# configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
+# After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260325.2   # 2026-03-25 v2: add kill cooldown, hysteresis counters, recovery confirmation (#5)   # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260325.4   # 2026-03-25 v4: 4-stage pressure response model (#4)   # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 # VS Code RSS thresholds (confirmed: extension host hit 4 GB, watchdog had no Chrome to kill)
@@ -115,8 +137,8 @@ KILL_COOLDOWN=15                # seconds to skip non-critical kill evaluation a
 HYSTERESIS_POLLS=3              # consecutive polls above threshold before non-critical action
                                 # at 2s interval = 6s sustained pressure before acting
 RECOVERY_POLLS=5                # consecutive clean polls to confirm recovery (10s at 2s)
-RECOVERY_PSI_X100=500           # PSI full avg10 < 5.00% to count as clean (scaled ×100)
-RECOVERY_MEM_PCT=35             # MemAvailable > 35% to count as clean
+RECOVERY_PSI_X100=100           # PSI some avg10 < 1.00% to count as clean (below Stage 1)
+RECOVERY_MEM_PCT=40             # MemAvailable > 40% to count as clean (above Stage 1)
 
 # ── Chrome process count cap — accumulation guard (Issue #26) ─────────────
 # Discovered 2026-03-10: 12+ Chrome scopes accumulated over 3.5 hours.
@@ -133,6 +155,17 @@ _WATCHDOG_CFG="${XDG_CONFIG_HOME:-${HOME}/.config}/mem-watchdog/config.sh"
 # shellcheck source=/dev/null
 [[ -f "$_WATCHDOG_CFG" ]] && source "$_WATCHDOG_CFG"
 unset _WATCHDOG_CFG
+
+# ── Backward-compatible config mapping (Issue #4 transition) ─────────────
+# configWriter.js (v0.3.x) writes SIGTERM_THRESHOLD, SIGKILL_THRESHOLD,
+# PSI_THRESHOLD to the config file. Map them to stage constants so existing
+# user configs continue to work until the extension learns the new names.
+# shellcheck disable=SC2154
+[[ -v SIGTERM_THRESHOLD ]] && STAGE3_MEM_PCT=$SIGTERM_THRESHOLD
+# shellcheck disable=SC2154
+[[ -v SIGKILL_THRESHOLD ]] && STAGE4_MEM_PCT=$SIGKILL_THRESHOLD
+# shellcheck disable=SC2154
+[[ -v PSI_THRESHOLD ]] && STAGE4_PSI_FULL_X100=$(( PSI_THRESHOLD * 100 ))
 
 # ── Startup mode state ───────────────────────────────────────────────────────
 _startup_mode_end=0           # epoch seconds until startup mode expires
@@ -159,6 +192,14 @@ _hyst_lowmem_count=0            # consecutive polls with pct <= SIGTERM_THRESHOL
 _hyst_psi_count=0               # consecutive polls with psi_x100 >= PSI_THRESHOLD*100
 _recovery_clean_count=0         # consecutive clean polls (no pressure condition true)
 _pressure_active=false          # true when any non-critical intervention fired
+
+# ── 4-stage pressure state (Issue #4) ─────────────────────────────────────
+_pressure_stage=0               # 0=normal, 1=monitor, 2=throttle, 3=reclaim, 4=terminate
+_stage_entry_time=0             # epoch seconds when current stage was entered
+_stage_hyst_count=0             # consecutive polls at candidate (higher) stage
+_cgroup_mem_path=""             # populated at startup; empty = cgroup writes disabled
+_soft_limit_active=false        # true when we've lowered memory.soft_limit_in_bytes
+_stage_transitions=0            # total stage transitions for observability
 
 # ── Runtime counters / observability ─────────────────────────────────────────
 _loops=0
@@ -226,7 +267,7 @@ log_status_snapshot() {
   if (( now < _startup_mode_end )); then
     startup_left=$(( _startup_mode_end - now ))
   fi
-  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} rss_accel=${_rss_accel_events} rss_runaway_streak=${_runaway_streak} code_recoveries=${_code_recovery_events} exthost_escal=${_ext_host_escalation_events} anti_respawn_type=${_last_killed_type} helper_kills_window=${_helper_kills_in_window} action_budget_used=${_action_budget_count} cooldown_skips=${_cooldown_skips} hyst_skips=${_hysteresis_skips} recovery_confirms=${_recovery_confirmations} hyst_warn=${_hyst_warn_count} hyst_lowmem=${_hyst_lowmem_count} hyst_psi=${_hyst_psi_count} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
+  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} pressure_stage=${_pressure_stage} stage_transitions=${_stage_transitions} soft_limit_active=${_soft_limit_active} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} rss_accel=${_rss_accel_events} rss_runaway_streak=${_runaway_streak} code_recoveries=${_code_recovery_events} exthost_escal=${_ext_host_escalation_events} anti_respawn_type=${_last_killed_type} helper_kills_window=${_helper_kills_in_window} action_budget_used=${_action_budget_count} cooldown_skips=${_cooldown_skips} hyst_skips=${_hysteresis_skips} recovery_confirms=${_recovery_confirmations} hyst_warn=${_hyst_warn_count} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
   _last_status_log=$now
 }
 
@@ -700,6 +741,133 @@ check_chrome_cap() {
   fi
 }
 
+# ── cgroup v1 memory path discovery ──────────────────────────────────────────
+# Derive the user-session memory cgroup path from /proc/self/cgroup.
+# Used by Stage 2 (memory.soft_limit_in_bytes) and Stage 3 (memory.force_empty).
+# If the path doesn't exist or sudo -n fails, cgroup writes are silently disabled.
+discover_cgroup_mem_path() {
+  local rel
+  rel=$(awk -F: '$2=="memory"{print $3; exit}' /proc/self/cgroup 2>/dev/null)
+  if [[ -z "$rel" ]]; then
+    log "cgroup: no memory controller found in /proc/self/cgroup — cgroup writes disabled"
+    return
+  fi
+  local path="/sys/fs/cgroup/memory${rel}"
+  if [[ ! -d "$path" ]]; then
+    log "cgroup: path $path does not exist — cgroup writes disabled"
+    return
+  fi
+  # Test writability with sudo -n
+  if ! sudo -n test -w "$path/memory.soft_limit_in_bytes" 2>/dev/null; then
+    log "cgroup: sudo -n cannot write to $path/memory.soft_limit_in_bytes — cgroup writes disabled"
+    return
+  fi
+  _cgroup_mem_path="$path"
+  log "cgroup: discovered memory path: $path (soft_limit + force_empty available)"
+}
+
+# ── Stage transition logging ────────────────────────────────────────────────
+set_pressure_stage() {
+  local new_stage="$1"
+  local reason="$2"
+  if (( new_stage != _pressure_stage )); then
+    local old=$_pressure_stage
+    _pressure_stage=$new_stage
+    _stage_entry_time=$(date +%s)
+    _stage_hyst_count=0
+    _stage_transitions=$(( _stage_transitions + 1 ))
+    log "[STAGE ${old}→${new_stage}] ${reason}"
+    if (( new_stage > old )); then
+      _pressure_active=true
+      _recovery_clean_count=0
+    fi
+  fi
+}
+
+# ── cgroup v1 throttle: write memory.soft_limit_in_bytes ─────────────────
+# Creates kernel reclaim pressure without hard-killing anything.
+# Only effective when system is under global memory pressure.
+cgroup_throttle() {
+  [[ -z "$_cgroup_mem_path" ]] && return 1
+  local total_kb soft_limit_kb
+  total_kb=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+  [[ -z "$total_kb" ]] && return 1
+  soft_limit_kb=$(( total_kb * STAGE2_SOFT_LIMIT_PCT / 100 ))
+  local soft_limit_bytes=$(( soft_limit_kb * 1024 ))
+  if $DRY_RUN; then
+    log "  (dry-run: would write ${soft_limit_bytes} to memory.soft_limit_in_bytes)"
+    _soft_limit_active=true
+    return 0
+  fi
+  if echo "$soft_limit_bytes" | sudo -n tee "$_cgroup_mem_path/memory.soft_limit_in_bytes" > /dev/null 2>&1; then
+    log "  cgroup: memory.soft_limit_in_bytes set to ${soft_limit_kb} kB (${STAGE2_SOFT_LIMIT_PCT}% of total)"
+    _soft_limit_active=true
+    return 0
+  fi
+  log "  cgroup: failed to write memory.soft_limit_in_bytes"
+  return 1
+}
+
+# ── cgroup v1 reclaim: write to memory.force_empty ───────────────────────
+# Triggers synchronous kernel reclaim of reclaimable pages from the cgroup.
+cgroup_reclaim() {
+  [[ -z "$_cgroup_mem_path" ]] && return 1
+  if $DRY_RUN; then
+    log "  (dry-run: would write 0 to memory.force_empty)"
+    return 0
+  fi
+  if echo 0 | sudo -n tee "$_cgroup_mem_path/memory.force_empty" > /dev/null 2>&1; then
+    log "  cgroup: memory.force_empty triggered — kernel reclaiming pages"
+    return 0
+  fi
+  log "  cgroup: failed to write memory.force_empty"
+  return 1
+}
+
+# ── cgroup v1 throttle release: reset soft_limit to unlimited ────────────
+cgroup_release_throttle() {
+  [[ -z "$_cgroup_mem_path" ]] && return 1
+  $_soft_limit_active || return 0  # nothing to release
+  if $DRY_RUN; then
+    log "  (dry-run: would reset memory.soft_limit_in_bytes to unlimited)"
+    _soft_limit_active=false
+    return 0
+  fi
+  if echo -1 | sudo -n tee "$_cgroup_mem_path/memory.soft_limit_in_bytes" > /dev/null 2>&1; then
+    log "  cgroup: memory.soft_limit_in_bytes reset to unlimited"
+    _soft_limit_active=false
+    return 0
+  fi
+  return 1
+}
+
+# ── Evaluate pressure stage from current metrics ─────────────────────────
+# Returns the stage number (0-4) that current conditions warrant.
+# Called every loop iteration; actual transition uses hysteresis.
+evaluate_pressure_stage() {
+  local pct="$1"          # MemAvailable percentage
+  local psi_some="$2"     # PSI some avg10 × 100
+  local psi_full="$3"     # PSI full avg10 × 100
+
+  # Stage 4: terminate
+  if (( psi_full >= STAGE4_PSI_FULL_X100 || pct <= STAGE4_MEM_PCT )); then
+    echo 4; return
+  fi
+  # Stage 3: reclaim
+  if (( psi_full >= STAGE3_PSI_FULL_X100 || pct <= STAGE3_MEM_PCT )); then
+    echo 3; return
+  fi
+  # Stage 2: throttle
+  if (( psi_some >= STAGE2_PSI_SOME_X100 || pct <= STAGE2_MEM_PCT )); then
+    echo 2; return
+  fi
+  # Stage 1: monitor
+  if (( psi_some >= STAGE1_PSI_SOME_X100 || pct <= STAGE1_MEM_PCT )); then
+    echo 1; return
+  fi
+  echo 0
+}
+
 # ── Kill cooldown check (Issue #5) ──────────────────────────────────────────
 # Returns 0 (allow) if cooldown has expired, 1 (skip) if still in cooldown.
 # EMERGENCY and SIGKILL callers pass mode="critical" to bypass.
@@ -726,11 +894,14 @@ kill_cooldown_allows() {
 _sleep_pid=''
 trap '[[ -n "${_sleep_pid:-}" ]] && kill "$_sleep_pid" 2>/dev/null; log_status_snapshot "stop"; log "Stopping (signal received)"; exit 0' TERM INT
 
-log "Started (SIGTERM ≤${SIGTERM_THRESHOLD}%, SIGKILL ≤${SIGKILL_THRESHOLD}%, PSI >${PSI_THRESHOLD}%, oom_adj code=${OOM_VSCODE_ADJ} chrome=+${OOM_CHROME_ADJ})"
+log "Started (4-stage model: S1≤${STAGE1_MEM_PCT}%/PSIsome>${STAGE1_PSI_SOME_X100}, S2≤${STAGE2_MEM_PCT}%/PSIsome>${STAGE2_PSI_SOME_X100}, S3≤${STAGE3_MEM_PCT}%/PSIfull>${STAGE3_PSI_FULL_X100}, S4≤${STAGE4_MEM_PCT}%/PSIfull>${STAGE4_PSI_FULL_X100}, oom_adj code=${OOM_VSCODE_ADJ} chrome=+${OOM_CHROME_ADJ}, cgroup=${_cgroup_mem_path:-disabled})"
 $DRY_RUN && log "DRY-RUN mode — no processes will be killed"
 
 # Apply OOM scores immediately at startup before the first loop iteration
 adjust_oom_scores
+
+# Discover cgroup v1 memory path for Stage 2/3 interventions (Issue #4)
+discover_cgroup_mem_path
 
 while true; do
   incr_counter _loops
@@ -782,9 +953,20 @@ while true; do
 
   pct=$(( avail * 100 / total ))
 
-  # Read PSI full avg10 — percentage of time ALL tasks stalled waiting for
-  # memory in the last 10 seconds. Multiply by 100 for integer comparison.
-  # e.g. "full avg10=3.45 ..." → psi_x100=345
+  # Read PSI avg10 values for staged pressure response (Issue #4).
+  # "some": percentage of time at least ONE task stalled (Stage 1/2 trigger).
+  # "full":  percentage of time ALL tasks stalled (Stage 3/4 trigger).
+  # Multiply by 100 for integer comparison: avg10=3.45 → 345.
+  psi_some_x100=$(awk '/^some[[:space:]]/{
+    for(i=1;i<=NF;i++) {
+      if($i ~ /^avg10=/) {
+        sub("avg10=","",$i)
+        printf "%d", $i * 100
+        exit
+      }
+    }
+  }' /proc/pressure/memory 2>/dev/null || echo 0)
+
   psi_x100=$(awk '/^full[[:space:]]/{
     for(i=1;i<=NF;i++) {
       if($i ~ /^avg10=/) {
@@ -904,72 +1086,104 @@ while true; do
     _hyst_warn_count=0
   fi
 
-  # Escalate: SIGKILL at critical threshold — bypasses cooldown and hysteresis (critical)
-  if (( pct <= SIGKILL_THRESHOLD )); then
-    _hyst_lowmem_count=0
-    _recovery_clean_count=0
-    _pressure_active=true
-    incr_counter _critical_kill_events
-    notify_desktop "crit" "🚨 Critical Memory: ${pct}% free" \
-      "Force-killing Chrome/Playwright.\nClose ChromeOS tabs if crash persists."
-    if [[ -n "$chrome_running" ]]; then
-      kill_browsers "KILL" "CRITICAL: ${pct}% MemAvailable (${avail} kB)" "critical"
-    else
-      kill_vscode_main "CRITICAL low-mem with no browser target (${avail} kB free)" "critical"
-    fi
+  # ── 4-stage pressure evaluation (Issue #4) ──────────────────────────────
+  # Replaces flat SIGKILL/SIGTERM/PSI check with graduated response.
+  # RSS-based checks (EMERGENCY/WARN above) remain independent.
+  # Stage transitions use hysteresis for upward moves; Stage 4 bypasses.
+  candidate_stage=$(evaluate_pressure_stage "$pct" "$psi_some_x100" "$psi_x100")
 
-  # Intervene: SIGTERM at low-memory threshold — requires hysteresis and cooldown
-  elif (( pct <= SIGTERM_THRESHOLD )); then
-    _recovery_clean_count=0
-    _hyst_lowmem_count=$(( _hyst_lowmem_count + 1 ))
-    if (( _hyst_lowmem_count < HYSTERESIS_POLLS )); then
-      incr_counter _hysteresis_skips
-      log "  [HYSTERESIS] Low memory ${pct}% — poll ${_hyst_lowmem_count}/${HYSTERESIS_POLLS} (waiting for sustained pressure)"
-    elif kill_cooldown_allows "normal"; then
-      incr_counter _low_mem_term_events
-      _pressure_active=true
-      log "LOW: ${pct}% MemAvailable sustained for ${_hyst_lowmem_count} polls — SIGTERMing Chrome"
-      notify_desktop "warn" "⚠️ Low Memory: ${pct}% free" \
-        "Terminating Chrome/Playwright to protect VS Code."
-      if [[ -n "$chrome_running" ]]; then
-        kill_browsers "TERM" "LOW: ${pct}% MemAvailable (${avail} kB) sustained ${_hyst_lowmem_count} polls"
+  if (( candidate_stage > _pressure_stage )); then
+    # Upward transition — Stage 4 bypasses hysteresis (critical)
+    if (( candidate_stage >= 4 )); then
+      set_pressure_stage 4 "CRITICAL: pct=${pct}% psi_full=${psi_x100} — bypassing hysteresis"
+    else
+      _stage_hyst_count=$(( _stage_hyst_count + 1 ))
+      if (( _stage_hyst_count >= HYSTERESIS_POLLS )); then
+        set_pressure_stage "$candidate_stage" "sustained ${_stage_hyst_count} polls (pct=${pct}% psi_some=${psi_some_x100} psi_full=${psi_x100})"
       else
-        if ! kill_top_vscode_helper "LOW mem: no Chrome to SIGTERM (${avail} kB free)" "normal"; then
-          kill_extension_host "low-mem fallback: helper unavailable (${avail} kB free)"
-        fi
+        incr_counter _hysteresis_skips
+        log "  [HYSTERESIS] Stage ${_pressure_stage}→${candidate_stage} — poll ${_stage_hyst_count}/${HYSTERESIS_POLLS}"
       fi
     fi
-
-  # Intervene: SIGTERM on sustained PSI pressure spike — requires hysteresis and cooldown
-  elif (( psi_x100 >= PSI_THRESHOLD * 100 )); then
-    _recovery_clean_count=0
-    _hyst_psi_count=$(( _hyst_psi_count + 1 ))
-    if (( _hyst_psi_count < HYSTERESIS_POLLS )); then
-      incr_counter _hysteresis_skips
-      log "  [HYSTERESIS] PSI full avg10=$(( psi_x100 / 100 )).$(( psi_x100 % 100 ))% — poll ${_hyst_psi_count}/${HYSTERESIS_POLLS} (waiting for sustained stall)"
-    elif kill_cooldown_allows "normal"; then
-      incr_counter _psi_events
-      _pressure_active=true
-      notify_desktop "warn" "⚠️ Memory Stall Detected" \
-        "PSI full avg10=$(( psi_x100 / 100 ))% — terminating Chrome/Playwright."
-      kill_browsers "TERM" "PSI stall: ${psi_x100}x sustained ${_hyst_psi_count} polls (${pct}% RAM free)"
+  elif (( candidate_stage < _pressure_stage )); then
+    # Downward transition — immediate
+    _stage_hyst_count=0
+    set_pressure_stage "$candidate_stage" "conditions eased (pct=${pct}% psi_some=${psi_some_x100} psi_full=${psi_x100})"
+    # Release cgroup throttle if dropping below Stage 2
+    if (( candidate_stage < 2 )); then
+      cgroup_release_throttle
     fi
   else
-    _hyst_lowmem_count=0
-    _hyst_psi_count=0
+    # Same stage — reset upward hysteresis counter
+    _stage_hyst_count=0
   fi
 
-  # ── Recovery confirmation (Issue #5) ──────────────────────────────────────
-  # When all pressure conditions are clear (RSS below WARN, MemAvail above
-  # SIGTERM threshold, PSI below threshold), count consecutive clean polls.
-  # At RECOVERY_POLLS, log confirmed recovery and reset pressure tracking.
-  if (( vscode_rss < eff_warn && pct > SIGTERM_THRESHOLD && psi_x100 < PSI_THRESHOLD * 100 )); then
-    # Additional recovery quality check: PSI and memory must be well clear
-    if (( psi_x100 < RECOVERY_PSI_X100 && pct > RECOVERY_MEM_PCT )); then
+  # ── Execute stage-specific actions ──────────────────────────────────────
+  case $_pressure_stage in
+    1)
+      # Stage 1 — Monitor: log + Chrome oom_score_adj already managed per-loop
+      _recovery_clean_count=0
+      ;;
+    2)
+      # Stage 2 — Throttle: cgroup soft_limit + SIGTERM Chrome
+      _recovery_clean_count=0
+      _pressure_active=true
+      if kill_cooldown_allows "normal"; then
+        if ! $_soft_limit_active; then
+          cgroup_throttle
+        fi
+        if [[ -n "$chrome_running" ]]; then
+          incr_counter _low_mem_term_events
+          notify_desktop "warn" "⚠️ Memory Pressure Stage 2: ${pct}% free" \
+            "Throttling memory + terminating Chrome. PSI some=$(( psi_some_x100 / 100 )).$(( psi_some_x100 % 100 ))%"
+          kill_browsers "TERM" "Stage 2 throttle: pct=${pct}% psi_some=${psi_some_x100}"
+        fi
+      fi
+      ;;
+    3)
+      # Stage 3 — Reclaim: force_empty + SIGTERM Chrome + helpers
+      _recovery_clean_count=0
+      _pressure_active=true
+      if kill_cooldown_allows "normal"; then
+        cgroup_reclaim
+        incr_counter _low_mem_term_events
+        notify_desktop "warn" "⚠️ Memory Pressure Stage 3: ${pct}% free" \
+          "Reclaiming pages + terminating Chrome. PSI full=$(( psi_x100 / 100 )).$(( psi_x100 % 100 ))%"
+        if [[ -n "$chrome_running" ]]; then
+          kill_browsers "TERM" "Stage 3 reclaim: pct=${pct}% psi_full=${psi_x100}"
+        else
+          if ! kill_top_vscode_helper "Stage 3: no Chrome (pct=${pct}%, psi_full=${psi_x100})" "normal"; then
+            kill_extension_host "Stage 3 fallback: helper unavailable (${avail} kB free)"
+          fi
+        fi
+      fi
+      ;;
+    4)
+      # Stage 4 — Terminate: SIGKILL Chrome; if no Chrome → VS Code recovery
+      _recovery_clean_count=0
+      _pressure_active=true
+      incr_counter _critical_kill_events
+      notify_desktop "crit" "🚨 Critical Memory Stage 4: ${pct}% free" \
+        "Force-killing Chrome/Playwright.\nClose ChromeOS tabs if crash persists."
+      if [[ -n "$chrome_running" ]]; then
+        kill_browsers "KILL" "Stage 4 terminate: pct=${pct}% psi_full=${psi_x100}" "critical"
+      else
+        kill_vscode_main "Stage 4: no browser target (${avail} kB free, psi_full=${psi_x100})" "critical"
+      fi
+      ;;
+  esac
+
+  # ── Recovery confirmation (Issues #4, #5) ─────────────────────────────────
+  # When ALL conditions are clear: stage 0 (below all stage thresholds),
+  # RSS below WARN, and recovery quality thresholds met — count clean polls.
+  # At RECOVERY_POLLS, release cgroup throttle, log recovery, reset tracking.
+  if (( _pressure_stage == 0 && vscode_rss < eff_warn )); then
+    if (( psi_some_x100 < RECOVERY_PSI_X100 && psi_x100 < RECOVERY_PSI_X100 && pct > RECOVERY_MEM_PCT )); then
       _recovery_clean_count=$(( _recovery_clean_count + 1 ))
       if $_pressure_active && (( _recovery_clean_count >= RECOVERY_POLLS )); then
         incr_counter _recovery_confirmations
-        log "RECOVERY: ${_recovery_clean_count} consecutive clean polls (psi_x100=${psi_x100}, mem_pct=${pct}%) — pressure cleared"
+        cgroup_release_throttle
+        log "RECOVERY: ${_recovery_clean_count} consecutive clean polls (psi_some=${psi_some_x100}, psi_full=${psi_x100}, mem_pct=${pct}%) — pressure cleared"
         _pressure_active=false
         _recovery_clean_count=0
         log_status_snapshot "recovery"
@@ -978,7 +1192,8 @@ while true; do
       # Partially clear — don't count toward recovery
       _recovery_clean_count=0
     fi
-  else
+  elif (( _pressure_stage == 0 )); then
+    # Stage 0 but RSS still high — reset recovery counter
     _recovery_clean_count=0
   fi
 
