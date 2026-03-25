@@ -39,7 +39,7 @@ SIGTERM_THRESHOLD=25   # Kill Chrome with SIGTERM when MemAvailable < 25% (~1.6 
 SIGKILL_THRESHOLD=15   # Escalate to SIGKILL when MemAvailable < 15% (~945 MB)
 PSI_THRESHOLD=25       # Kill on sustained memory stall: PSI full avg10 > 25%
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260324.3   # 2026-03-24 v3: fix accel mode, protect json/eslint servers, guard utility processes   # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260325.1   # 2026-03-25 v1: fix action budget exhaustion by no-op browser kills, skip kill_browsers when no Chrome, raise STARTUP_BURST_RSS_KB   # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 # VS Code RSS thresholds (confirmed: extension host hit 4 GB, watchdog had no Chrome to kill)
@@ -66,7 +66,11 @@ STARTUP_DEBOUNCE=300          # minimum seconds between startup mode activations
 # elevated, proactively restart the heaviest helper process to avoid full window crash.
 STARTUP_BURST_WINDOW=120       # seconds in startup-churn detection window
 STARTUP_BURST_COUNT=10         # total new VS Code PIDs in window to flag burst danger
-STARTUP_BURST_RSS_KB=1600000   # only act if VS Code RSS is already above ~1.6 GB
+STARTUP_BURST_RSS_KB=2200000   # only act if VS Code RSS is already above ~2.2 GB
+                              # Changed from 1.6 GB (2026-03-25): 1.6 GB is normal
+                              # VS Code steady state on this system. The burst kill
+                              # at 1641544 kB (89% free memory) killed the Extension
+                              # Host unnecessarily during post-crash recovery.
 HELPER_KILL_COOLDOWN=10        # min seconds between helper restarts (was 20; WARN branch fires
                               # after every EMERGENCY kill so 20s left it blocked for 15s)
 HELPER_KILL_COOLDOWN_EMERG=5   # short cooldown used during EMERGENCY (no Chrome, RSS runaway)
@@ -334,10 +338,10 @@ kill_browsers() {
     incr_counter _browser_kill_actions
   fi
 
-  record_action
   log "ACTION(SIG${signal}): ${reason}"
 
   if $DRY_RUN; then
+    record_action
     log "  (dry-run: would kill chrome/playwright/chromium)"
     return 0
   fi
@@ -356,9 +360,14 @@ kill_browsers() {
   if ! $killed; then
     incr_counter _browser_noop_actions
     log "  (no chrome/playwright processes found to kill)"
+    # Do NOT record_action — no-op kills must not consume the action budget
+    # or block fallback interventions (kill_top_vscode_helper, kill_extension_host).
+    # Crash 2026-03-25: action budget exhausted by 6 no-op kill_browsers calls in 3s,
+    # blocking all real interventions while RSS grew from 2.8→3.5 GB unimpeded.
     return 1
   fi
 
+  record_action
   return 0
 }
 
@@ -827,10 +836,12 @@ while true; do
     log "WARNING: VS Code RSS ${vscode_rss} kB (≥${eff_warn} kB) — SIGTERMing Chrome, restart ext host soon"
     notify_desktop "warn" "⚠️ VS Code Memory High" \
       "VS Code RSS: $(( vscode_rss / 1024 )) MB — terminating Chrome.\nConsider: Developer: Restart Extension Host"
-    kill_browsers "TERM" "VS Code RSS high: ${vscode_rss} kB"
-    # 2026-03-13 crash: at WARN with no Chrome present, watchdog logged 6+ no-ops
-    # while RSS grew unimpeded. Fall through to helper kill when no Chrome to SIGTERM.
-    if [[ -z "$chrome_running" ]]; then
+    # 2026-03-25 crash fix: check chrome_running BEFORE calling kill_browsers.
+    # Previously, kill_browsers consumed the action budget on no-op kills (no Chrome),
+    # blocking the fallback helper/ext-host kill that actually reduces RSS.
+    if [[ -n "$chrome_running" ]]; then
+      kill_browsers "TERM" "VS Code RSS high: ${vscode_rss} kB"
+    else
       if ! kill_top_vscode_helper "VS Code RSS warn: no Chrome to SIGTERM (${vscode_rss} kB)" "normal"; then
         kill_extension_host "warn fallback: helper unavailable while RSS high (${vscode_rss} kB)"
       fi
@@ -842,9 +853,9 @@ while true; do
     incr_counter _critical_kill_events
     notify_desktop "crit" "🚨 Critical Memory: ${pct}% free" \
       "Force-killing Chrome/Playwright.\nClose ChromeOS tabs if crash persists."
-    kill_browsers "KILL" "CRITICAL: ${pct}% MemAvailable (${avail} kB)" "critical"
-    # 2026-03-13: when no Chrome running at critical threshold, kill heaviest helper
-    if [[ -z "$chrome_running" ]]; then
+    if [[ -n "$chrome_running" ]]; then
+      kill_browsers "KILL" "CRITICAL: ${pct}% MemAvailable (${avail} kB)" "critical"
+    else
       kill_vscode_main "CRITICAL low-mem with no browser target (${avail} kB free)" "critical"
     fi
 
@@ -853,8 +864,9 @@ while true; do
     incr_counter _low_mem_term_events
     notify_desktop "warn" "⚠️ Low Memory: ${pct}% free" \
       "Terminating Chrome/Playwright to protect VS Code."
-    kill_browsers "TERM" "LOW: ${pct}% MemAvailable (${avail} kB)"
-    if [[ -z "$chrome_running" ]]; then
+    if [[ -n "$chrome_running" ]]; then
+      kill_browsers "TERM" "LOW: ${pct}% MemAvailable (${avail} kB)"
+    else
       if ! kill_top_vscode_helper "LOW mem: no Chrome to SIGTERM (${avail} kB free)" "normal"; then
         kill_extension_host "low-mem fallback: helper unavailable (${avail} kB free)"
       fi
