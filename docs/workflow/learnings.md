@@ -20,6 +20,33 @@
 
 ---
 
+### 2026-03-26 — WARN→ExtHost escalation killed terminal and Copilot at 76% free memory
+
+**Context**: Agent lost terminal access 3 times during a single session. Each time, VS Code showed "shared background process terminated unexpectedly." Journal investigation revealed the watchdog killed the Extension Host at WARN level (2.7 GB RSS, 76% free memory).
+
+**Discovery**: Two interacting bugs created a kill chain that destroyed the editing session:
+
+1. **WARN threshold below normal baseline**: `VSCODE_RSS_WARN_KB` was 2.2–2.56 GB (daemon default + config override). This system's normal VS Code baseline is 2.3–2.7 GB. WARN fired **constantly** during normal operation.
+
+2. **WARN fallback escalated to `kill_extension_host()`**: When `kill_top_vscode_helper` found no candidate (correctly — utility processes were excluded at WARN level by v20260325.7), the code called `kill_extension_host()` as a fallback. Killing the Extension Host at WARN level is disproportionate — it destroys the terminal, Copilot Chat, and all extensions. The same escalation existed in Stage 3.
+
+3. **Cascade effect**: After the ExtHost was killed, VS Code restarted it → extension v0.3.1's `activate()` ran → its installer overwrote the v20260325.7 daemon with v20260313.2 (12 days old, missing all protective fixes) → the old daemon immediately BURST-killed tsserver at 75% free memory.
+
+**Fixes applied (v20260325.8)**:
+- WARN + Stage 3: log and defer to EMERGENCY/Stage 4 instead of `kill_extension_host()`. ExtHost kills are only appropriate when the alternative is kernel OOM.
+- `VSCODE_RSS_WARN_KB` raised from 2200 → 3000 (daemon) and 2500 → 3000 (extension default).
+- `STARTUP_RSS_WARN_KB` raised from 2800 → 3200 to stay ≥ normal WARN.
+- Fallback awk `classify`: added `htmlServerMain`, `serverWorkerMain`, `cssServerMain`.
+- All 3 awk blocks: skip `--type=utility` at non-emergency mode.
+
+**Application**:
+- `kill_extension_host()` must ONLY be reachable from EMERGENCY and Stage 4 (circuit-breaker) paths. WARN and Stage 3 are pressure signals, not emergencies — the correct response when no safe target exists is to **do nothing and wait** for RSS to either subside or cross the true emergency threshold.
+- RSS WARN threshold must be set **above** the system's normal steady-state baseline, not below it. On this hardware, 3.0 GB gives ~300 MB of headroom above the typical 2.7 GB peak.
+- When adding process exclusions (v20260325.7: utility processes at WARN), always trace the fallback chain to see what happens when NO candidate exists. The answer must be "log and wait," not "kill something more critical."
+- Extension version mismatch compounds daemon bugs: an old extension (v0.3.1, `autoUpdate: false`) re-deploys an old daemon on every VS Code restart, reverting manual fixes.
+
+---
+
 ### 2026-03-25 — VS Code Extension Host migrated from --type=extensionHost to --type=utility with --inspect-port
 
 **Context**: VS Code crashed twice at 17:33 and 17:39. Journal showed `helper_no_candidate=759` and `exthost_escal=753` (all failed) over 25 minutes. The watchdog detected RSS at 2.5–3.58 GB but could not intervene at WARN level.
