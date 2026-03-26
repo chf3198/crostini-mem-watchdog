@@ -67,7 +67,7 @@ STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260326.2   # 2026-03-26 v2: + cgroup event counters + oom_kill alerts (#12)          # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260326.3   # 2026-03-26 v3: + WARN cgroup throttle fallback, EMERGENCY bypasses action gate, log suppression (#74)
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -273,6 +273,7 @@ _action_budget_count=0
 _action_taken=false
 _last_code_recovery=0
 _runaway_streak=0
+_helper_no_candidate_suppressed=0  # consecutive no-candidate results suppressed from log
 
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
@@ -631,7 +632,19 @@ kill_top_vscode_helper() {
     [[ -n "$line" ]] && log "  Anti-respawn: no alternative found — re-using last-killed type"
   fi
 
-  [[ -z "$line" ]] && { incr_counter _helper_restart_no_candidate; log "  No VS Code helper candidate found"; return 1; }
+  if [[ -z "$line" ]]; then
+    incr_counter _helper_restart_no_candidate
+    if (( _helper_no_candidate_suppressed == 0 )); then
+      log "  No VS Code helper candidate found (subsequent identical results suppressed)"
+    fi
+    _helper_no_candidate_suppressed=$(( _helper_no_candidate_suppressed + 1 ))
+    return 1
+  fi
+  # Reset suppression counter on successful candidate find
+  if (( _helper_no_candidate_suppressed > 0 )); then
+    log "  Helper candidate found after ${_helper_no_candidate_suppressed} suppressed no-candidate polls"
+    _helper_no_candidate_suppressed=0
+  fi
 
   pid=$(echo "$line" | awk '{print $1}')
   rss=$(echo "$line" | awk '{print $2}')
@@ -1276,7 +1289,10 @@ while true; do
   fi
 
   if (( vscode_rss >= eff_emerg )); then
-    # ── EMERGENCY — bypasses cooldown and hysteresis (critical) ──────────
+    # ── EMERGENCY — bypasses cooldown, hysteresis, AND action gate (critical) ──
+    # Bug fix #74: A non-critical ACCEL kill (e.g. tsserver 104 MB during 3.6 GB spike)
+    # must not block EMERGENCY. Reset _action_taken so kill_vscode_main can proceed.
+    _action_taken=false
     _hyst_warn_count=0
     _recovery_clean_count=0
     _pressure_active=true
@@ -1311,8 +1327,18 @@ while true; do
           # Do NOT escalate to kill_extension_host at WARN level.
           # At 2.5 GB with 76%+ free memory, killing the ExtHost destroys the
           # terminal, Copilot, and all extensions — disproportionate response.
-          # Let EMERGENCY or Stage 4 handle ExtHost kills if RSS keeps climbing.
-          log "WARN fallback: no helper candidate and no Chrome — deferring to EMERGENCY threshold"
+          # Bug fix #74: instead of doing nothing for 30+ seconds, trigger cgroup
+          # throttle + reclaim as non-destructive pressure relief. This slows RSS
+          # growth without killing any process.
+          if [[ -n "$_cgroup_mem_path" ]]; then
+            if ! $_soft_limit_active; then
+              log "WARN fallback: no candidate — activating cgroup throttle as intermediate relief"
+              cgroup_throttle
+            fi
+            cgroup_reclaim
+          else
+            log "WARN fallback: no helper candidate, no Chrome, no cgroup — deferring to EMERGENCY threshold"
+          fi
         fi
       fi
     fi
