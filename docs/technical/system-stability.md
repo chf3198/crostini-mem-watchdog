@@ -177,6 +177,7 @@ Setting this to **512 MB** (the original value) was counterproductive:
 | 2026-03-26 post-#74 | 0 | Daemon v20260326.3: WARN fallback triggers `cgroup_throttle()` + `cgroup_reclaim()` when no kill candidate exists. EMERGENCY resets `_action_taken=false` — non-critical kills cannot block emergency. No-candidate log suppressed after first occurrence. |
 | 2026-03-26 12:44:57 | 1 | Thresholds too low for Copilot Chat multi-agent workloads. RSS grew 2,328→3,114→3,300→3,423 MB in 47s during legitimate research. No Chrome, no helper candidate. STARTUP_RSS_EMERG_KB=3,400,000 gave only 300 MB above Copilot peak → `kill_vscode_main`. No kernel OOM (dmesg clean). (issue #77, daemon v20260326.4) |
 | 2026-03-26 post-#77 | 0 | Daemon v20260326.4: WARN 3.0→3.4 GB, EMERG 3.2→3.8 GB, STARTUP_WARN 3.2→3.6 GB, STARTUP_EMERG 3.4→4.0 GB. Extension defaults and configWriter fallbacks updated to match. |
+| 2026-03-26 post-#80 | 0 | Daemon v20260326.5: Process classification gap fixed. Blanket `--type=utility` exclusion replaced with targeted PTY Host PID exclusion via `find_pty_host_pid()`. `kill_top_vscode_helper("normal")` now has 2–3 candidates (Shared Process, File Watcher, Network Service ≈300 MB) when no Chrome is running. (issue #80, PR #81) |
 
 ### The 2026-03-05 crash — what was fixed
 
@@ -201,6 +202,7 @@ Three root causes:
 | WARN-deferral fix (v20260325.8) | Pathway #1 — WARN and Stage 3 no longer escalate to `kill_extension_host()`; defer to EMERGENCY/Stage 4. WARN threshold raised to 3.0 GB (above steady-state baseline). Prevents watchdog from destroying its own editing session at non-emergency RSS. | ✅ Fixed |
 | WARN cgroup fallback (v20260326.3) | Pathway #1 — when no kill candidate exists at WARN, triggers `cgroup_throttle()` + `cgroup_reclaim()` as non-destructive intermediate relief. EMERGENCY resets `_action_taken` so non-critical kills cannot block it. | ✅ Fixed |
 | Threshold raise for AI workloads (v20260326.4) | Pathway #1 — WARN 3.0→3.4 GB, EMERG 3.2→3.8 GB, STARTUP_WARN 3.2→3.6 GB, STARTUP_EMERG 3.4→4.0 GB. Copilot Chat multi-agent research legitimately peaks at 3.0–3.5 GB; previous thresholds gave only 300 MB headroom. | ✅ Fixed |
+| Process classification fix (v20260326.5) | Pathway #1 — `kill_top_vscode_helper("normal")` now has intermediate candidates (Shared Process, File Watcher, Network Service ≈300 MB) between WARN cgroup throttle and EMERGENCY `kill_vscode_main`. PTY Host excluded by PID (child-detection), not blanket `--type=utility`. | ✅ Fixed |
 | Container swap | Pathway #1 — direct relief for container kernel OOM | ❌ Blocked (CapEff=0, see §4) |
 
 **Residual risk:** The container kernel can still OOM if VS Code + idle MCP browser + a Playwright session all run simultaneously without the MCP browser being killed first. The watchdog mitigates this but cannot guarantee prevention if the spike is faster than the 2s polling interval.

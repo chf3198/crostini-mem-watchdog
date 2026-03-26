@@ -20,6 +20,25 @@
 
 ---
 
+### 2026-03-26 — Blanket process-type exclusion creates zero-candidate dead zones
+
+**Context**: After fixing the WARN dead zone (#74) and threshold raise (#77), analysis of `kill_top_vscode_helper("normal")` revealed it still produced **zero candidates** when no Chrome was running. Every VS Code process was either EXCLUDED (main, zygote, GPU, ExtHost via `--inspect-port`, all `--type=utility`) or PROTECTED (tsserver, language servers, eslint).
+
+**Discovery**: The blanket `--type=utility` exclusion added in v20260325.5 (#55) was intended to protect the PTY Host (killing it destroys terminal sessions) and Extension Host (already covered by `--inspect-port`). But it also blocked 3 auto-recoverable utility processes: Shared Process (~113 MB), File Watcher (~111 MB), and Network Service (~76 MB) — totaling ~300 MB of intermediate relief. The critical insight: PTY Host is identifiable at runtime as the **only** `node.mojom.NodeService` utility that has child processes (bash terminals). All other NodeService utilities (Shared Process, File Watcher) have 0 children. Network Service uses a different sub-type (`network.mojom.NetworkService`). This means we can exclude PTY Host by PID rather than by type.
+
+**Fixes applied (v20260326.5)**:
+- Added `find_pty_host_pid()`: loops over NodeService utility PIDs, identifies the one with child processes via `ps --ppid`.
+- Replaced `if (md != "emerg" && args ~ /--type=utility/) next;` with `if (md != "emerg" && pid == pty_host) next;` in all 3 awk blocks.
+- PTY Host PID passed as awk `-v pty_host=` variable, pre-computed once per `kill_top_vscode_helper` call.
+- Verified: 2 candidates now available at WARN (was 0).
+
+**Application**:
+- When protecting a specific process from a broad exclusion, always use the most specific differentiator available. For PTY Host: child processes. For ExtHost: `--inspect-port`. Never use a broad type flag (`--type=utility`) to protect one process when it blocks many.
+- After any exclusion change, verify the candidate pool with a live simulation (`ps -C code | awk ...`) — not just code review. The previous 5 exclusion patches (#45, #46, #47, #55, #64) were each correct in isolation but their cumulative effect was zero candidates.
+- Process classification should be done at a pre-computation stage (bash function → PID → awk variable), not inside awk regex matching, when the differentiator requires parent-child relationship checks.
+
+---
+
 ### 2026-03-26 — RSS thresholds must account for Copilot Chat multi-agent memory peaks
 
 **Context**: VS Code crashed at 12:44:57. Daemon v20260326.3 (just deployed with cgroup fallback fix) triggered `kill_vscode_main` at STARTUP_RSS_EMERG_KB=3,400,000 during legitimate Copilot Chat multi-agent research.
