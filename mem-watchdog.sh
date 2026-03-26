@@ -65,7 +65,7 @@ STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260325.6   # 2026-03-25 v6: process classification tiers (#6)     # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260325.8   # 2026-03-25 v8: remove WARN→ExtHost escalation (#63)          # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -97,7 +97,7 @@ TIER_DISPOSABLE_PATTERN_AUX='node.*playwright'     # pgrep -f ERE for disposable
 # VS Code RSS thresholds (confirmed: extension host hit 4 GB, watchdog had no Chrome to kill)
 # Lower thresholds so we can intervene BEFORE the kernel OOM fires.
 VSCODE_RSS_EMERG_KB=3200000   # ~3.2 GB — emergency cutoff before kernel OOM territory
-VSCODE_RSS_WARN_KB=2200000    # ~2.2 GB — earlier warning for constrained Crostini RAM
+VSCODE_RSS_WARN_KB=3000000    # ~3.0 GB — SIGTERM Chrome; system baseline is 2.3–2.7 GB
 NOTIFY_INTERVAL=300           # seconds between desktop notifications per severity
 
 # ── Startup mode — faster polling + tighter thresholds for 90s after VS Code starts ──
@@ -105,7 +105,7 @@ NOTIFY_INTERVAL=300           # seconds between desktop notifications per severi
 # Fix: detect new VS Code PIDs, switch to 0.5s interval, drop emergency threshold to 2 GB.
 STARTUP_INTERVAL=0.5          # seconds between checks during VS Code startup
 STARTUP_DURATION=90           # seconds to stay in startup mode after new VS Code PIDs
-STARTUP_RSS_WARN_KB=2800000   # ~2.8 GB — startup can spike fast; intervene earlier
+STARTUP_RSS_WARN_KB=3200000   # ~3.2 GB — startup can spike fast; must be ≥ VSCODE_RSS_WARN_KB
 STARTUP_RSS_EMERG_KB=3400000  # ~3.4 GB — emergency ceiling in startup mode
 STARTUP_DEBOUNCE=300          # minimum seconds between startup mode activations
                               # VS Code language servers (TS, ESLint, GitLens workers) spawn
@@ -530,7 +530,7 @@ kill_top_vscode_helper() {
 
   # Preferred: language servers / extension workers, excluding recently-killed type
   line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss=,args= 2>/dev/null \
-    | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" '
+    | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" -v md="$mode" '
       function classify(a) {
         if (a ~ /tsserver\.js/)        return "tsserver"
         if (a ~ /htmlServerMain/)       return "html-server"
@@ -550,6 +550,7 @@ kill_top_vscode_helper() {
         if (args ~ /--type=gpu-process/) next;
         if (args ~ /--type=extensionHost/) next;
         if (args ~ /--type=utility/ && args ~ /--inspect-port/) next;
+        if (md != "emerg" && args ~ /--type=utility/) next;
         t=classify(args)
         if (skip != "" && t == skip) next;
         if (prot == "true" && t == "tsserver") next;
@@ -560,12 +561,20 @@ kill_top_vscode_helper() {
       }
     ' | sort -k2 -rn | head -1)
 
-  # Fallback: any non-main, non-zygote, non-extensionHost child
+  # Fallback: any non-main, non-zygote, non-extensionHost child.
+  # At WARN (mode != emerg), exclude --type=utility entirely — utility processes
+  # include PTY host, shared process, file watcher, and network service, which
+  # are indistinguishable by cmdline. Killing PTY host destroys the terminal;
+  # killing shared process shows "shared background process terminated". Only
+  # allow utility kills at EMERG where the alternative is kernel OOM.
   if [[ -z "$line" ]]; then
     line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss=,args= 2>/dev/null \
-      | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" '
+      | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" -v md="$mode" '
         function classify(a) {
           if (a ~ /tsserver\.js/)      return "tsserver"
+          if (a ~ /htmlServerMain/)     return "html-server"
+          if (a ~ /serverWorkerMain/)   return "markdown-server"
+          if (a ~ /cssServerMain/)      return "css-server"
           if (a ~ /eslintServer\.js/)  return "eslint"
           if (a ~ /jsonServerMain/)     return "json-server"
           if (a ~ /server\.bundle\.js/) return "server-bundle"
@@ -580,6 +589,7 @@ kill_top_vscode_helper() {
           if (args ~ /--type=gpu-process/) next;
           if (args ~ /--type=extensionHost/) next;
           if (args ~ /--type=utility/ && args ~ /--inspect-port/) next;
+          if (md != "emerg" && args ~ /--type=utility/) next;
           t=classify(args)
           if (skip != "" && t == skip) next;
           if (prot == "true" && t == "tsserver") next;
@@ -592,7 +602,7 @@ kill_top_vscode_helper() {
   # Last-resort fallback: include recently-killed type if nothing else found
   if [[ -z "$line" ]]; then
     line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss=,args= 2>/dev/null \
-      | awk -v prot="$protect_tsserver" -v ls="$protect_langservers" '{
+      | awk -v prot="$protect_tsserver" -v ls="$protect_langservers" -v md="$mode" '{
           pid=$1; rss=$2;
           $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
           if (args ~ /^\/usr\/share\/code\/code$/) next;
@@ -600,6 +610,7 @@ kill_top_vscode_helper() {
           if (args ~ /--type=gpu-process/) next;
           if (args ~ /--type=extensionHost/) next;
           if (args ~ /--type=utility/ && args ~ /--inspect-port/) next;
+          if (md != "emerg" && args ~ /--type=utility/) next;
           if (prot == "true" && args ~ /tsserver\.js/) next;
           if (ls == "true" && (args ~ /htmlServerMain/ || args ~ /serverWorkerMain/ || args ~ /cssServerMain/ || args ~ /jsonServerMain/ || args ~ /eslintServer/)) next;
           printf "%s %s %s\n", pid, rss, args;
@@ -1139,7 +1150,11 @@ while true; do
         kill_browsers "TERM" "VS Code RSS high: ${vscode_rss} kB (sustained ${_hyst_warn_count} polls)"
       else
         if ! kill_top_vscode_helper "VS Code RSS warn: no Chrome to SIGTERM (${vscode_rss} kB)" "normal"; then
-          kill_extension_host "warn fallback: helper unavailable while RSS high (${vscode_rss} kB)"
+          # Do NOT escalate to kill_extension_host at WARN level.
+          # At 2.5 GB with 76%+ free memory, killing the ExtHost destroys the
+          # terminal, Copilot, and all extensions — disproportionate response.
+          # Let EMERGENCY or Stage 4 handle ExtHost kills if RSS keeps climbing.
+          log "WARN fallback: no helper candidate and no Chrome — deferring to EMERGENCY threshold"
         fi
       fi
     fi
@@ -1214,7 +1229,9 @@ while true; do
           kill_browsers "TERM" "Stage 3 reclaim: pct=${pct}% psi_full=${psi_x100}"
         else
           if ! kill_top_vscode_helper "Stage 3: no Chrome (pct=${pct}%, psi_full=${psi_x100})" "normal"; then
-            kill_extension_host "Stage 3 fallback: helper unavailable (${avail} kB free)"
+            # Do NOT escalate to kill_extension_host at Stage 3.
+            # Stage 4 and EMERGENCY handle ExtHost kills when truly critical.
+            log "Stage 3 fallback: no helper candidate and no Chrome — deferring to Stage 4/EMERGENCY"
           fi
         fi
       fi

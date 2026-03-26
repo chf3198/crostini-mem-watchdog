@@ -9,7 +9,7 @@
 //   extensions.autoUpdate: false. When that setting is inherited (e.g., via
 //   Settings Sync or documentation templates), critical daemon fixes bundled
 //   in newer extension versions never reach those users. This module ensures
-//   users on v0.3.6+ are ALWAYS notified about newer versions, regardless
+//   users on v0.3.7+ are ALWAYS notified about newer versions, regardless
 //   of their auto-update settings.
 //
 // Design constraints:

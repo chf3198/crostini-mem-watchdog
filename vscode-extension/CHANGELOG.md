@@ -1,17 +1,26 @@
 # Changelog
 
+## [0.3.7] — 2026-03-25
+
+### Fixed
+- **Bundled daemon upgraded to v20260325.7** — fixes two bugs in v20260325.6 that caused VS Code process kills during normal operation at 65–80% free memory:
+  1. **Fallback awk `classify` missing language server types** — `serverWorkerMain` (markdown), `htmlServerMain`, and `cssServerMain` were not classified in the fallback/last-resort awk blocks, causing them to be classified as `"node-ipc"` and bypassing language server protection. Markdown servers were killed 11× in a 2-hour session.
+  2. **Utility processes (PTY host, shared process, file watcher) killed at WARN level** — these processes are indistinguishable by cmdline, and killing the PTY host destroys VS Code's terminal; killing the shared process shows "A shared background process terminated unexpectedly." Now only killable at EMERG severity where the alternative is kernel OOM.
+- **`MIN_SAFE_DAEMON_VERSION` updated to `20260325.7`** — minimum safe floor now matches the latest daemon with all protective fixes.
+- Previously: v0.3.1–v0.3.6 users with `extensions.autoUpdate: false` ran a daemon as old as v20260313.2, missing all protective fixes from #45–#55 and #6.
+
 ## [0.3.6] — 2026-03-25
 
 ### Added
 - **Self-update checker** (`updateChecker.js`) — on activation (10 s deferred), checks the GitHub Releases API for a newer extension version. Shows a non-modal notification with "Update Now" (opens Marketplace) and "Dismiss" (per-version, stored in globalState) buttons. Throttled to once per 24 hours. Silently ignores all network errors. This ensures users with `extensions.autoUpdate: false` are always notified about critical daemon fixes in newer versions.
-- **Minimum safe daemon version** (`MIN_SAFE_DAEMON_VERSION = 20260324.3` in `installer.js`) — if the installed daemon is below this floor after the install/upgrade check, a warning notification directs the user to update the extension. Defense-in-depth against scenarios where the hash-match or anti-downgrade guard leaves a critically outdated daemon in place.
+- **Minimum safe daemon version** (`MIN_SAFE_DAEMON_VERSION = 20260325.4` in `installer.js`) — if the installed daemon is below this floor after the install/upgrade check, a warning notification directs the user to update the extension. Defense-in-depth against scenarios where the hash-match or anti-downgrade guard leaves a critically outdated daemon in place.
 
 ### Daemon (v20260325.6)
 - **Process classification tiers** ([#6](https://github.com/chf3198/crostini-mem-watchdog/issues/6)) — three configurable tiers (protected/disposable/monitored) with named pattern constants (`TIER_PROTECTED_PNAME`, `TIER_DISPOSABLE_PATTERN`, `TIER_DISPOSABLE_PATTERN_AUX`). All 13 hardcoded process patterns replaced with tier constants. `log_tier_assignments()` logs tier summary at startup. Override patterns via `~/.config/mem-watchdog/config.sh`.
 
 ### Daemon (v20260325.5)
 - **Extension Host detected by `--inspect-port`, not stale `--type=extensionHost`** ([#55](https://github.com/chf3198/crostini-mem-watchdog/issues/55)) — VS Code 1.90+ runs the Extension Host as `--type=utility --utility-sub-type=node.mojom.NodeService` with `--inspect-port=0`. The previous `--type=extensionHost` pattern no longer matches, causing `kill_extension_host()` to fail on every call (753 consecutive failures during the 2026-03-25 17:33 crash). Now uses `--type=utility` + `--inspect-port` with fallback to legacy pattern.
-- **Non-Extension-Host utility processes now eligible as kill candidates** ([#55](https://github.com/chf3198/crostini-mem-watchdog/issues/55)) — `kill_top_vscode_helper()` previously blanket-excluded all `--type=utility` processes (5 out of ~15 VS Code processes). Only the Extension Host (identified by `--inspect-port`) is now excluded; other utility processes (shared process, PTY host, file watcher) are available as WARN-level candidates. This eliminates the zero-candidate state that left the watchdog impotent for 759 consecutive polls.
+- **Non-Extension-Host utility processes now eligible as kill candidates** ([#55](https://github.com/chf3198/crostini-mem-watchdog/issues/55)) — `kill_top_vscode_helper()` previously blanket-excluded all `--type=utility` processes (5 out of ~15 VS Code processes). Only the Extension Host (identified by `--inspect-port`) is now excluded; other utility processes (shared process, PTY host, file watcher) are available as EMERG-level candidates only (changed from WARN in v20260325.7 — killing PTY host at WARN destroyed VS Code terminals).
 
 ### Daemon (v20260325.1)
 - **Action budget no longer exhausted by no-op browser kills** ([#49](https://github.com/chf3198/crostini-mem-watchdog/issues/49)) — `record_action()` in `kill_browsers()` moved after the kill verification check. Previously, every no-op call (no Chrome running) consumed the action budget and set `_action_taken=true`, exhausting the 30s budget in 3 seconds during 0.5s startup polling and blocking all fallback interventions for 27 seconds.

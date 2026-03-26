@@ -29,9 +29,8 @@ const INSTALLED_SERVICE  = path.join(INSTALL_SVC_DIR, 'mem-watchdog.service');
 
 // Minimum daemon version that is considered safe. Daemons below this version
 // have known critical bugs (language-server kills, Extension Host kills via
-// blind process-type guards — issues #45, #46, #47). When the installed daemon
-// is below this floor, the user is warned to update the extension.
-const MIN_SAFE_DAEMON_VERSION = '20260325.4';
+// blind process-type guards, utility process kills at WARN causing terminal loss).
+const MIN_SAFE_DAEMON_VERSION = '20260325.7';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
