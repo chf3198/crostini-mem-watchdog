@@ -12,6 +12,7 @@
 #   earlyoom calls C's strtol() on that value → integer overflow → fatal.
 #   It has been crash-looping every 3s since installation, providing ZERO
 #   protection. See docs/technical/system-stability.md for full analysis.
+#   See docs/technical/crostini-swap-reality.md for zram/zswap investigation.
 #
 # WHAT THIS DOES:
 #   - Reads ONLY MemAvailable and MemTotal — both correct on this kernel.
@@ -1208,8 +1209,9 @@ while true; do
   check_chrome_cap
 
   # Read MemAvailable and MemTotal.
-  # IMPORTANT: Never use SwapFree — Crostini kernel reports ~18.4 exabytes
-  # (uint64 overflow sentinel). Use awk to be safe against whitespace/format.
+  # IMPORTANT: Never use SwapFree — Crostini kernel has historically reported
+  # ~18.4 exabytes (uint64 overflow sentinel). Current kernel reports 0 kB, but
+  # the value is unreliable across versions. See docs/technical/crostini-swap-reality.md.
   avail=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
   total=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
 

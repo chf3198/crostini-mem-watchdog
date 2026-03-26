@@ -76,9 +76,13 @@ ChromeOS zram only addresses Pathway #2. The **container kernel's OOM killer** o
 
 **This was initially diagnosed wrong.** The first analysis claimed `Swap: 0B` was cosmetic. VS Code continued crashing after zram was enabled, which proved it wrong.
 
+> **Deep dive:** See [`crostini-swap-reality.md`](crostini-swap-reality.md) for definitive evidence that both `CONFIG_ZRAM` and `CONFIG_ZSWAP` are disabled at compile time in the Termina VM kernel.
+
 ---
 
 ## 4. Crostini Swap Limitation (Why You Can't Add Swap Inside the Container)
+
+> **See also:** [`crostini-swap-reality.md`](crostini-swap-reality.md) for zram/zswap kernel config evidence.
 
 All swap-enabling routes inside the container are blocked:
 
