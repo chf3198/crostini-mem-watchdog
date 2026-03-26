@@ -124,7 +124,7 @@ cd vscode-extension
 npm run build
 npm install -g @vscode/vsce
 vsce package
-code --install-extension mem-watchdog-status-0.3.6.vsix
+code --install-extension mem-watchdog-status-0.3.7.vsix
 ```
 
 Reload the window (`Developer: Reload Window`). The daemon installs and starts automatically on first activation.

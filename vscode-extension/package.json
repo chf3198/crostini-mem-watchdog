@@ -2,7 +2,7 @@
   "name": "mem-watchdog-status",
   "displayName": "Mem Watchdog",
   "description": "Prevents VS Code from being OOM-killed on ChromeOS Crostini — auto-installs a systemd memory watchdog daemon that kills Chrome/Playwright before the kernel kills VS Code.",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "publisher": "CurtisFranks",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
@@ -115,12 +115,12 @@
         },
         "memWatchdog.vscodeRssWarnMB": {
           "type": "number",
-          "default": 2500,
+          "default": 3000,
           "minimum": 500,
           "maximum": 8000,
           "scope": "machine",
           "order": 4,
-          "markdownDescription": "Warn + `SIGTERM` Chrome when total VS Code RSS exceeds this many MB. Default: `2500` (2.5 GB). Adjust proportionally to your system RAM — see README."
+          "markdownDescription": "Warn + `SIGTERM` Chrome when total VS Code RSS exceeds this many MB. Default: `3000` (3.0 GB). Normal baseline on Crostini is 2.3–2.7 GB — set above your steady state."
         },
         "memWatchdog.vscodeRssEmergencyMB": {
           "type": "number",
