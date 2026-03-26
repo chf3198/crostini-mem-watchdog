@@ -327,6 +327,61 @@ else
   FAIL "Cgroup detection incomplete in test-pressure.sh"
 fi
 
+# ── Test 18: Cgroup event counters in daemon ─────────────────────────────────
+tee_log "── Test 18: Cgroup event counters in daemon"
+cg_evt_ok=true
+
+# Verify read_cgroup_events function exists
+if ! grep -q 'read_cgroup_events()' "$WATCHDOG"; then
+  tee_log "    Missing read_cgroup_events function"
+  cg_evt_ok=false
+fi
+
+# Verify v2 memory.events.local path
+if ! grep -q 'memory\.events\.local' "$WATCHDOG"; then
+  tee_log "    Missing v2 memory.events.local reference"
+  cg_evt_ok=false
+fi
+
+# Verify v1 memory.oom_control path
+if ! grep -q 'memory\.oom_control' "$WATCHDOG"; then
+  tee_log "    Missing v1 memory.oom_control reference"
+  cg_evt_ok=false
+fi
+
+# Verify v1 memory.failcnt path
+if ! grep -q 'memory\.failcnt' "$WATCHDOG"; then
+  tee_log "    Missing v1 memory.failcnt reference"
+  cg_evt_ok=false
+fi
+
+# Verify oom_kill delta detection
+if ! grep -q '_cg_oom_kill.*_prev_cg_oom_kill' "$WATCHDOG"; then
+  tee_log "    Missing oom_kill delta detection"
+  cg_evt_ok=false
+fi
+
+# Verify event counters appear in STATUS snapshot
+if ! grep -q 'cg_failcnt=.*cg_oom_kill=' "$WATCHDOG"; then
+  tee_log "    Missing cgroup event counters in STATUS snapshot"
+  cg_evt_ok=false
+fi
+
+# Live dry-run: verify cgroup events are read and counters appear in STATUS
+dry_evt=$(timeout -s TERM 4 "$WATCHDOG" --dry-run 2>&1 || true)
+if echo "$dry_evt" | grep -q 'cg_failcnt='; then
+  tee_log "    Live dry-run: cgroup event counters present in STATUS"
+else
+  tee_log "    dry-run STATUS missing cgroup event counters"
+  cg_evt_ok=false
+fi
+
+if $cg_evt_ok; then
+  PASS "Cgroup event counters: read_cgroup_events + oom_kill delta detection + STATUS output"
+else
+  FAIL "Cgroup event counter implementation incomplete"
+fi
+
 # ── SUMMARY ──────────────────────────────────────────────────────────────────
 tee_log ""
 tee_log "════════════════════════════════════════════════════════════════"

@@ -67,7 +67,7 @@ STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260326.1   # 2026-03-26 v1: cgroup v2 memory.high + memory.reclaim (#7, #8)          # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260326.2   # 2026-03-26 v2: + cgroup event counters + oom_kill alerts (#12)          # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -230,6 +230,16 @@ _cgroup_version=""             # "v2" or "v1" — set by discover_cgroup_mem_pat
 _soft_limit_active=false        # true when we've lowered memory.high (v2) or memory.soft_limit_in_bytes (v1)
 _stage_transitions=0            # total stage transitions for observability
 
+# ── Cgroup event counters (Issue #12) ────────────────────────────────────────
+# Read each poll cycle from memory.events.local (v2) or memory.oom_control +
+# memory.failcnt (v1). Detecting oom_kill > _prev_cg_oom_kill means the kernel
+# OOM killer fired between polls — critical alert.
+_cg_failcnt=0                   # v1: times memory.limit_in_bytes was hit; v2: "max" events
+_cg_oom_kill=0                  # kernel OOM kills inside this cgroup
+_cg_high_events=0               # v2 only: times memory.high throttle was triggered by kernel
+_cg_under_oom=0                 # v1 only: 1 if cgroup is currently under OOM handling
+_prev_cg_oom_kill=0             # previous poll's oom_kill — delta detection
+
 # ── Runtime counters / observability ─────────────────────────────────────────
 _loops=0
 _startup_mode_triggers=0
@@ -296,7 +306,7 @@ log_status_snapshot() {
   if (( now < _startup_mode_end )); then
     startup_left=$(( _startup_mode_end - now ))
   fi
-  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} pressure_stage=${_pressure_stage} stage_transitions=${_stage_transitions} soft_limit_active=${_soft_limit_active} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} rss_accel=${_rss_accel_events} rss_runaway_streak=${_runaway_streak} code_recoveries=${_code_recovery_events} exthost_escal=${_ext_host_escalation_events} anti_respawn_type=${_last_killed_type} helper_kills_window=${_helper_kills_in_window} action_budget_used=${_action_budget_count} cooldown_skips=${_cooldown_skips} hyst_skips=${_hysteresis_skips} recovery_confirms=${_recovery_confirmations} hyst_warn=${_hyst_warn_count} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events}"
+  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} pressure_stage=${_pressure_stage} stage_transitions=${_stage_transitions} soft_limit_active=${_soft_limit_active} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} startup_burst_events=${_startup_burst_events} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} rss_warn=${_rss_warn_events} rss_emerg=${_rss_emergency_events} rss_accel=${_rss_accel_events} rss_runaway_streak=${_runaway_streak} code_recoveries=${_code_recovery_events} exthost_escal=${_ext_host_escalation_events} anti_respawn_type=${_last_killed_type} helper_kills_window=${_helper_kills_in_window} action_budget_used=${_action_budget_count} cooldown_skips=${_cooldown_skips} hyst_skips=${_hysteresis_skips} recovery_confirms=${_recovery_confirmations} hyst_warn=${_hyst_warn_count} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events} cg_failcnt=${_cg_failcnt} cg_oom_kill=${_cg_oom_kill} cg_high=${_cg_high_events} cg_under_oom=${_cg_under_oom}"
   _last_status_log=$now
 }
 
@@ -998,6 +1008,61 @@ cgroup_release_throttle() {
   return 1
 }
 
+# ── Read cgroup event counters (Issue #12) ──────────────────────────────────
+# v2: memory.events.local has: low, high, max, oom, oom_kill, oom_group_kill
+# v1: memory.oom_control has: oom_kill_disable, under_oom, oom_kill
+#     memory.failcnt has: single integer (times limit was hit)
+# Detects oom_kill delta > 0 and emits CRIT alert + desktop notification.
+read_cgroup_events() {
+  [[ -z "$_cgroup_mem_path" ]] && return
+
+  _prev_cg_oom_kill=$_cg_oom_kill
+
+  if [[ "$_cgroup_version" == "v2" ]]; then
+    local events_file="$_cgroup_mem_path/memory.events.local"
+    if [[ -r "$events_file" ]]; then
+      local line
+      while IFS= read -r line; do
+        case "$line" in
+          high\ *)     _cg_high_events=${line#high }  ;;
+          max\ *)      _cg_failcnt=${line#max }       ;;
+          oom_kill\ *) _cg_oom_kill=${line#oom_kill }  ;;
+        esac
+      done < "$events_file"
+    fi
+  else
+    # v1: memory.failcnt (single integer)
+    local fc_file="$_cgroup_mem_path/memory.failcnt"
+    if [[ -r "$fc_file" ]]; then
+      read -r _cg_failcnt < "$fc_file" 2>/dev/null || _cg_failcnt=0
+    fi
+    # v1: memory.oom_control (oom_kill_disable, under_oom, oom_kill)
+    local oc_file="$_cgroup_mem_path/memory.oom_control"
+    if [[ -r "$oc_file" ]]; then
+      local line
+      while IFS= read -r line; do
+        case "$line" in
+          oom_kill\ *)  _cg_oom_kill=${line#oom_kill }   ;;
+          under_oom\ *) _cg_under_oom=${line#under_oom } ;;
+        esac
+      done < "$oc_file"
+    fi
+  fi
+
+  # ── oom_kill delta detection ───────────────────────────────────────────
+  if (( _cg_oom_kill > _prev_cg_oom_kill )); then
+    local delta=$(( _cg_oom_kill - _prev_cg_oom_kill ))
+    log "CRIT: kernel OOM kill detected in cgroup — oom_kill counter ${_prev_cg_oom_kill}→${_cg_oom_kill} (+${delta})"
+    notify_desktop "crit" "💀 Kernel OOM Kill" "${delta} process(es) killed by cgroup OOM (total: ${_cg_oom_kill})"
+    log_status_snapshot "oom_kill"
+  fi
+
+  # ── under_oom alert (v1 only) ──────────────────────────────────────────
+  if [[ "$_cgroup_version" == "v1" ]] && (( _cg_under_oom > 0 )); then
+    log "WARN: cgroup under_oom=1 — kernel OOM handler is active right now"
+  fi
+}
+
 # ── Evaluate pressure stage from current metrics ─────────────────────────
 # Returns the stage number (0-4) that current conditions warrant.
 # Called every loop iteration; actual transition uses hysteresis.
@@ -1136,6 +1201,11 @@ while true; do
       }
     }
   }' /proc/pressure/memory 2>/dev/null || echo 0)
+
+  # ── Cgroup event counters (Issue #12) ──────────────────────────────────────
+  # Read memory.events.local (v2) or memory.oom_control + memory.failcnt (v1).
+  # Detects kernel OOM kills via oom_kill counter delta → CRIT alert.
+  read_cgroup_events
 
   # ── VS Code RSS check ─────────────────────────────────────────────────────
   # CONFIRMED CRASH (2026-03-05 13:02:25): extension host PID 778 hit 4 GB
