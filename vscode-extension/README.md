@@ -170,7 +170,7 @@ Commercial use requires a paid license. See [COMMERCIAL-LICENSE.md](https://gith
 git clone https://github.com/chf3198/crostini-mem-watchdog.git
 cd crostini-mem-watchdog/vscode-extension
 npm run build          # populate resources/ from repo root
-npm test               # 100 JS unit tests via node:test (zero-install)
+npm test               # 103 JS unit tests via node:test (zero-install)
 npm run test:coverage  # same + c8 V8 coverage report
 npm run test:stress    # stress scenarios: pileup guard, EL lag, heap usage
 ```

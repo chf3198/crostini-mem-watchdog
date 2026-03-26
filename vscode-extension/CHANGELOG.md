@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.9] — 2026-03-26
+
+### Fixed
+- **Chat participant no longer pins to Chat panel** ([#43](https://github.com/chf3198/crostini-mem-watchdog/issues/43)) — `isSticky: true` in `package.json` caused the `@memwatchdog` chat participant to be permanently pinned in the Chat panel alongside the status bar item, creating the perception of "duplicate IDE info elements." Changed to `isSticky: false` — the participant is now invoked on demand with `@memwatchdog` rather than auto-pinned.
+
+### Tests
+- JS unit tests: 100 → **103 passing**
+- Added `chatParticipant.test.js`: 2 manifest contract tests — `isSticky: false` regression guard, runtime ID matches `package.json` declaration
+- Added `extension.activate.test.js`: 1 idempotency test — verifies exactly 1 status bar item + 1 chat participant registration across repeated `activate()` calls
+
 ## [0.3.8] — 2026-03-26
 
 ### Added
