@@ -12,7 +12,7 @@
 mem-watchdog.sh          ← core daemon; single infinite loop, no deps beyond coreutils
 mem-watchdog.service     ← systemd user unit (systemctl --user, NOT system)
 install.sh               ← shell-only installer (no VS Code required)
-test-watchdog.sh         ← 17-test suite; exits 0/1; logs to scratch/
+test-watchdog.sh         ← 18-test suite; exits 0/1; logs to scratch/
 vscode-extension/
   extension.js           ← activate(): install → config → commands → status bar (2s poll) → update check
   installer.js           ← SHA-256 hash-based daemon auto-install/upgrade + MIN_SAFE guard
@@ -70,7 +70,7 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
 **GATE**: All five checks must exit 0 — no exceptions, no skips:
 
 ```bash
-bash test-watchdog.sh                                                          # 17 bash tests, ~3s
+bash test-watchdog.sh                                                          # 18 bash tests, ~3s
 bash -n mem-watchdog.sh                                                        # syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
 cd vscode-extension && npm test                                                # 75 JS unit tests, ~1s
@@ -91,7 +91,7 @@ npm run test:coverage      # + c8 V8 lcov output
 npm run test:stress        # pileup guard + event-loop lag + heap scenarios
 npx vsce package           # → mem-watchdog-status-x.y.z.vsix
 
-bash test-watchdog.sh      # 17 bash tests (repo root — REPO=$(dirname $0), not scripts/)
+bash test-watchdog.sh      # 18 bash tests (repo root — REPO=$(dirname $0), not scripts/)
 bash test-pressure.sh      # live memory allocation tests; needs RAM < 40% free
 ./mem-watchdog.sh --dry-run
 
