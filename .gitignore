@@ -28,6 +28,7 @@ vscode-extension/.vscode-test/
 
 # Test log output
 scratch/
+test-results/
 *.log
 
 # OS
