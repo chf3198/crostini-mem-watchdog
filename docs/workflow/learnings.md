@@ -20,6 +20,27 @@
 
 ---
 
+### 2026-03-26 — RSS thresholds must account for Copilot Chat multi-agent memory peaks
+
+**Context**: VS Code crashed at 12:44:57. Daemon v20260326.3 (just deployed with cgroup fallback fix) triggered `kill_vscode_main` at STARTUP_RSS_EMERG_KB=3,400,000 during legitimate Copilot Chat multi-agent research.
+
+**Discovery**: Copilot Chat multi-agent workloads (research mode with multiple tool calls, web fetches, and large context windows) legitimately drive VS Code aggregate RSS to 3.0–3.5 GB. The crash sequence was: 2,328 MB (12:44:10) → 3,114 MB (12:44:32, ACCEL +468 MB) → 3,300 MB (12:44:56, BURST) → 3,423 MB (12:44:57, EMERGENCY → `kill_vscode_main`). No Chrome, no helper candidate, dmesg clean (no kernel OOM). The previous STARTUP_RSS_EMERG_KB=3,400,000 gave only 300 MB headroom above normal Copilot Chat peaks — the threshold was tuned for pre-AI workloads.
+
+**Fixes applied (v20260326.4)**:
+- VSCODE_RSS_WARN_KB: 3,000,000 → 3,400,000 (3.4 GB)
+- VSCODE_RSS_EMERG_KB: 3,200,000 → 3,800,000 (3.8 GB)
+- STARTUP_RSS_WARN_KB: 3,200,000 → 3,600,000 (3.6 GB)
+- STARTUP_RSS_EMERG_KB: 3,400,000 → 4,000,000 (4.0 GB)
+- Extension defaults (package.json) and configWriter.js safe fallbacks updated to match.
+
+**Application**:
+- RSS thresholds must be calibrated against the **heaviest legitimate workload**, not the baseline idle state. On this system, Copilot Chat multi-agent is the heaviest workload, peaking at 3.0–3.5 GB.
+- EMERG should have ≥ 600 MB headroom above the heaviest legitimate peak (3.5 GB + 0.3 GB = 3.8 GB for EMERG, 3.5 GB + 0.5 GB = 4.0 GB for STARTUP_EMERG).
+- When a crash occurs with no Chrome running, no helper candidate, and a clean dmesg, the most likely cause is thresholds set below the legitimate workload peak — not a code bug.
+- Config override files (`~/.config/mem-watchdog/config.sh`) must be updated alongside daemon defaults, since they override the daemon's built-in values.
+
+---
+
 ### 2026-03-26 — WARN dead zone: no cgroup fallback when no kill candidate exists
 
 **Context**: VS Code crashed at 12:15:03 during process priority research. Journal showed 18 consecutive WARN polls (3.0–3.1 GB RSS, 74% free, no Chrome) with `helper_no_candidate=301`. No cgroup throttle or reclaim was triggered at WARN level.

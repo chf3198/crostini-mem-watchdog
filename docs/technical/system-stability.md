@@ -175,6 +175,8 @@ Setting this to **512 MB** (the original value) was counterproductive:
 | 2026-03-26 post-#64 | 0 | Daemon v20260325.8: WARN and Stage 3 no longer escalate to `kill_extension_host()` — log and defer to EMERGENCY/Stage 4. `VSCODE_RSS_WARN_KB` raised 2.2→3.0 GB. `STARTUP_RSS_WARN_KB` raised 2.8→3.2 GB. Utility processes excluded at non-emergency in all 3 awk blocks. |
 | 2026-03-26 12:15:03 | 1 | WARN dead zone: 18 consecutive WARN polls (3.0–3.1 GB, 74% free, no Chrome) with `helper_no_candidate=301`. No cgroup throttle/reclaim triggered at WARN. ACCEL killed tsserver (104 MB of 3.6 GB — 3%) and consumed action budget, blocking EMERGENCY on same iteration. Next cycle: EMERGENCY at 3.77 GB → `kill_vscode_main`. (issue #74, daemon v20260326.3) |
 | 2026-03-26 post-#74 | 0 | Daemon v20260326.3: WARN fallback triggers `cgroup_throttle()` + `cgroup_reclaim()` when no kill candidate exists. EMERGENCY resets `_action_taken=false` — non-critical kills cannot block emergency. No-candidate log suppressed after first occurrence. |
+| 2026-03-26 12:44:57 | 1 | Thresholds too low for Copilot Chat multi-agent workloads. RSS grew 2,328→3,114→3,300→3,423 MB in 47s during legitimate research. No Chrome, no helper candidate. STARTUP_RSS_EMERG_KB=3,400,000 gave only 300 MB above Copilot peak → `kill_vscode_main`. No kernel OOM (dmesg clean). (issue #77, daemon v20260326.4) |
+| 2026-03-26 post-#77 | 0 | Daemon v20260326.4: WARN 3.0→3.4 GB, EMERG 3.2→3.8 GB, STARTUP_WARN 3.2→3.6 GB, STARTUP_EMERG 3.4→4.0 GB. Extension defaults and configWriter fallbacks updated to match. |
 
 ### The 2026-03-05 crash — what was fixed
 
@@ -198,6 +200,7 @@ Three root causes:
 | Utility-process detection fix (v20260325.5) | Pathway #1 — Extension Host identified by `--inspect-port`; non-ExtHost utility processes eligible as kill candidates; `kill_extension_host()` finds modern Extension Host | ✅ Fixed |
 | WARN-deferral fix (v20260325.8) | Pathway #1 — WARN and Stage 3 no longer escalate to `kill_extension_host()`; defer to EMERGENCY/Stage 4. WARN threshold raised to 3.0 GB (above steady-state baseline). Prevents watchdog from destroying its own editing session at non-emergency RSS. | ✅ Fixed |
 | WARN cgroup fallback (v20260326.3) | Pathway #1 — when no kill candidate exists at WARN, triggers `cgroup_throttle()` + `cgroup_reclaim()` as non-destructive intermediate relief. EMERGENCY resets `_action_taken` so non-critical kills cannot block it. | ✅ Fixed |
+| Threshold raise for AI workloads (v20260326.4) | Pathway #1 — WARN 3.0→3.4 GB, EMERG 3.2→3.8 GB, STARTUP_WARN 3.2→3.6 GB, STARTUP_EMERG 3.4→4.0 GB. Copilot Chat multi-agent research legitimately peaks at 3.0–3.5 GB; previous thresholds gave only 300 MB headroom. | ✅ Fixed |
 | Container swap | Pathway #1 — direct relief for container kernel OOM | ❌ Blocked (CapEff=0, see §4) |
 
 **Residual risk:** The container kernel can still OOM if VS Code + idle MCP browser + a Playwright session all run simultaneously without the MCP browser being killed first. The watchdog mitigates this but cannot guarantee prevention if the spike is faster than the 2s polling interval.
