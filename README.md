@@ -156,7 +156,7 @@ All 4 gates must pass before any change is published:
 
 ```bash
 bash test-watchdog.sh              # 15 bash tests (~3 s) — service, OOM scores, PSI, SwapFree safety, SIGTERM
-cd vscode-extension && npm test    # 56 JS unit tests (~1 s) — extension state machine, activation singleton, pileup guard, utils
+cd vscode-extension && npm test    # 75 JS unit tests (~1 s) — extension state machine, activation singleton, pileup guard, utils
 bash -n mem-watchdog.sh            # bash syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
 ```
