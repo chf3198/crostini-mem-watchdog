@@ -1,8 +1,6 @@
 name: Issues Governance
 
 on:
-  push:
-    branches: [main]
   issues:
     types: [opened, edited, reopened, labeled, unlabeled]
   schedule:
@@ -14,12 +12,6 @@ permissions:
   contents: read
 
 jobs:
-  ignore_unexpected_event:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Governance event bookkeeping
-        run: echo "Issues governance bookkeeping for event: ${GITHUB_EVENT_NAME}"
-
   validate_issue_event:
     if: github.event_name == 'issues'
     runs-on: ubuntu-latest
