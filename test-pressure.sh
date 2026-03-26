@@ -33,6 +33,10 @@
 # Usage:
 #   bash test-pressure.sh              # full suite (requires ~1 GB headroom)
 #   bash test-pressure.sh --dry-run    # show what would happen without allocating
+#   bash test-pressure.sh --adaptive   # child-cgroup isolation: Tests 1 & 5 run
+#                                      # at any RAM level (never skip for "too much
+#                                      # free RAM").  Requires sudo -n and cgroup
+#                                      # mkdir.  Falls back to capped mode on failure.
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -74,7 +78,14 @@ prune_scratch 'pressure-snaps-*.jsonl' 5 43200
 prune_scratch 'stress-*.json'          5  43200
 
 DRY_RUN=false
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
+ADAPTIVE=false
+for _arg in "$@"; do
+  case "$_arg" in
+    --dry-run)  DRY_RUN=true ;;
+    --adaptive) ADAPTIVE=true ;;
+    *)          echo "Unknown flag: $_arg"; exit 1 ;;
+  esac
+done
 
 pass=0
 fail=0
@@ -93,6 +104,7 @@ tee_log "═══════════════════════�
 tee_log "mem-watchdog pressure test suite — $(date '+%Y-%m-%d %H:%M:%S')"
 tee_log "Log: $LOG"
 $DRY_RUN && tee_log "${YEL}  *** DRY-RUN — no memory will be allocated, no processes killed ***${RST}"
+$ADAPTIVE && tee_log "${GRN}  *** ADAPTIVE MODE — child-cgroup isolation enabled for large allocations ***${RST}"
 tee_log "════════════════════════════════════════════════════════════════"
 
 # ── Cgroup hierarchy detection (v1, v2, or hybrid) ──────────────────────────
@@ -154,6 +166,84 @@ tee_log "  Cgroup mode: ${CGROUP_MODE}"
 tee_log "  Cgroup path: ${CGRP}"
 tee_log "  Limit file:  ${_cg_limit_file}"
 tee_log "  Usage file:  ${_cg_usage_file}"
+
+# ── Child cgroup helpers for --adaptive mode ─────────────────────────────────
+# Creates an isolated child cgroup for the test's allocator + decoy processes.
+# If the allocator overshoots, the CHILD cgroup's OOM killer fires — VS Code
+# (in the parent cgroup) is never at risk.  The child's memory consumption
+# still reduces system-wide MemAvailable, so the watchdog's threshold logic
+# is exercised with real pressure.
+#
+# Lifecycle: create_test_cgroup → move_to_test_cgroup PID → (test runs) →
+#            cleanup_test_cgroup
+#
+# cgroup v1: child inherits parent's controller; memory.limit_in_bytes is
+#            auto-populated by the kernel.  `sudo -n` is required for
+#            mkdir/rmdir/write (all files are root-owned).
+# cgroup v2: same pattern with memory.max instead of memory.limit_in_bytes.
+
+_TEST_CGRP=""          # populated by create_test_cgroup()
+_TEST_CGRP_ACTIVE=false
+
+create_test_cgroup() {
+  local limit_bytes="${1:?usage: create_test_cgroup <limit_bytes>}"
+  _TEST_CGRP="${CGRP}/pressure-test-$$"
+
+  if ! sudo -n mkdir -p "$_TEST_CGRP" 2>/dev/null; then
+    tee_log "  ${YEL}adaptive: cannot create child cgroup (sudo -n mkdir failed)${RST}"
+    return 1
+  fi
+
+  local limit_file
+  if [[ "$CGROUP_MODE" == "v2" ]]; then
+    limit_file="${_TEST_CGRP}/memory.max"
+  else
+    limit_file="${_TEST_CGRP}/memory.limit_in_bytes"
+  fi
+
+  if ! echo "$limit_bytes" | sudo -n tee "$limit_file" > /dev/null 2>&1; then
+    tee_log "  ${YEL}adaptive: cannot set child cgroup limit (write to $limit_file failed)${RST}"
+    sudo -n rmdir "$_TEST_CGRP" 2>/dev/null || true
+    return 1
+  fi
+
+  _TEST_CGRP_ACTIVE=true
+  tee_log "  adaptive: child cgroup created at ${_TEST_CGRP}"
+  tee_log "    limit: $(( limit_bytes / 1024 / 1024 )) MB (${CGROUP_MODE})"
+  return 0
+}
+
+move_to_test_cgroup() {
+  local pid="${1:?usage: move_to_test_cgroup <pid>}"
+  if [[ "$_TEST_CGRP_ACTIVE" != "true" ]]; then return 1; fi
+  echo "$pid" | sudo -n tee "${_TEST_CGRP}/cgroup.procs" > /dev/null 2>&1
+}
+
+cleanup_test_cgroup() {
+  if [[ "$_TEST_CGRP_ACTIVE" != "true" ]]; then return 0; fi
+  _TEST_CGRP_ACTIVE=false
+
+  # Move surviving processes back to parent before rmdir
+  local _pid
+  while IFS= read -r _pid; do
+    if [[ -n "$_pid" ]]; then
+      echo "$_pid" | sudo -n tee "${CGRP}/cgroup.procs" > /dev/null 2>&1 || true
+    fi
+  done < "${_TEST_CGRP}/cgroup.procs" 2>/dev/null
+
+  # Kill any stragglers that couldn't be moved (zombies holding the cgroup open)
+  local _remaining
+  _remaining=$(wc -l < "${_TEST_CGRP}/cgroup.procs" 2>/dev/null || echo 0)
+  if (( _remaining > 0 )); then
+    while IFS= read -r _pid; do
+      if [[ -n "$_pid" ]]; then kill -9 "$_pid" 2>/dev/null || true; fi
+    done < "${_TEST_CGRP}/cgroup.procs" 2>/dev/null
+    sleep 0.2
+  fi
+
+  sudo -n rmdir "$_TEST_CGRP" 2>/dev/null || true
+  tee_log "  adaptive: child cgroup cleaned up"
+}
 
 # ── SAFETY PREFLIGHT ─────────────────────────────────────────────────────────
 tee_log ""
@@ -387,17 +477,50 @@ else
   alloc_kb=$(( avail_kb - target_avail_kb ))
   alloc_mb=$(( alloc_kb / 1024 ))
 
+  _t1_run_alloc=false
+  _t1_adaptive=false
+
   if (( alloc_mb <= 0 )); then
     SKIP "Already below SIGTERM threshold — cannot test meaningfully (${avail_pct}% free)"
     kill "$DECOY_PID" 2>/dev/null || true
+  elif (( alloc_mb > 1500 )) && ! $ADAPTIVE; then
+    tee_log "  Needs ~${alloc_mb} MB allocation to push MemAvailable to ~${target_avail_pct}%..."
+    snapshot "t1-pre-alloc"
+    kill "$DECOY_PID" 2>/dev/null || true
+    SKIP "Needs ${alloc_mb} MB allocation from ${avail_pct}% free — too large without --adaptive. Use --adaptive for child-cgroup isolation."
+  elif (( alloc_mb > 3500 )); then
+    tee_log "  Needs ~${alloc_mb} MB allocation to push MemAvailable to ~${target_avail_pct}%..."
+    snapshot "t1-pre-alloc"
+    kill "$DECOY_PID" 2>/dev/null || true
+    SKIP "adaptive: ${alloc_mb} MB exceeds 3500 MB hard cap — system has too much free RAM for a meaningful pressure test"
+  elif (( alloc_mb > 1500 )); then
+    # ── Adaptive mode: child-cgroup blast-radius isolation ───────────────
+    # The allocator + decoy run inside an isolated child cgroup.  If the
+    # allocator overshoots, the CHILD cgroup's OOM killer fires — VS Code
+    # (in the parent cgroup) is never at risk.
+    tee_log "  adaptive: allocating ~${alloc_mb} MB with child-cgroup isolation..."
+    snapshot "t1-pre-alloc"
+    # Child cgroup limit = allocation target + 300 MB buffer for python runtime
+    _child_limit_bytes=$(( (alloc_mb + 300) * 1024 * 1024 ))
+    if create_test_cgroup "$_child_limit_bytes"; then
+      move_to_test_cgroup "$DECOY_PID"
+      tee_log "  adaptive: decoy PID ${DECOY_PID} → child cgroup (limit $((alloc_mb + 300)) MB)"
+      _t1_adaptive=true
+      _t1_run_alloc=true
+    else
+      tee_log "  ${YEL}adaptive fallback: child cgroup unavailable — capping allocation at 1500 MB${RST}"
+      alloc_mb=1500
+      alloc_kb=$(( alloc_mb * 1024 ))
+      _t1_run_alloc=true
+    fi
   else
     tee_log "  Allocating ~${alloc_mb} MB to push MemAvailable to ~${target_avail_pct}%..."
-      snapshot "t1-pre-alloc"
-    if (( alloc_mb > 1500 )); then
-      kill "$DECOY_PID" 2>/dev/null || true
-      SKIP "Needs ${alloc_mb} MB allocation to reach threshold from ${avail_pct}% free — too large for a live VS Code session. Close Chrome/MCP browser tabs first, or run when RAM is tighter (avail < 40%)."
-    else
-      python3 -c "
+    snapshot "t1-pre-alloc"
+    _t1_run_alloc=true
+  fi
+
+  if $_t1_run_alloc; then
+    python3 -c "
 import time, sys
 mb = ${alloc_mb}
 # Allocate in chunks to be gentle; each chunk is 10 MB
@@ -411,62 +534,70 @@ print(f'Allocated {mb} MB', flush=True)
 time.sleep(15)
 print('Releasing', flush=True)
 " &
-      ALLOC_PID=$!
+    ALLOC_PID=$!
 
-      # Wait up to 20s for watchdog to fire; sample MemAvailable every second
-      # so the descent curve is available in the log for latency post-analysis.
-      waited=0
-      killed=false
-      t_alloc_start=$EPOCHSECONDS    # bash 5.0+ magic var — zero fork, zero syscall
-      t_kill_detected=0
-      avail_curve=()
-      while (( waited < 20 )); do
-        sleep 1
-        (( ++waited ))
-        # Zero-fork MemAvailable read — bash builtin while+read, no awk fork
-        cur_avail=0
-        while IFS=$':\t ' read -r _mk _mv _; do
-          [[ "$_mk" == "MemAvailable" ]] && { cur_avail=$_mv; break; }
-        done < /proc/meminfo
-        cur_pct=$(( cur_avail * 100 / total_kb ))
-        avail_curve+=("${waited}s:${cur_pct}%/${cur_avail}kB")
-        if ! kill -0 "$DECOY_PID" 2>/dev/null; then
-          t_kill_detected=$EPOCHSECONDS
-          killed=true
-          break
-        fi
-      done
-      tee_log "  [avail-curve:t1] ${avail_curve[*]}"
-      (( t_kill_detected > 0 )) && tee_log "  [kill-latency:t1] $(( t_kill_detected - t_alloc_start ))s from allocation start to decoy death"
+    # Move allocator into child cgroup too (if adaptive)
+    if $_t1_adaptive; then
+      move_to_test_cgroup "$ALLOC_PID"
+      tee_log "  adaptive: allocator PID ${ALLOC_PID} → child cgroup"
+    fi
 
-      # Kill allocator regardless
-      kill "$ALLOC_PID" 2>/dev/null || true
-      wait "$ALLOC_PID" 2>/dev/null || true
-
-      if $killed; then
-        # Verify it was the watchdog that killed it (check journal)
-        sleep 1  # give journald a moment to flush
-        snapshot "t1-post-kill"
-        tee_log "  [watchdog-journal:t1] last 5 entries:"
-        journalctl --user -u mem-watchdog --since "30 seconds ago" --no-pager -q 2>/dev/null \
-          | tail -5 | while IFS= read -r jline; do tee_log "    $jline"; done
-        if [[ -n "$JOURNAL_CURSOR" ]]; then
-          journal_hit=$(journalctl --user -u mem-watchdog --after-cursor="$JOURNAL_CURSOR" --no-pager -q 2>/dev/null | grep -c 'SIGTERM\|Chromium' || echo 0)
-        else
-          journal_hit=$(journalctl --user -u mem-watchdog --since "1 minute ago" --no-pager -q 2>/dev/null | grep -c 'SIGTERM\|Chromium' || echo 0)
-        fi
-        if (( journal_hit > 0 )); then
-          PASS "Watchdog SIGTERMed decoy chrome (confirmed in journal)"
-        else
-          PASS "Decoy chrome was killed within 20s (journal confirmation inconclusive)"
-        fi
-      else
-        kill "$DECOY_PID" 2>/dev/null || true
-        FAIL "Decoy chrome was NOT killed within 20s — watchdog may have missed the threshold"
+    # Wait up to 20s for watchdog to fire; sample MemAvailable every second
+    # so the descent curve is available in the log for latency post-analysis.
+    waited=0
+    killed=false
+    t_alloc_start=$EPOCHSECONDS    # bash 5.0+ magic var — zero fork, zero syscall
+    t_kill_detected=0
+    avail_curve=()
+    while (( waited < 20 )); do
+      sleep 1
+      (( ++waited ))
+      # Zero-fork MemAvailable read — bash builtin while+read, no awk fork
+      cur_avail=0
+      while IFS=$':\t ' read -r _mk _mv _; do
+        [[ "$_mk" == "MemAvailable" ]] && { cur_avail=$_mv; break; }
+      done < /proc/meminfo
+      cur_pct=$(( cur_avail * 100 / total_kb ))
+      avail_curve+=("${waited}s:${cur_pct}%/${cur_avail}kB")
+      if ! kill -0 "$DECOY_PID" 2>/dev/null; then
+        t_kill_detected=$EPOCHSECONDS
+        killed=true
+        break
       fi
-      wait "$DECOY_PID" 2>/dev/null || true
-    fi  # alloc_mb <= 1500
-  fi    # alloc_mb > 0
+    done
+    tee_log "  [avail-curve:t1] ${avail_curve[*]}"
+    (( t_kill_detected > 0 )) && tee_log "  [kill-latency:t1] $(( t_kill_detected - t_alloc_start ))s from allocation start to decoy death"
+
+    # Kill allocator regardless
+    kill "$ALLOC_PID" 2>/dev/null || true
+    wait "$ALLOC_PID" 2>/dev/null || true
+
+    # Clean up child cgroup before verification
+    $_t1_adaptive && cleanup_test_cgroup
+
+    if $killed; then
+      # Verify it was the watchdog that killed it (check journal)
+      sleep 1  # give journald a moment to flush
+      snapshot "t1-post-kill"
+      tee_log "  [watchdog-journal:t1] last 5 entries:"
+      journalctl --user -u mem-watchdog --since "30 seconds ago" --no-pager -q 2>/dev/null \
+        | tail -5 | while IFS= read -r jline; do tee_log "    $jline"; done
+      if [[ -n "$JOURNAL_CURSOR" ]]; then
+        journal_hit=$(journalctl --user -u mem-watchdog --after-cursor="$JOURNAL_CURSOR" --no-pager -q 2>/dev/null | grep -c 'SIGTERM\|Chromium' || echo 0)
+      else
+        journal_hit=$(journalctl --user -u mem-watchdog --since "1 minute ago" --no-pager -q 2>/dev/null | grep -c 'SIGTERM\|Chromium' || echo 0)
+      fi
+      if (( journal_hit > 0 )); then
+        PASS "Watchdog SIGTERMed decoy chrome (confirmed in journal)"
+      else
+        PASS "Decoy chrome was killed within 20s (journal confirmation inconclusive)"
+      fi
+    else
+      kill "$DECOY_PID" 2>/dev/null || true
+      FAIL "Decoy chrome was NOT killed within 20s — watchdog may have missed the threshold"
+    fi
+    wait "$DECOY_PID" 2>/dev/null || true
+  fi    # _t1_run_alloc
 fi      # not DRY_RUN
 
 # ── TEST 2: oom_score_adj under pressure ──────────────────────────────────────
@@ -553,8 +684,9 @@ fi
 # BOTH are sent in a single threshold-crossing event, covering the second pkill
 # pattern that Test 1 never exercises.
 #
-# Conditional: requires MemAvailable < 40% to reach the 25% SIGTERM threshold
-# with an allocation ≤ 1500 MB. SKIPS safely at high RAM (e.g., fresh boot).
+# Without --adaptive: requires MemAvailable < 40% to reach the 25% SIGTERM
+# threshold within the 1500 MB allocation cap.  SKIPS at high RAM.
+# With --adaptive: uses child-cgroup isolation for large allocations.
 tee_log ""
 tee_log "── Test 5: Both chrome + playwright-named processes killed in one threshold crossing"
 
@@ -565,28 +697,55 @@ while IFS=$':\t ' read -r _mk _mv _; do
 done < /proc/meminfo
 t5_pct=$(( t5_avail_kb * 100 / total_kb ))
 
+_t5_run_alloc=false
+_t5_adaptive=false
+
 if $DRY_RUN; then
   SKIP "dry-run: would start chrome+playwright decoys and allocate to reach 23% MemAvailable"
-elif (( t5_pct >= 40 )); then
-  SKIP "Test 5: RAM at ${t5_pct}% free — need <40% to reach 25% SIGTERM threshold within the 1500 MB safe allocation budget (close Chrome/MCP tabs and retry)"
 else
-  # Start two decoys with browser-matching command-line names
-  (exec -a chrome sleep 300) &
-  T5_CHROME=$!
-  # 'node playwright' matches pkill -f 'node.*playwright' (argv[0] = "node playwright")
-  (exec -a 'node playwright' sleep 300) &
-  T5_PLAY=$!
-  tee_log "  Chrome decoy:     PID ${T5_CHROME}"
-  tee_log "  Playwright decoy: PID ${T5_PLAY}"
-
   t5_target_kb=$(( total_kb * 23 / 100 ))
   t5_alloc_kb=$(( t5_avail_kb - t5_target_kb ))
   t5_alloc_mb=$(( t5_alloc_kb / 1024 ))
 
-  if (( t5_alloc_mb <= 0 || t5_alloc_mb > 1500 )); then
-    kill "${T5_CHROME}" "${T5_PLAY}" 2>/dev/null || true
-    SKIP "Test 5: Allocation of ${t5_alloc_mb} MB out of safe range — skipping"
+  if (( t5_alloc_mb <= 0 )); then
+    SKIP "Test 5: Already below SIGTERM threshold — cannot test meaningfully (${t5_pct}% free)"
+  elif (( t5_alloc_mb > 1500 )) && ! $ADAPTIVE; then
+    SKIP "Test 5: RAM at ${t5_pct}% free — needs ${t5_alloc_mb} MB allocation, exceeds 1500 MB cap. Use --adaptive for child-cgroup isolation."
+  elif (( t5_alloc_mb > 3500 )); then
+    SKIP "Test 5: adaptive: ${t5_alloc_mb} MB exceeds 3500 MB hard cap"
+  elif (( t5_alloc_mb > 1500 )); then
+    # ── Adaptive mode for Test 5 ────────────────────────────────────────
+    _t5_run_alloc=true
+    _child_limit_bytes=$(( (t5_alloc_mb + 300) * 1024 * 1024 ))
+    if create_test_cgroup "$_child_limit_bytes"; then
+      _t5_adaptive=true
+      tee_log "  adaptive: Test 5 using child-cgroup isolation (limit $((t5_alloc_mb + 300)) MB)"
+    else
+      tee_log "  ${YEL}adaptive fallback: child cgroup unavailable — capping allocation at 1500 MB${RST}"
+      t5_alloc_mb=1500
+      t5_alloc_kb=$(( t5_alloc_mb * 1024 ))
+    fi
   else
+    _t5_run_alloc=true
+  fi
+
+  if $_t5_run_alloc; then
+    # Start two decoys with browser-matching command-line names
+    (exec -a chrome sleep 300) &
+    T5_CHROME=$!
+    # 'node playwright' matches pkill -f 'node.*playwright' (argv[0] = "node playwright")
+    (exec -a 'node playwright' sleep 300) &
+    T5_PLAY=$!
+    tee_log "  Chrome decoy:     PID ${T5_CHROME}"
+    tee_log "  Playwright decoy: PID ${T5_PLAY}"
+
+    # Move decoys into child cgroup if adaptive
+    if $_t5_adaptive; then
+      move_to_test_cgroup "$T5_CHROME"
+      move_to_test_cgroup "$T5_PLAY"
+      tee_log "  adaptive: decoys → child cgroup"
+    fi
+
     tee_log "  Allocating ~${t5_alloc_mb} MB to push MemAvailable to ~23%..."
     snapshot "t5-pre-alloc"
 
@@ -603,6 +762,12 @@ time.sleep(20)
 print('Releasing', flush=True)
 " &
     T5_ALLOC=$!
+
+    # Move allocator into child cgroup if adaptive
+    if $_t5_adaptive; then
+      move_to_test_cgroup "$T5_ALLOC"
+      tee_log "  adaptive: allocator PID ${T5_ALLOC} → child cgroup"
+    fi
 
     # Wait up to 25 s for BOTH decoys to be killed; sample MemAvailable curve
     waited=0
@@ -634,6 +799,9 @@ print('Releasing', flush=True)
     kill "${T5_ALLOC}" 2>/dev/null || true
     wait "${T5_ALLOC}" 2>/dev/null || true
 
+    # Clean up child cgroup before verification
+    $_t5_adaptive && cleanup_test_cgroup
+
     if $t5_chrome_killed && $t5_play_killed; then
       snapshot "t5-post-kill"
       PASS "Both chrome and playwright-named decoys killed within ${waited}s"
@@ -649,8 +817,8 @@ print('Releasing', flush=True)
     fi
 
     wait "${T5_CHROME}" "${T5_PLAY}" 2>/dev/null || true
-  fi
-fi
+  fi  # _t5_run_alloc
+fi    # not DRY_RUN
 
 
 tee_log ""
