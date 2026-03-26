@@ -244,6 +244,30 @@ describe('chatParticipant — requestHandler()', () => {
     });
 });
 
+describe('chatParticipant — manifest contract (#43 regression)', () => {
+    test('package.json chatParticipants.isSticky is false — prevents duplicate UI perception', () => {
+        // Regression guard for #43: isSticky: true caused the chat participant to
+        // be pinned permanently in the Chat panel alongside the status bar item,
+        // creating the perception of "duplicate IDE info elements."
+        const pkg = require('../../package.json');
+        const participant = pkg.contributes.chatParticipants[0];
+        assert.equal(participant.isSticky, false,
+            'isSticky must be false — true pins the chat participant in the Chat panel, ' +
+            'creating perceived duplication with the status bar item (#43)');
+    });
+
+    test('chatParticipant ID matches between package.json and runtime registration', () => {
+        const pkg = require('../../package.json');
+        const declaredId = pkg.contributes.chatParticipants[0].id;
+        const ctx = { subscriptions: [] };
+        _createdParticipants.length = 0;
+        registerChatParticipant(ctx);
+        assert.equal(_createdParticipants[0].id, declaredId,
+            'runtime createChatParticipant ID must match package.json declaration');
+        _createdParticipants.length = 0;
+    });
+});
+
 describe('chatParticipant — registerChatParticipant()', () => {
     beforeEach(() => { _createdParticipants.length = 0; });
 

@@ -2,7 +2,7 @@
   "name": "mem-watchdog-status",
   "displayName": "Mem Watchdog",
   "description": "Prevents VS Code from being OOM-killed on ChromeOS Crostini — auto-installs a systemd memory watchdog daemon that kills Chrome/Playwright before the kernel kills VS Code.",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "publisher": "CurtisFranks",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
@@ -139,7 +139,7 @@
         "name": "memwatchdog",
         "fullName": "Mem Watchdog Assistant",
         "description": "Inspect watchdog status and logs, and apply memory tuning profiles",
-        "isSticky": true,
+        "isSticky": false,
         "commands": [
           {
             "name": "status",
