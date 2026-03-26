@@ -20,6 +20,21 @@
 
 ---
 
+### 2026-03-26 — SwapFree sentinel changed from uint64 overflow to 0 kB on kernel 6.6.99
+
+**Context**: Conducting comprehensive zram/zswap research for issue #13 (v0.4.0 milestone blocker). Ran live `/proc/meminfo` probe expecting to see the historical `SwapFree: 18446744073709551360 kB` overflow sentinel that crashed earlyoom.
+
+**Discovery**: On kernel 6.6.99 (Termina VM), `/proc/meminfo` now reports `SwapTotal: 0 kB`, `SwapFree: 0 kB`, and `SwapCached: 0 kB` — not the uint64 overflow sentinel documented in all prior analysis. The overflow sentinel (2^64 − 256) was confirmed on earlier Crostini kernel versions but is no longer present. Additionally, both `CONFIG_ZRAM` and `CONFIG_ZSWAP` are `not set` at compile time in the Termina VM kernel — the container is true zero-swap at every layer (VM kernel, container namespace, and cgroup hierarchy). The host's 16 GB zram is invisible.
+
+The daemon's SwapFree avoidance remains correct regardless — the value's meaning is unreliable across kernel versions (overflow sentinel, 0 kB, or potentially something else on future kernels). earlyoom's `strtol()` crash would not reproduce on this kernel, but could recur if ChromeOS reverts the reporting behavior.
+
+**Application**:
+- The "never read SwapFree" constraint remains non-negotiable — but the *reason* has evolved from "it crashes parsers" to "its meaning is unstable across kernel versions."
+- Daemon comments updated to document both the historical overflow and current 0 kB behavior, referencing `docs/technical/crostini-swap-reality.md`.
+- Future kernel updates should re-probe `/proc/meminfo` SwapFree to track whether the value changes again. The kernel version record in `crostini-swap-reality.md` provides a baseline for comparison.
+
+---
+
 ### 2026-03-26 — Blanket process-type exclusion creates zero-candidate dead zones
 
 **Context**: After fixing the WARN dead zone (#74) and threshold raise (#77), analysis of `kill_top_vscode_helper("normal")` revealed it still produced **zero candidates** when no Chrome was running. Every VS Code process was either EXCLUDED (main, zygote, GPU, ExtHost via `--inspect-port`, all `--type=utility`) or PROTECTED (tsserver, language servers, eslint).
