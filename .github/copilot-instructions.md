@@ -48,7 +48,7 @@ vscode-extension/
 | `MemAvailable ≤ 25%` | `SIGTERM` Chrome/Playwright |
 | PSI `full avg10 > 25%` | `SIGTERM` Chrome/Playwright |
 | VS Code RSS ≥ `VSCODE_RSS_EMERG_KB` (3.2 GB) | `SIGKILL` Chrome; if no Chrome → `kill_vscode_main()` |
-| VS Code RSS ≥ `VSCODE_RSS_WARN_KB` (2.2 GB) | `SIGTERM` Chrome + desktop alert; if no Chrome → `kill_top_vscode_helper()` |
+| VS Code RSS ≥ `VSCODE_RSS_WARN_KB` (3.0 GB) | `SIGTERM` Chrome + desktop alert; if no Chrome → `kill_top_vscode_helper()`; if no candidate → log and defer to EMERGENCY |
 | RSS delta ≥ `RSS_ACCEL_KB` (300 MB/cycle) **AND** `vscode_rss ≥ eff_warn` | `kill_top_vscode_helper()` or `kill_browsers(TERM)` |
 | `RSS_RUNAWAY_STREAK=3` consecutive ACCEL cycles above `RSS_RUNAWAY_MIN_KB` (2.6 GB) | Circuit-breaker: `kill_vscode_main()` |
 
