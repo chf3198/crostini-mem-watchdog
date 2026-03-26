@@ -21,8 +21,8 @@ const DEFAULTS = {
     sigtermThresholdPct:   25,
     sigkillThresholdPct:   15,
     psiThresholdPct:       25,
-    vscodeRssWarnMB:     2500,
-    vscodeRssEmergencyMB: 3500,
+    vscodeRssWarnMB:     3400,
+    vscodeRssEmergencyMB: 3800,
 };
 
 function makeCfg(overrides = {}) {
@@ -99,13 +99,13 @@ describe('writeConfig — RSS threshold cross-field validation', () => {
         assert.equal(warnings.length, 1);
     });
 
-    test('warnMB > emergMB: written values are safe defaults (2500/3500 MB → KB)', (t) => {
+    test('warnMB > emergMB: written values are safe defaults (3400/3800 MB → KB)', (t) => {
         const out = captureWrite(t);
         writeConfig(makeCfg({ vscodeRssWarnMB: 4000, vscodeRssEmergencyMB: 3000 }));
 
         const content = out.get();
-        assert.ok(content.includes(`VSCODE_RSS_WARN_KB=${2500 * 1024}`),  'warn reverted to 2500 MB');
-        assert.ok(content.includes(`VSCODE_RSS_EMERG_KB=${3500 * 1024}`), 'emerg reverted to 3500 MB');
+        assert.ok(content.includes(`VSCODE_RSS_WARN_KB=${3400 * 1024}`),  'warn reverted to 3400 MB');
+        assert.ok(content.includes(`VSCODE_RSS_EMERG_KB=${3800 * 1024}`), 'emerg reverted to 3800 MB');
     });
 });
 
