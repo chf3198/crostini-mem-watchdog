@@ -173,6 +173,8 @@ Setting this to **512 MB** (the original value) was counterproductive:
 | 2026-03-25 post-#55 | 0 | Daemon v20260325.5: Extension Host identified by `--type=utility` + `--inspect-port`; other utility processes now eligible kill candidates; `helper_no_candidate=0` |
 | 2026-03-26 00:00:18 | 2 | WARN→ExtHost escalation: `kill_extension_host()` fired at 2.7 GB RSS / 76% free memory. WARN threshold (2.2–2.56 GB) was below normal baseline (2.3–2.7 GB), so WARN fired constantly. `kill_top_vscode_helper` found no candidate (utility processes correctly excluded), fell through to `kill_extension_host()` — destroyed terminal, Copilot, all extensions. ExtHost restart triggered extension v0.3.1 installer → overwrote daemon v20260325.7 with v20260313.2 (12 days old) → old daemon BURST-killed tsserver at 75% free. (issue #64, daemon v20260325.8) |
 | 2026-03-26 post-#64 | 0 | Daemon v20260325.8: WARN and Stage 3 no longer escalate to `kill_extension_host()` — log and defer to EMERGENCY/Stage 4. `VSCODE_RSS_WARN_KB` raised 2.2→3.0 GB. `STARTUP_RSS_WARN_KB` raised 2.8→3.2 GB. Utility processes excluded at non-emergency in all 3 awk blocks. |
+| 2026-03-26 12:15:03 | 1 | WARN dead zone: 18 consecutive WARN polls (3.0–3.1 GB, 74% free, no Chrome) with `helper_no_candidate=301`. No cgroup throttle/reclaim triggered at WARN. ACCEL killed tsserver (104 MB of 3.6 GB — 3%) and consumed action budget, blocking EMERGENCY on same iteration. Next cycle: EMERGENCY at 3.77 GB → `kill_vscode_main`. (issue #74, daemon v20260326.3) |
+| 2026-03-26 post-#74 | 0 | Daemon v20260326.3: WARN fallback triggers `cgroup_throttle()` + `cgroup_reclaim()` when no kill candidate exists. EMERGENCY resets `_action_taken=false` — non-critical kills cannot block emergency. No-candidate log suppressed after first occurrence. |
 
 ### The 2026-03-05 crash — what was fixed
 
@@ -195,6 +197,7 @@ Three root causes:
 | Action-budget no-op fix (v20260325.1) | Pathway #1 — no-op `kill_browsers()` no longer exhausts budget; fallback kills always reachable | ✅ Fixed |
 | Utility-process detection fix (v20260325.5) | Pathway #1 — Extension Host identified by `--inspect-port`; non-ExtHost utility processes eligible as kill candidates; `kill_extension_host()` finds modern Extension Host | ✅ Fixed |
 | WARN-deferral fix (v20260325.8) | Pathway #1 — WARN and Stage 3 no longer escalate to `kill_extension_host()`; defer to EMERGENCY/Stage 4. WARN threshold raised to 3.0 GB (above steady-state baseline). Prevents watchdog from destroying its own editing session at non-emergency RSS. | ✅ Fixed |
+| WARN cgroup fallback (v20260326.3) | Pathway #1 — when no kill candidate exists at WARN, triggers `cgroup_throttle()` + `cgroup_reclaim()` as non-destructive intermediate relief. EMERGENCY resets `_action_taken` so non-critical kills cannot block it. | ✅ Fixed |
 | Container swap | Pathway #1 — direct relief for container kernel OOM | ❌ Blocked (CapEff=0, see §4) |
 
 **Residual risk:** The container kernel can still OOM if VS Code + idle MCP browser + a Playwright session all run simultaneously without the MCP browser being killed first. The watchdog mitigates this but cannot guarantee prevention if the spike is faster than the 2s polling interval.

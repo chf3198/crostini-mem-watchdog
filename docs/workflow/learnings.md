@@ -20,6 +20,30 @@
 
 ---
 
+### 2026-03-26 — WARN dead zone: no cgroup fallback when no kill candidate exists
+
+**Context**: VS Code crashed at 12:15:03 during process priority research. Journal showed 18 consecutive WARN polls (3.0–3.1 GB RSS, 74% free, no Chrome) with `helper_no_candidate=301`. No cgroup throttle or reclaim was triggered at WARN level.
+
+**Discovery**: Three independent bugs created a WARN-level dead zone where the daemon watched RSS climb from 3.0→3.77 GB with zero intervention capability:
+
+1. **No non-destructive WARN fallback**: When `kill_top_vscode_helper("normal")` found no candidate (all utility processes excluded at WARN, all language servers protected, ExtHost excluded) and no Chrome was running, the daemon logged "deferring to EMERGENCY" and did nothing. The cgroup throttle (`soft_limit`) and reclaim (`force_empty`) mechanisms — available since PR #71 — were never triggered at WARN level. RSS grew unchecked from 3.0 GB to 3.6 GB over ~36 seconds.
+
+2. **ACCEL tsserver kill consumed action gate, blocking EMERGENCY**: At 3.6 GB, ACCEL detected +350 MB/cycle and killed tsserver (104 MB of 3.6 GB total — 3% freed). This set `_action_taken=true`. EMERGENCY at 3.61 GB on the same loop iteration was blocked by the action gate. Only on the *next* 0.5s cycle (RSS now 3.77 GB) did `kill_vscode_main` fire.
+
+3. **301 identical log lines**: `kill_top_vscode_helper` logged "No VS Code helper candidate found" on every poll — 301 times in 36 seconds — flooding the journal with identical no-op messages that obscured the crash sequence during diagnosis.
+
+**Fixes applied (v20260326.3)**:
+- WARN fallback now triggers `cgroup_throttle()` + `cgroup_reclaim()` when `kill_top_vscode_helper` finds no candidate and no Chrome is running. This provides non-destructive intermediate pressure relief without killing any process.
+- EMERGENCY resets `_action_taken=false` before processing. Non-critical kills (e.g., ACCEL tsserver) can no longer block emergency response.
+- First no-candidate message logs with "(subsequent identical results suppressed)"; subsequent occurrences counted silently; summary logged when a candidate is finally found.
+
+**Application**:
+- When a severity level has "no safe target to kill," the correct response is non-destructive intervention (cgroup throttle/reclaim), not "do nothing and wait." Doing nothing allows RSS to grow unchecked through the entire WARN→EMERGENCY gap.
+- EMERGENCY must always be reachable regardless of what happened earlier in the same loop iteration. The action gate was designed to prevent thrash storms, not to block last-resort emergency response.
+- Repetitive no-op log lines should be suppressed after the first occurrence. The journal should capture the *pattern* (first occurrence + count), not every individual instance.
+
+---
+
 ### 2026-03-26 — WARN→ExtHost escalation killed terminal and Copilot at 76% free memory
 
 **Context**: Agent lost terminal access 3 times during a single session. Each time, VS Code showed "shared background process terminated unexpectedly." Journal investigation revealed the watchdog killed the Extension Host at WARN level (2.7 GB RSS, 76% free memory).
