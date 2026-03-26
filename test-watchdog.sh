@@ -250,6 +250,37 @@ else
   FAIL "Startup burst safe-skip fallback missing"
 fi
 
+# ── TEST 16: Process classification tier constants and logging (Issue #6) ────
+tee_log ""
+tee_log "── Test 16: Process classification tiers present"
+tier_ok=true
+if ! grep -q 'TIER_PROTECTED_PNAME=' "$WATCHDOG"; then
+  tee_log "    Missing TIER_PROTECTED_PNAME"
+  tier_ok=false
+fi
+if ! grep -q 'TIER_DISPOSABLE_PATTERN=' "$WATCHDOG"; then
+  tee_log "    Missing TIER_DISPOSABLE_PATTERN"
+  tier_ok=false
+fi
+if ! grep -q 'TIER_DISPOSABLE_PATTERN_AUX=' "$WATCHDOG"; then
+  tee_log "    Missing TIER_DISPOSABLE_PATTERN_AUX"
+  tier_ok=false
+fi
+if ! grep -q 'log_tier_assignments' "$WATCHDOG"; then
+  tee_log "    Missing log_tier_assignments function or call"
+  tier_ok=false
+fi
+# Verify patterns are used (not just defined) — at least one pgrep/ps uses a TIER_ var
+if ! grep -q 'TIER_DISPOSABLE_PATTERN"' "$WATCHDOG"; then
+  tee_log "    TIER_DISPOSABLE_PATTERN defined but not used in pgrep/pkill"
+  tier_ok=false
+fi
+if $tier_ok; then
+  PASS "Tier constants defined (TIER_PROTECTED_PNAME, TIER_DISPOSABLE_PATTERN, TIER_DISPOSABLE_PATTERN_AUX) and log_tier_assignments present"
+else
+  FAIL "Tier classification incomplete"
+fi
+
 # ── SUMMARY ──────────────────────────────────────────────────────────────────
 tee_log ""
 tee_log "════════════════════════════════════════════════════════════════"

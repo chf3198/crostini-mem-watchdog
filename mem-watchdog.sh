@@ -65,9 +65,35 @@ STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260325.5   # 2026-03-25 v5: fix utility-process detection (#55)     # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260325.6   # 2026-03-25 v6: process classification tiers (#6)     # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
+
+# ── Process classification tiers (Issue #6) ──────────────────────────────────
+# Three tiers classify processes for oom_score_adj and kill-eligibility decisions.
+# Override patterns in ~/.config/mem-watchdog/config.sh to add custom processes.
+#
+# PROTECTED: VS Code core processes
+#   Matched by: ps -C $TIER_PROTECTED_PNAME (process name match)
+#   oom_score_adj: OOM_VSCODE_ADJ (0) — non-negative; no root needed
+#   Kill policy: never automatic; circuit-breaker only (kill_vscode_main at Stage 4)
+#
+# DISPOSABLE: browser and automation processes
+#   Matched by: pgrep -f $TIER_DISPOSABLE_PATTERN / $TIER_DISPOSABLE_PATTERN_AUX
+#   oom_score_adj: OOM_CHROME_ADJ (1000) — maximum kernel OOM priority
+#   Kill policy: Stage 2+ (Throttle and above)
+#
+# MONITORED: all other user processes (not actively managed by the watchdog)
+#   oom_score_adj: not modified; kill eligibility: not targeted
+#
+# Sub-tier refinement within protected (kill_top_vscode_helper):
+#   Extension Host: --inspect-port flag → excluded from helper kills entirely
+#   Language servers: protected at WARN severity, killable at EMERG only
+#   Other helpers (renderer, IPC): killable at WARN as expendable candidates
+TIER_PROTECTED_PNAME='code'                       # ps -C process name for protected tier
+TIER_DISPOSABLE_PATTERN='(chrome|chromium)'        # pgrep -f ERE for disposable browsers
+TIER_DISPOSABLE_PATTERN_AUX='node.*playwright'     # pgrep -f ERE for disposable automation
+
 # VS Code RSS thresholds (confirmed: extension host hit 4 GB, watchdog had no Chrome to kill)
 # Lower thresholds so we can intervene BEFORE the kernel OOM fires.
 VSCODE_RSS_EMERG_KB=3200000   # ~3.2 GB — emergency cutoff before kernel OOM territory
@@ -257,8 +283,8 @@ log_status_snapshot() {
   now=$(date +%s)
   avail=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
   total=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
-  rss=$(ps -C code -o rss= 2>/dev/null | awk '{s+=$1} END{print s+0}')
-  chrome_count=$(pgrep -f '(chrome|chromium)' 2>/dev/null | wc -l)
+  rss=$(ps -C "$TIER_PROTECTED_PNAME" -o rss= 2>/dev/null | awk '{s+=$1} END{print s+0}')
+  chrome_count=$(pgrep -f "$TIER_DISPOSABLE_PATTERN" 2>/dev/null | wc -l)
   pct=0
   if [[ -n "$avail" && -n "$total" && "$total" -gt 0 ]]; then
     pct=$(( avail * 100 / total ))
@@ -343,11 +369,11 @@ kill_extension_host() {
   local exthost_pid
   # VS Code 1.90+: Extension Host runs as --type=utility with --inspect-port.
   # --inspect-port is present on exactly one utility process (the Extension Host).
-  exthost_pid=$(ps -C code -o pid=,args= 2>/dev/null \
+  exthost_pid=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,args= 2>/dev/null \
     | awk '$0 ~ /--type=utility/ && $0 ~ /--inspect-port/ {print $1; exit}')
   # Fallback: legacy VS Code uses --type=extensionHost
   if [[ -z "$exthost_pid" ]]; then
-    exthost_pid=$(ps -C code -o pid=,args= 2>/dev/null \
+    exthost_pid=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,args= 2>/dev/null \
       | awk '$0 ~ /--type=extensionHost/ {print $1; exit}')
   fi
   if [[ -z "$exthost_pid" ]]; then
@@ -380,9 +406,9 @@ kill_vscode_main() {
   fi
 
   local pid rss
-  pid=$(ps -C code -o pid=,args= 2>/dev/null | awk '$0 ~ /\/usr\/share\/code\/code$/ {print $1; exit}')
+  pid=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,args= 2>/dev/null | awk '$0 ~ /\/usr\/share\/code\/code$/ {print $1; exit}')
   if [[ -z "$pid" ]]; then
-    pid=$(ps -C code -o pid=,rss= 2>/dev/null | sort -k2 -rn | awk 'NR==1{print $1}')
+    pid=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss= 2>/dev/null | sort -k2 -rn | awk 'NR==1{print $1}')
   fi
   [[ -z "$pid" ]] && { log "  VS Code recovery: no code PID found"; return 1; }
 
@@ -422,11 +448,11 @@ kill_browsers() {
 
   local killed=false
 
-  if pkill "-${signal}" -f '(chrome|chromium)' 2>/dev/null; then
+  if pkill "-${signal}" -f "$TIER_DISPOSABLE_PATTERN" 2>/dev/null; then
     log "  → Chromium SIG${signal} sent"
     killed=true
   fi
-  if pkill "-${signal}" -f 'node.*playwright' 2>/dev/null; then
+  if pkill "-${signal}" -f "$TIER_DISPOSABLE_PATTERN_AUX" 2>/dev/null; then
     log "  → Playwright node SIG${signal} sent"
     killed=true
   fi
@@ -503,7 +529,7 @@ kill_top_vscode_helper() {
   fi
 
   # Preferred: language servers / extension workers, excluding recently-killed type
-  line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
+  line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss=,args= 2>/dev/null \
     | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" '
       function classify(a) {
         if (a ~ /tsserver\.js/)        return "tsserver"
@@ -536,7 +562,7 @@ kill_top_vscode_helper() {
 
   # Fallback: any non-main, non-zygote, non-extensionHost child
   if [[ -z "$line" ]]; then
-    line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
+    line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss=,args= 2>/dev/null \
       | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" '
         function classify(a) {
           if (a ~ /tsserver\.js/)      return "tsserver"
@@ -565,7 +591,7 @@ kill_top_vscode_helper() {
 
   # Last-resort fallback: include recently-killed type if nothing else found
   if [[ -z "$line" ]]; then
-    line=$(ps -C code -o pid=,rss=,args= 2>/dev/null \
+    line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss=,args= 2>/dev/null \
       | awk -v prot="$protect_tsserver" -v ls="$protect_langservers" '{
           pid=$1; rss=$2;
           $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
@@ -622,7 +648,7 @@ kill_top_vscode_helper() {
 adjust_oom_scores() {
   # Lower VS Code processes from Electron's default adj=200-300 down to 0
   # (No root needed — owner can write non-negative values to own processes)
-  for pid in $(ps -C code -o pid= 2>/dev/null); do
+  for pid in $(ps -C "$TIER_PROTECTED_PNAME" -o pid= 2>/dev/null); do
     local adj="/proc/$pid/oom_score_adj"
     [[ -w "$adj" ]] || continue
     [[ "$(cat "$adj" 2>/dev/null)" == "$OOM_VSCODE_ADJ" ]] && continue
@@ -634,7 +660,7 @@ adjust_oom_scores() {
   done
 
   # Condemn Chrome/Playwright to oom_score_adj=1000 (maximum killable, no root needed)
-  for pid in $(pgrep -f '(chrome|chromium)' 2>/dev/null; pgrep -f 'node.*playwright' 2>/dev/null); do
+  for pid in $(pgrep -f "$TIER_DISPOSABLE_PATTERN" 2>/dev/null; pgrep -f "$TIER_DISPOSABLE_PATTERN_AUX" 2>/dev/null); do
     local adj="/proc/$pid/oom_score_adj"
     [[ -w "$adj" ]] || continue
     [[ "$(cat "$adj" 2>/dev/null)" == "$OOM_CHROME_ADJ" ]] && continue
@@ -647,7 +673,7 @@ adjust_oom_scores() {
 
   # ── Detect new VS Code sessions → trigger startup mode ────────────────────
   local current_pids
-  current_pids=$(ps -C code -o pid= 2>/dev/null | sort | tr '\n' ' ')
+  current_pids=$(ps -C "$TIER_PROTECTED_PNAME" -o pid= 2>/dev/null | sort | tr '\n' ' ')
   if [[ -n "$current_pids" && "$current_pids" != "$_known_code_pids" ]]; then
     local new_count=0
     if [[ -n "$_known_code_pids" ]]; then
@@ -689,7 +715,7 @@ adjust_oom_scores() {
         _restart_timestamps="${_restart_timestamps} ${now}"
         log "VS Code startup: ${new_count} new PIDs — startup mode active for ${STARTUP_DURATION}s (${STARTUP_INTERVAL}s interval, ${STARTUP_RSS_EMERG_KB} kB emerg threshold)"
         # Pre-emptively SIGTERM Chrome to free memory before extensions load
-        if pgrep -f '(chrome|chromium)' &>/dev/null; then
+        if pgrep -f "$TIER_DISPOSABLE_PATTERN" &>/dev/null; then
           log "  Startup mode: pre-emptively SIGTERMing Chrome to free memory"
           kill_browsers "TERM" "VS Code startup: freeing memory before extension load"
         fi
@@ -698,6 +724,28 @@ adjust_oom_scores() {
       fi
     fi
     _known_code_pids="$current_pids"
+  fi
+}
+
+# ── Startup tier logging (Issue #6) ──────────────────────────────────────────
+# Log a summary of process-to-tier classification. Called once at daemon startup
+# after the first adjust_oom_scores pass so tier assignments are visible in the
+# journal for diagnostics.
+log_tier_assignments() {
+  local protected_pids disposable_pids aux_pids
+  local protected_count=0 disposable_count=0
+  protected_pids=$(ps -C "$TIER_PROTECTED_PNAME" -o pid= 2>/dev/null | tr '\n' ' ')
+  protected_count=$(echo "$protected_pids" | wc -w)
+  disposable_pids=$(pgrep -f "$TIER_DISPOSABLE_PATTERN" 2>/dev/null | tr '\n' ' ')
+  aux_pids=$(pgrep -f "$TIER_DISPOSABLE_PATTERN_AUX" 2>/dev/null | tr '\n' ' ')
+  disposable_pids="${disposable_pids}${aux_pids}"
+  disposable_count=$(echo "$disposable_pids" | wc -w)
+  log "TIER: protected=${protected_count} (${TIER_PROTECTED_PNAME}, adj=${OOM_VSCODE_ADJ}) disposable=${disposable_count} (adj=${OOM_CHROME_ADJ}) patterns: browser='${TIER_DISPOSABLE_PATTERN}' automation='${TIER_DISPOSABLE_PATTERN_AUX}'"
+  if (( protected_count > 0 )); then
+    log "TIER: protected PIDs: ${protected_pids}"
+  fi
+  if (( disposable_count > 0 )); then
+    log "TIER: disposable PIDs: ${disposable_pids}"
   fi
 }
 
@@ -731,7 +779,7 @@ check_restart_loop() {
 # Count Chrome/Chromium PIDs. SIGKILL oldest processes above CHROME_COUNT_MAX.
 check_chrome_cap() {
   local chrome_pids=()
-  mapfile -t chrome_pids < <(pgrep -f '(chrome|chromium)' 2>/dev/null | sort -n)
+  mapfile -t chrome_pids < <(pgrep -f "$TIER_DISPOSABLE_PATTERN" 2>/dev/null | sort -n)
   local count=${#chrome_pids[@]}
   if (( count > CHROME_COUNT_MAX )); then
     local excess=$(( count - CHROME_COUNT_MAX ))
@@ -910,6 +958,9 @@ $DRY_RUN && log "DRY-RUN mode — no processes will be killed"
 # Apply OOM scores immediately at startup before the first loop iteration
 adjust_oom_scores
 
+# Log tier assignments at startup for diagnostics (Issue #6)
+log_tier_assignments
+
 # Discover cgroup v1 memory path for Stage 2/3 interventions (Issue #4)
 discover_cgroup_mem_path
 
@@ -991,8 +1042,8 @@ while true; do
   # CONFIRMED CRASH (2026-03-05 13:02:25): extension host PID 778 hit 4 GB
   # RSS with no Chrome running. Watchdog had nothing to kill — VS Code died.
   # Fixes: lower thresholds, 2s interval, SIGTERM ext host as last resort.
-  vscode_rss=$(ps -C code -o rss= 2>/dev/null | awk '{s+=$1} END{print s+0}')
-  chrome_running=$(pgrep -f '(chrome|chromium)' 2>/dev/null | head -1)
+  vscode_rss=$(ps -C "$TIER_PROTECTED_PNAME" -o rss= 2>/dev/null | awk '{s+=$1} END{print s+0}')
+  chrome_running=$(pgrep -f "$TIER_DISPOSABLE_PATTERN" 2>/dev/null | head -1)
 
   # ── RSS velocity check — detect runaway growth (≥RSS_ACCEL_KB/cycle) ──
   # 2026-03-13 crash: RSS grew 3.8→6.0 GB in ~20s (300 MB/cycle at 2s). Watchdog
