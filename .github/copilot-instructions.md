@@ -54,7 +54,7 @@ vscode-extension/
 
 **ACCEL gate (critical)**: The `vscode_rss >= eff_warn` guard on the RSS velocity check is non-negotiable. Without it, V8 JIT compilation during startup legitimately spikes 300–900 MB/cycle at 1–2 GB total RSS, causing the watchdog to kill the Extension Host in a restart loop. Confirmed 2026-03-16: "Extension host terminated unexpectedly 3 times."
 
-**Startup mode**: 0.5s polling for 90s after new VS Code PIDs appear. Debounced at `STARTUP_DEBOUNCE=300s` — without this guard, language-server PID churn triggered startup mode 567 times in one day. Startup thresholds: `STARTUP_RSS_WARN_KB=2800000`, `STARTUP_RSS_EMERG_KB=3400000`.
+**Startup mode**: 0.5s polling for 90s after new VS Code PIDs appear. Debounced at `STARTUP_DEBOUNCE=300s` — without this guard, language-server PID churn triggered startup mode 567 times in one day. Startup thresholds: `STARTUP_RSS_WARN_KB=3200000`, `STARTUP_RSS_EMERG_KB=3400000`.
 
 **Action budget** (`utils.js`-equivalent in daemon): `action_budget_allows()` limits non-critical interventions to `ACTION_BUDGET_MAX=6` per `ACTION_BUDGET_WINDOW=30s`, and enforces at most one action per loop iteration (`_action_taken` flag). Prevents thrash storms under rapid-fire ACCEL or BURST triggers.
 

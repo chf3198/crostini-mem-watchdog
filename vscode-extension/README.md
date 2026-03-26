@@ -15,13 +15,13 @@ The daemon acts on these conditions (checked every 2 seconds):
 | `MemAvailable ≤ 15%` (~945 MB on 6 GB) | `SIGKILL` Chrome / Playwright |
 | `MemAvailable ≤ 25%` (~1.6 GB on 6 GB) | `SIGTERM` Chrome / Playwright |
 | PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall) |
-| VS Code RSS > 2.5 GB | `SIGTERM` Chrome + desktop notification |
+| VS Code RSS > 3.0 GB | `SIGTERM` Chrome + desktop notification; if no Chrome → log and defer to EMERGENCY |
 | VS Code RSS > 3.5 GB | `SIGKILL` Chrome; if no Chrome → `SIGTERM` the highest-RSS extension host process to save the VS Code window |
 | RSS velocity spike | Kill lowest-value VS Code helper — **never** a language server or Extension Host at normal severity |
 
 **Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process (hosting Copilot, Playwright MCP, and all extensions) are excluded from the helper-kill candidate pool at normal severity. These small processes (80–120 MB) are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing one saves negligible memory while permanently disabling language intelligence or all extensions. They are only considered as last-resort targets at true emergency severity (RSS ≥ 3.5 GB).
 
-**Startup mode:** when new VS Code PIDs appear, the daemon switches to **0.5 s polling for 90 s** and drops the RSS emergency threshold to 2.0 GB — catching the extension-host spike that caused the crash this tool was built to prevent (0 → 4 GB RSS in under 2 seconds during startup).
+**Startup mode:** when new VS Code PIDs appear, the daemon switches to **0.5 s polling for 90 s** and drops the RSS emergency threshold to 3.4 GB — catching the extension-host spike that caused the crash this tool was built to prevent (0 → 4 GB RSS in under 2 seconds during startup).
 
 ---
 
@@ -62,7 +62,7 @@ Configure all thresholds via **VS Code Settings → Mem Watchdog**. Changes take
 | `sigtermThresholdPct` | `25` | `SIGTERM` Chrome when `MemAvailable` falls below this % of total RAM |
 | `sigkillThresholdPct` | `15` | Escalate to `SIGKILL` below this % |
 | `psiThresholdPct` | `25` | `SIGTERM` on PSI `full avg10` above this % |
-| `vscodeRssWarnMB` | `2500` | Warn + `SIGTERM` Chrome when total VS Code RSS exceeds this many MB |
+| `vscodeRssWarnMB` | `3000` | Warn + `SIGTERM` Chrome when total VS Code RSS exceeds this many MB |
 | `vscodeRssEmergencyMB` | `3500` | `SIGKILL` Chrome (or `SIGTERM` extension host) above this MB |
 
 > All settings use `scope: "machine"` — they do **not** sync across machines via Settings Sync. A threshold tuned for 6 GB RAM would be dangerously wrong on a 16 GB machine.
@@ -74,7 +74,7 @@ Configure all thresholds via **VS Code Settings → Mem Watchdog**. Changes take
 | System RAM | `vscodeRssWarnMB` | `vscodeRssEmergencyMB` |
 |---|---|---|
 | 4 GB | `1500` | `2000` |
-| 6 GB *(default)* | `2500` | `3500` |
+| 6 GB *(default)* | `3000` | `3500` |
 | 8 GB | `3500` | `5000` |
 | 16 GB | `6000` | `10000` |
 

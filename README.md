@@ -79,7 +79,7 @@ This watchdog reads only `MemAvailable` and `MemTotal` — both correct on this 
 | `MemAvailable ≤ 15%`   | `SIGKILL` Chrome / Playwright                                                                    |
 | `MemAvailable ≤ 25%`   | `SIGTERM` Chrome / Playwright                                                                    |
 | PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall)                                                        |
-| VS Code RSS > 2.2 GB   | `SIGTERM` Chrome + desktop notification                                                          |
+| VS Code RSS > 3.0 GB   | `SIGTERM` Chrome + desktop notification; if no Chrome → log and defer to EMERGENCY               |
 | VS Code RSS > 3.2 GB   | `SIGKILL` Chrome; if no Chrome → `SIGTERM` highest-RSS extension host to save the VS Code window |
 | RSS velocity spike     | Kill lowest-value VS Code helper — **never** a language server or Extension Host at normal severity |
 | Every loop             | Set `oom_score_adj=0` on VS Code PIDs (counters Electron's 200–300 default)                      |
@@ -135,7 +135,7 @@ crostini-mem-watchdog/
 | `INTERVAL`            | `2`       | Seconds between normal checks                          |
 | `STARTUP_INTERVAL`    | `0.5`     | Seconds between checks in startup mode                 |
 | `STARTUP_DURATION`    | `90`      | Seconds to stay in startup mode after new VS Code PIDs |
-| `VSCODE_RSS_WARN_KB`  | `2200000` | ~2.2 GB — VS Code RSS warning level                    |
+| `VSCODE_RSS_WARN_KB`  | `3000000` | ~3.0 GB — VS Code RSS warning level                    |
 | `VSCODE_RSS_EMERG_KB` | `3200000` | ~3.2 GB — VS Code RSS emergency level                  |
 | `NOTIFY_INTERVAL`     | `300`     | Seconds between desktop notifications per severity     |
 
@@ -144,7 +144,7 @@ crostini-mem-watchdog/
 | Total RAM        | `VSCODE_RSS_WARN_KB` | `VSCODE_RSS_EMERG_KB` |
 | ---------------- | -------------------- | --------------------- |
 | 4 GB             | `1500000`            | `2000000`             |
-| 6 GB _(default)_ | `2200000`            | `3200000`             |
+| 6 GB _(default)_ | `3000000`            | `3200000`             |
 | 8 GB             | `3500000`            | `5000000`             |
 | 16 GB            | `6000000`            | `10000000`            |
 
