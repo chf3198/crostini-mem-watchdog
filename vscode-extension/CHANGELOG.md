@@ -3,11 +3,14 @@
 ## [0.3.7] — 2026-03-25
 
 ### Fixed
-- **Bundled daemon upgraded to v20260325.7** — fixes two bugs in v20260325.6 that caused VS Code process kills during normal operation at 65–80% free memory:
-  1. **Fallback awk `classify` missing language server types** — `serverWorkerMain` (markdown), `htmlServerMain`, and `cssServerMain` were not classified in the fallback/last-resort awk blocks, causing them to be classified as `"node-ipc"` and bypassing language server protection. Markdown servers were killed 11× in a 2-hour session.
-  2. **Utility processes (PTY host, shared process, file watcher) killed at WARN level** — these processes are indistinguishable by cmdline, and killing the PTY host destroys VS Code's terminal; killing the shared process shows "A shared background process terminated unexpectedly." Now only killable at EMERG severity where the alternative is kernel OOM.
-- **`MIN_SAFE_DAEMON_VERSION` updated to `20260325.7`** — minimum safe floor now matches the latest daemon with all protective fixes.
-- Previously: v0.3.1–v0.3.6 users with `extensions.autoUpdate: false` ran a daemon as old as v20260313.2, missing all protective fixes from #45–#55 and #6.
+- **Bundled daemon upgraded to v20260325.8** — fixes three bugs in v20260325.6 that caused VS Code process kills during normal operation at 65–80% free memory:
+  1. **WARN→ExtHost escalation removed** ([#64](https://github.com/chf3198/crostini-mem-watchdog/issues/64)) — WARN and Stage 3 fallback paths escalated to `kill_extension_host()` when `kill_top_vscode_helper` found no candidate, destroying terminal, Copilot, and all extensions at non-emergency RSS (2.7 GB, 76% free). Now logs and defers to EMERGENCY/Stage 4.
+  2. **Fallback awk `classify` missing language server types** — `serverWorkerMain` (markdown), `htmlServerMain`, and `cssServerMain` were not classified in the fallback/last-resort awk blocks, causing them to bypass language server protection. Markdown servers were killed 11× in a 2-hour session.
+  3. **Utility processes (PTY host, shared process, file watcher) killed at WARN level** — these processes are indistinguishable by cmdline, and killing the PTY host destroys VS Code's terminal; killing the shared process shows "A shared background process terminated unexpectedly." Now only killable at EMERG severity where the alternative is kernel OOM.
+- **`VSCODE_RSS_WARN_KB` raised from 2.2 GB to 3.0 GB** — previous threshold was below the system's normal 2.3–2.7 GB baseline, causing WARN to fire constantly during normal operation.
+- **`STARTUP_RSS_WARN_KB` raised from 2.8 GB to 3.2 GB** — keeps startup WARN above normal-mode WARN.
+- **`MIN_SAFE_DAEMON_VERSION` updated to `20260325.8`** — minimum safe floor now matches the latest daemon with all protective fixes including WARN-deferral.
+- Previously: v0.3.1–v0.3.6 users with `extensions.autoUpdate: false` ran a daemon as old as v20260313.2, missing all protective fixes from #45–#55, #6, and #64.
 
 ## [0.3.6] — 2026-03-25
 
