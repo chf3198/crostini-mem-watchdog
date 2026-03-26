@@ -42,7 +42,9 @@
 # Replaces binary kill-or-wait with graduated response.
 # PSI thresholds calibrated for Crostini (Issue #14): no-swap means PSI
 # stays near 0% until OOM. See docs/technical/psi-calibration.md.
+# cgroup v2: memory.high (throttle), memory.reclaim (proactive reclaim, kernel 5.19+).
 # cgroup v1: memory.soft_limit_in_bytes (throttle), memory.force_empty (reclaim).
+# Detection: v2 preferred if available; v1 fallback. Graceful no-op if neither writable.
 #
 # Stage 1 — Monitor: log + raise Chrome oom_score_adj
 STAGE1_PSI_SOME_X100=100       # PSI some avg10 > 1.00%
@@ -65,7 +67,7 @@ STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260325.8   # 2026-03-25 v8: remove WARN→ExtHost escalation (#63)          # Bump on behavioral changes; used by extension installer to prevent downgrades
+export WATCHDOG_VERSION=20260326.1   # 2026-03-26 v1: cgroup v2 memory.high + memory.reclaim (#7, #8)          # Bump on behavioral changes; used by extension installer to prevent downgrades
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -224,7 +226,8 @@ _pressure_stage=0               # 0=normal, 1=monitor, 2=throttle, 3=reclaim, 4=
 _stage_entry_time=0             # epoch seconds when current stage was entered
 _stage_hyst_count=0             # consecutive polls at candidate (higher) stage
 _cgroup_mem_path=""             # populated at startup; empty = cgroup writes disabled
-_soft_limit_active=false        # true when we've lowered memory.soft_limit_in_bytes
+_cgroup_version=""             # "v2" or "v1" — set by discover_cgroup_mem_path()
+_soft_limit_active=false        # true when we've lowered memory.high (v2) or memory.soft_limit_in_bytes (v1)
 _stage_transitions=0            # total stage transitions for observability
 
 # ── Runtime counters / observability ─────────────────────────────────────────
@@ -810,29 +813,50 @@ check_chrome_cap() {
   fi
 }
 
-# ── cgroup v1 memory path discovery ──────────────────────────────────────────
-# Derive the user-session memory cgroup path from /proc/self/cgroup.
-# Used by Stage 2 (memory.soft_limit_in_bytes) and Stage 3 (memory.force_empty).
-# If the path doesn't exist or sudo -n fails, cgroup writes are silently disabled.
+# ── cgroup memory path discovery (v2 preferred, v1 fallback) ─────────────────
+# Probes for cgroup v2 first (memory.high + memory.reclaim), then falls back to
+# cgroup v1 (memory.soft_limit_in_bytes + memory.force_empty).
+# Sets: _cgroup_mem_path, _cgroup_version. Empty path = cgroup writes disabled.
 discover_cgroup_mem_path() {
+  # ── Try cgroup v2 ──────────────────────────────────────────────────────
+  local v2_root
+  v2_root=$(awk '$3=="cgroup2"{print $2; exit}' /proc/mounts 2>/dev/null)
+  if [[ -n "$v2_root" ]]; then
+    local v2_rel
+    v2_rel=$(awk -F: '$1=="0"{print $3; exit}' /proc/self/cgroup 2>/dev/null)
+    local v2_path="${v2_root}${v2_rel}"
+    if [[ -d "$v2_path" ]] && [[ -f "$v2_path/memory.high" ]]; then
+      if sudo -n test -w "$v2_path/memory.high" 2>/dev/null; then
+        _cgroup_mem_path="$v2_path"
+        _cgroup_version="v2"
+        local features="memory.high"
+        [[ -f "$v2_path/memory.reclaim" ]] && features="${features} + memory.reclaim"
+        log "cgroup: v2 path discovered: $v2_path ($features available)"
+        return
+      fi
+      log "cgroup: v2 path $v2_path found but memory.high not writable — trying v1"
+    fi
+  fi
+
+  # ── Try cgroup v1 ──────────────────────────────────────────────────────
   local rel
   rel=$(awk -F: '$2=="memory"{print $3; exit}' /proc/self/cgroup 2>/dev/null)
   if [[ -z "$rel" ]]; then
-    log "cgroup: no memory controller found in /proc/self/cgroup — cgroup writes disabled"
+    log "cgroup: no v2 mount and no v1 memory controller — cgroup writes disabled"
     return
   fi
   local path="/sys/fs/cgroup/memory${rel}"
   if [[ ! -d "$path" ]]; then
-    log "cgroup: path $path does not exist — cgroup writes disabled"
+    log "cgroup: v1 path $path does not exist — cgroup writes disabled"
     return
   fi
-  # Test writability with sudo -n
   if ! sudo -n test -w "$path/memory.soft_limit_in_bytes" 2>/dev/null; then
     log "cgroup: sudo -n cannot write to $path/memory.soft_limit_in_bytes — cgroup writes disabled"
     return
   fi
   _cgroup_mem_path="$path"
-  log "cgroup: discovered memory path: $path (soft_limit + force_empty available)"
+  _cgroup_version="v1"
+  log "cgroup: v1 path discovered: $path (soft_limit + force_empty available)"
 }
 
 # ── Stage transition logging ────────────────────────────────────────────────
@@ -853,23 +877,41 @@ set_pressure_stage() {
   fi
 }
 
-# ── cgroup v1 throttle: write memory.soft_limit_in_bytes ─────────────────
+# ── cgroup throttle: memory.high (v2) or memory.soft_limit_in_bytes (v1) ─────
 # Creates kernel reclaim pressure without hard-killing anything.
-# Only effective when system is under global memory pressure.
+# v2: memory.high triggers transparent reclaim + allocation stalls.
+# v1: memory.soft_limit_in_bytes creates reclaim pressure under global pressure.
 cgroup_throttle() {
   [[ -z "$_cgroup_mem_path" ]] && return 1
-  local total_kb soft_limit_kb
+  local total_kb limit_kb limit_bytes
   total_kb=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
   [[ -z "$total_kb" ]] && return 1
-  soft_limit_kb=$(( total_kb * STAGE2_SOFT_LIMIT_PCT / 100 ))
-  local soft_limit_bytes=$(( soft_limit_kb * 1024 ))
+  limit_kb=$(( total_kb * STAGE2_SOFT_LIMIT_PCT / 100 ))
+  limit_bytes=$(( limit_kb * 1024 ))
+
+  if [[ "$_cgroup_version" == "v2" ]]; then
+    if $DRY_RUN; then
+      log "  (dry-run: would write ${limit_bytes} to memory.high)"
+      _soft_limit_active=true
+      return 0
+    fi
+    if echo "$limit_bytes" | sudo -n tee "$_cgroup_mem_path/memory.high" > /dev/null 2>&1; then
+      log "  cgroup: memory.high set to ${limit_kb} kB (${STAGE2_SOFT_LIMIT_PCT}% of total)"
+      _soft_limit_active=true
+      return 0
+    fi
+    log "  cgroup: failed to write memory.high"
+    return 1
+  fi
+
+  # v1 fallback
   if $DRY_RUN; then
-    log "  (dry-run: would write ${soft_limit_bytes} to memory.soft_limit_in_bytes)"
+    log "  (dry-run: would write ${limit_bytes} to memory.soft_limit_in_bytes)"
     _soft_limit_active=true
     return 0
   fi
-  if echo "$soft_limit_bytes" | sudo -n tee "$_cgroup_mem_path/memory.soft_limit_in_bytes" > /dev/null 2>&1; then
-    log "  cgroup: memory.soft_limit_in_bytes set to ${soft_limit_kb} kB (${STAGE2_SOFT_LIMIT_PCT}% of total)"
+  if echo "$limit_bytes" | sudo -n tee "$_cgroup_mem_path/memory.soft_limit_in_bytes" > /dev/null 2>&1; then
+    log "  cgroup: memory.soft_limit_in_bytes set to ${limit_kb} kB (${STAGE2_SOFT_LIMIT_PCT}% of total)"
     _soft_limit_active=true
     return 0
   fi
@@ -877,10 +919,40 @@ cgroup_throttle() {
   return 1
 }
 
-# ── cgroup v1 reclaim: write to memory.force_empty ───────────────────────
-# Triggers synchronous kernel reclaim of reclaimable pages from the cgroup.
+# ── cgroup reclaim: memory.reclaim (v2, kernel 5.19+) or memory.force_empty (v1)
+# v2: requests asynchronous page reclaim (256 MB default). Logs pre/post delta.
+# v1: triggers synchronous kernel reclaim of reclaimable pages from the cgroup.
+RECLAIM_BYTES=${RECLAIM_BYTES:-$((256 * 1024 * 1024))}  # 256 MB default
 cgroup_reclaim() {
   [[ -z "$_cgroup_mem_path" ]] && return 1
+
+  if [[ "$_cgroup_version" == "v2" ]]; then
+    if $DRY_RUN; then
+      log "  (dry-run: would write ${RECLAIM_BYTES} to memory.reclaim)"
+      return 0
+    fi
+    if [[ -f "$_cgroup_mem_path/memory.reclaim" ]]; then
+      local pre_avail
+      pre_avail=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+      if echo "$RECLAIM_BYTES" | sudo -n tee "$_cgroup_mem_path/memory.reclaim" > /dev/null 2>&1; then
+        # Allow kswapd to run before re-reading
+        sleep 1 & _sleep_pid=$!; wait "$_sleep_pid" || true
+        local post_avail
+        post_avail=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+        local delta_kb=$(( ${post_avail:-0} - ${pre_avail:-0} ))
+        log "  cgroup: memory.reclaim ${RECLAIM_BYTES}B — freed ~${delta_kb} kB (${pre_avail}→${post_avail} kB)"
+        return 0
+      fi
+      log "  cgroup: memory.reclaim write failed (kernel may not support it)"
+    else
+      log "  cgroup: memory.reclaim not available (requires kernel 5.19+)"
+    fi
+    # v2 without memory.reclaim — fall through to force_empty if v1 path exists
+    [[ ! -f "$_cgroup_mem_path/memory.force_empty" ]] && return 1
+    log "  cgroup: v2 reclaim unavailable — falling back to force_empty"
+  fi
+
+  # v1 path (or v2 fallback)
   if $DRY_RUN; then
     log "  (dry-run: would write 0 to memory.force_empty)"
     return 0
@@ -893,10 +965,26 @@ cgroup_reclaim() {
   return 1
 }
 
-# ── cgroup v1 throttle release: reset soft_limit to unlimited ────────────
+# ── cgroup throttle release: reset memory.high (v2) or soft_limit (v1) ───
 cgroup_release_throttle() {
   [[ -z "$_cgroup_mem_path" ]] && return 1
   $_soft_limit_active || return 0  # nothing to release
+
+  if [[ "$_cgroup_version" == "v2" ]]; then
+    if $DRY_RUN; then
+      log "  (dry-run: would reset memory.high to max)"
+      _soft_limit_active=false
+      return 0
+    fi
+    if echo max | sudo -n tee "$_cgroup_mem_path/memory.high" > /dev/null 2>&1; then
+      log "  cgroup: memory.high reset to max (throttle released)"
+      _soft_limit_active=false
+      return 0
+    fi
+    return 1
+  fi
+
+  # v1 fallback
   if $DRY_RUN; then
     log "  (dry-run: would reset memory.soft_limit_in_bytes to unlimited)"
     _soft_limit_active=false
@@ -963,7 +1051,10 @@ kill_cooldown_allows() {
 _sleep_pid=''
 trap '[[ -n "${_sleep_pid:-}" ]] && kill "$_sleep_pid" 2>/dev/null; log_status_snapshot "stop"; log "Stopping (signal received)"; exit 0' TERM INT
 
-log "Started (4-stage model: S1≤${STAGE1_MEM_PCT}%/PSIsome>${STAGE1_PSI_SOME_X100}, S2≤${STAGE2_MEM_PCT}%/PSIsome>${STAGE2_PSI_SOME_X100}, S3≤${STAGE3_MEM_PCT}%/PSIfull>${STAGE3_PSI_FULL_X100}, S4≤${STAGE4_MEM_PCT}%/PSIfull>${STAGE4_PSI_FULL_X100}, oom_adj code=${OOM_VSCODE_ADJ} chrome=+${OOM_CHROME_ADJ}, cgroup=${_cgroup_mem_path:-disabled})"
+# Discover cgroup memory path for Stage 2/3 interventions (Issues #4, #7, #8)
+discover_cgroup_mem_path
+
+log "Started (4-stage model: S1≤${STAGE1_MEM_PCT}%/PSIsome>${STAGE1_PSI_SOME_X100}, S2≤${STAGE2_MEM_PCT}%/PSIsome>${STAGE2_PSI_SOME_X100}, S3≤${STAGE3_MEM_PCT}%/PSIfull>${STAGE3_PSI_FULL_X100}, S4≤${STAGE4_MEM_PCT}%/PSIfull>${STAGE4_PSI_FULL_X100}, oom_adj code=${OOM_VSCODE_ADJ} chrome=+${OOM_CHROME_ADJ}, cgroup=${_cgroup_version:-disabled})"
 $DRY_RUN && log "DRY-RUN mode — no processes will be killed"
 
 # Apply OOM scores immediately at startup before the first loop iteration
@@ -971,9 +1062,6 @@ adjust_oom_scores
 
 # Log tier assignments at startup for diagnostics (Issue #6)
 log_tier_assignments
-
-# Discover cgroup v1 memory path for Stage 2/3 interventions (Issue #4)
-discover_cgroup_mem_path
 
 while true; do
   incr_counter _loops
