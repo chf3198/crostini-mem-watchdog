@@ -56,7 +56,7 @@ vscode-extension/
 
 **Startup mode**: 0.5s polling for 90s after new VS Code PIDs appear. Debounced at `STARTUP_DEBOUNCE=300s` — without this guard, language-server PID churn triggered startup mode 567 times in one day. Startup thresholds: `STARTUP_RSS_WARN_KB=3200000`, `STARTUP_RSS_EMERG_KB=3400000`.
 
-**Action budget** (`utils.js`-equivalent in daemon): `action_budget_allows()` limits non-critical interventions to `ACTION_BUDGET_MAX=6` per `ACTION_BUDGET_WINDOW=30s`, and enforces at most one action per loop iteration (`_action_taken` flag). Prevents thrash storms under rapid-fire ACCEL or BURST triggers.
+**Action budget** (`utils.js`-equivalent in daemon): `action_budget_allows()` limits non-critical interventions to `ACTION_BUDGET_MAX=6` per `ACTION_BUDGET_WINDOW=30s`, and enforces at most one action per loop iteration (`_action_taken` flag). Prevents thrash storms under rapid-fire ACCEL or BURST triggers. **EMERGENCY resets `_action_taken=false`** before processing — non-critical kills (e.g., ACCEL tsserver) cannot block emergency response. When `kill_top_vscode_helper` finds no candidate at WARN with no Chrome, triggers `cgroup_throttle()` + `cgroup_reclaim()` as non-destructive fallback.
 
 **`kill_vscode_main()`**: SIGTERM on the VS Code main process (identified by `/usr/share/code/code$` cmdline). Used as circuit-breaker only — gated by `CODE_RECOVERY_COOLDOWN=30s`. Causes VS Code window restart, which is preferable to kernel OOM-kill.
 
