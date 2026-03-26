@@ -2,11 +2,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // On activation:
 //   1. Installs / upgrades the daemon (installer.js)
+//   1b. Install / refresh user-level Copilot skill (skillInstaller.js)
 //   2. Writes VS Code settings → ~/.config/mem-watchdog/config.sh (configWriter.js)
 //   3. Registers 4 commands (commands.js)
 //   4. Watches for settings changes → rewrites config + restarts daemon
 //   5. Runs the status bar status poller every 2 s (original logic preserved)
 //   6. Deferred self-update check via GitHub Releases API (updateChecker.js)
+//   7. Optional @memwatchdog chat participant (chatParticipant.js)
 // ─────────────────────────────────────────────────────────────────────────────
 'use strict';
 
@@ -16,6 +18,8 @@ const installer    = require('./installer');
 const configWriter = require('./configWriter');
 const commands     = require('./commands');
 const updateChecker = require('./updateChecker');
+const { installGlobalSkill } = require('./skillInstaller');
+const { registerChatParticipant } = require('./chatParticipant');
 const { readMeminfo, sh, checkServiceStatus } = require('./utils');
 
 // ── Status bar poll interval ──────────────────────────────────────────────────
@@ -161,6 +165,18 @@ async function activate(context) {
         vscode.window.showErrorMessage(`Mem Watchdog: install failed — ${err.message}`);
     }
 
+    // ── 1b. Install / refresh user-level Copilot skill ─────────────────────
+    // Installs to ~/.copilot/skills/mem-watchdog-ops so the assistant can
+    // carry watchdog-specific operational context across repositories.
+    try {
+        const skill = installGlobalSkill(context.extensionUri.fsPath);
+        if (skill.state === 'installed') {
+            vscode.window.showInformationMessage('Mem Watchdog: Copilot skill installed ✓');
+        }
+    } catch (err) {
+        console.error('[memWatchdog] skillInstaller error:', err.message);
+    }
+
     // ── 2. Sync VS Code settings → config file ────────────────────────────────
     try {
         const cfgWarnings = configWriter.writeConfig(vscode.workspace.getConfiguration('memWatchdog'));
@@ -236,6 +252,9 @@ async function activate(context) {
     // critical daemon fixes in newer versions.
     const updateTimer = setTimeout(() => updateChecker.checkForUpdate(context), 10_000);
     context.subscriptions.push({ dispose: () => clearTimeout(updateTimer) });
+
+    // ── 7. Optional chat participant (if Chat API is available) ─────────────
+    registerChatParticipant(context);
 }
 
 function deactivate() {

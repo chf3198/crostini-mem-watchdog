@@ -2,7 +2,7 @@
   "name": "mem-watchdog-status",
   "displayName": "Mem Watchdog",
   "description": "Prevents VS Code from being OOM-killed on ChromeOS Crostini — auto-installs a systemd memory watchdog daemon that kills Chrome/Playwright before the kernel kills VS Code.",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "publisher": "CurtisFranks",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
@@ -132,7 +132,51 @@
           "markdownDescription": "Emergency: `SIGKILL` Chrome (or `SIGTERM` highest-RSS ext host if no Chrome) when VS Code RSS exceeds this many MB. Default: `3800` (3.8 GB)."
         }
       }
-    }
+    },
+    "chatParticipants": [
+      {
+        "id": "mem-watchdog-status.memWatchdogAssistant",
+        "name": "memwatchdog",
+        "fullName": "Mem Watchdog Assistant",
+        "description": "Inspect watchdog status and logs, and apply memory tuning profiles",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "status",
+            "description": "Show memory and watchdog status snapshot"
+          },
+          {
+            "name": "logs",
+            "description": "Show recent mem-watchdog journal lines"
+          },
+          {
+            "name": "tune",
+            "description": "Apply a memory profile: balanced, conservative, or playwright"
+          },
+          {
+            "name": "act",
+            "description": "Run watchdog action: kill chrome, restart service, or open dashboard"
+          }
+        ],
+        "disambiguation": [
+          {
+            "category": "watchdog-ops",
+            "description": "Questions about mem-watchdog behavior, Linux memory pressure, watchdog logs, and tuning thresholds for constrained environments.",
+            "examples": [
+              "Show mem-watchdog status and RAM pressure",
+              "Tail watchdog logs and explain recent kill actions",
+              "Switch to a conservative memory profile",
+              "Kill Chrome now to protect VS Code"
+            ]
+          }
+        ]
+      }
+    ],
+    "chatSkills": [
+      {
+        "path": "./skills/mem-watchdog-ops/SKILL.md"
+      }
+    ]
   },
   "devDependencies": {
     "c8": "^11.0.0"

@@ -14,14 +14,17 @@ mem-watchdog.service     ← systemd user unit (systemctl --user, NOT system)
 install.sh               ← shell-only installer (no VS Code required)
 test-watchdog.sh         ← 18-test suite; exits 0/1; logs to scratch/
 vscode-extension/
-  extension.js           ← activate(): install → config → commands → status bar (2s poll) → update check
+  extension.js           ← activate(): install → skill → config → commands → status bar (2s poll) → update check → chat
   installer.js           ← SHA-256 hash-based daemon auto-install/upgrade + MIN_SAFE guard
   configWriter.js        ← VS Code Settings → ~/.config/mem-watchdog/config.sh
   commands.js            ← 4 commands: dashboard, preflight, killChrome, restartService
   updateChecker.js       ← GitHub Releases API self-update check (24h throttled, non-blocking)
+  skillInstaller.js      ← installs/updates ~/.copilot/skills/mem-watchdog-ops/ on activation
+  chatParticipant.js     ← @memwatchdog chat participant: /status, /logs, /tune, /act
   utils.js               ← readMeminfo(), sh(), checkServiceStatus() — shared helpers
   lifecycle.js           ← vscode:uninstall hook; stops + disables the service
   scripts/prepare.js     ← vscode:prepublish: copies daemon files → resources/
+  skills/mem-watchdog-ops/ ← bundled Copilot skill (SKILL.md + watchdog-snapshot.sh)
   resources/             ← BUILD ARTIFACT (gitignored); bundled into .vsix by vsce
 ```
 
@@ -75,7 +78,7 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
 bash test-watchdog.sh                                                          # 18 bash tests, ~3s
 bash -n mem-watchdog.sh                                                        # syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
-cd vscode-extension && npm test                                                # 75 JS unit tests, ~1s
+cd vscode-extension && npm test                                                # 100 JS unit tests, ~1s
 bash scripts/docs-integrity-check.sh                                           # docs drift check
 ```
 
@@ -88,7 +91,7 @@ bash scripts/docs-integrity-check.sh                                           #
 ```bash
 cd vscode-extension
 npm run build              # populate resources/ for dev (gitignored; required before vsce package)
-npm test                   # 75 unit tests via node:test (~1s)
+npm test                   # 100 unit tests via node:test (~1s)
 npm run test:coverage      # + c8 V8 lcov output
 npm run test:stress        # pileup guard + event-loop lag + heap scenarios
 npx vsce package           # → mem-watchdog-status-x.y.z.vsix
