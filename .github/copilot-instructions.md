@@ -48,7 +48,7 @@ vscode-extension/
 | `MemAvailable ≤ 25%` | `SIGTERM` Chrome/Playwright |
 | PSI `full avg10 > 25%` | `SIGTERM` Chrome/Playwright |
 | VS Code RSS ≥ `VSCODE_RSS_EMERG_KB` (3.8 GB) | `SIGKILL` Chrome; if no Chrome → `kill_vscode_main()` |
-| VS Code RSS ≥ `VSCODE_RSS_WARN_KB` (3.4 GB) | `SIGTERM` Chrome + desktop alert; if no Chrome → `kill_top_vscode_helper()`; if no candidate → log and defer to EMERGENCY |
+| VS Code RSS ≥ `VSCODE_RSS_WARN_KB` (3.4 GB) | `SIGTERM` Chrome + desktop alert; if no Chrome → `kill_top_vscode_helper()` (Shared Process, File Watcher, Network Service ≈300 MB); if no candidate → cgroup throttle/reclaim, defer to EMERGENCY |
 | RSS delta ≥ `RSS_ACCEL_KB` (300 MB/cycle) **AND** `vscode_rss ≥ eff_warn` | `kill_top_vscode_helper()` or `kill_browsers(TERM)` |
 | `RSS_RUNAWAY_STREAK=3` consecutive ACCEL cycles above `RSS_RUNAWAY_MIN_KB` (2.6 GB) | Circuit-breaker: `kill_vscode_main()` |
 
@@ -57,6 +57,8 @@ vscode-extension/
 **Startup mode**: 0.5s polling for 90s after new VS Code PIDs appear. Debounced at `STARTUP_DEBOUNCE=300s` — without this guard, language-server PID churn triggered startup mode 567 times in one day. Startup thresholds: `STARTUP_RSS_WARN_KB=3600000`, `STARTUP_RSS_EMERG_KB=4000000`.
 
 **Action budget** (`utils.js`-equivalent in daemon): `action_budget_allows()` limits non-critical interventions to `ACTION_BUDGET_MAX=6` per `ACTION_BUDGET_WINDOW=30s`, and enforces at most one action per loop iteration (`_action_taken` flag). Prevents thrash storms under rapid-fire ACCEL or BURST triggers. **EMERGENCY resets `_action_taken=false`** before processing — non-critical kills (e.g., ACCEL tsserver) cannot block emergency response. When `kill_top_vscode_helper` finds no candidate at WARN with no Chrome, triggers `cgroup_throttle()` + `cgroup_reclaim()` as non-destructive fallback.
+
+**Process classification** (`find_pty_host_pid()`): PTY Host is identified at runtime as the only `node.mojom.NodeService` utility with child processes (bash terminals). Other utility processes (Shared Process, File Watcher, Network Service) are eligible kill candidates at WARN level. ExtHost excluded by `--inspect-port`.
 
 **`kill_vscode_main()`**: SIGTERM on the VS Code main process (identified by `/usr/share/code/code$` cmdline). Used as circuit-breaker only — gated by `CODE_RECOVERY_COOLDOWN=30s`. Causes VS Code window restart, which is preferable to kernel OOM-kill.
 
