@@ -8,7 +8,7 @@
 [![Installs](https://img.shields.io/visual-studio-marketplace/i/CurtisFranks.mem-watchdog-status?color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=CurtisFranks.mem-watchdog-status)
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ChromeOS%20Crostini-4285f4)](https://chromeos.dev/en/linux)
-[![Tests](https://img.shields.io/badge/bash-16%2F16-brightgreen)](test-watchdog.sh)
+[![Tests](https://img.shields.io/badge/bash-17%2F17-brightgreen)](test-watchdog.sh)
 [![Tests](https://img.shields.io/badge/js-75%2F75-brightgreen)](vscode-extension/package.json)
 
 _`earlyoom` hard-crashes on Crostini (exit 104, every 3 seconds, zero protection). This replaces it with a VS Code-aware watchdog that kills Chrome before the kernel OOM-kills VS Code._
@@ -102,7 +102,7 @@ crostini-mem-watchdog/
 ├── mem-watchdog.sh              ← core daemon (bash, coreutils only)
 ├── mem-watchdog.service         ← systemd user service unit
 ├── install.sh                   ← shell-only installer (no VS Code required)
-├── test-watchdog.sh             ← 16-test validation suite
+├── test-watchdog.sh             ← 17-test validation suite
 ├── test-pressure.sh             ← live memory pressure tests
 ├── watchdog-tray.sh             ← optional: yad system tray icon
 └── vscode-extension/            ← VS Code extension (primary install path)
@@ -155,7 +155,7 @@ crostini-mem-watchdog/
 All 4 gates must pass before any change is published:
 
 ```bash
-bash test-watchdog.sh              # 16 bash tests (~3 s) — service, OOM scores, PSI, SwapFree safety, SIGTERM
+bash test-watchdog.sh              # 17 bash tests (~3 s) — service, OOM scores, PSI, SwapFree safety, SIGTERM
 cd vscode-extension && npm test    # 75 JS unit tests (~1 s) — extension state machine, activation singleton, pileup guard, utils
 bash -n mem-watchdog.sh            # bash syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
