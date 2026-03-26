@@ -115,21 +115,21 @@
         },
         "memWatchdog.vscodeRssWarnMB": {
           "type": "number",
-          "default": 3000,
+          "default": 3400,
           "minimum": 500,
           "maximum": 8000,
           "scope": "machine",
           "order": 4,
-          "markdownDescription": "Warn + `SIGTERM` Chrome when total VS Code RSS exceeds this many MB. Default: `3000` (3.0 GB). Normal baseline on Crostini is 2.3–2.7 GB — set above your steady state."
+          "markdownDescription": "Warn + `SIGTERM` Chrome when total VS Code RSS exceeds this many MB. Default: `3400` (3.4 GB). Copilot Chat multi-agent peaks at 3.0–3.5 GB — set above your steady state."
         },
         "memWatchdog.vscodeRssEmergencyMB": {
           "type": "number",
-          "default": 3500,
+          "default": 3800,
           "minimum": 1000,
           "maximum": 8000,
           "scope": "machine",
           "order": 5,
-          "markdownDescription": "Emergency: `SIGKILL` Chrome (or `SIGTERM` highest-RSS ext host if no Chrome) when VS Code RSS exceeds this many MB. Default: `3500` (3.5 GB)."
+          "markdownDescription": "Emergency: `SIGKILL` Chrome (or `SIGTERM` highest-RSS ext host if no Chrome) when VS Code RSS exceeds this many MB. Default: `3800` (3.8 GB)."
         }
       }
     }

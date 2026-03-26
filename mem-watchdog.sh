@@ -67,7 +67,7 @@ STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260326.3   # 2026-03-26 v3: + WARN cgroup throttle fallback, EMERGENCY bypasses action gate, log suppression (#74)
+export WATCHDOG_VERSION=20260326.4   # 2026-03-26 v4: raise RSS thresholds for Copilot Chat multi-agent workloads (#77)
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -98,8 +98,8 @@ TIER_DISPOSABLE_PATTERN_AUX='node.*playwright'     # pgrep -f ERE for disposable
 
 # VS Code RSS thresholds (confirmed: extension host hit 4 GB, watchdog had no Chrome to kill)
 # Lower thresholds so we can intervene BEFORE the kernel OOM fires.
-VSCODE_RSS_EMERG_KB=3200000   # ~3.2 GB — emergency cutoff before kernel OOM territory
-VSCODE_RSS_WARN_KB=3000000    # ~3.0 GB — SIGTERM Chrome; system baseline is 2.3–2.7 GB
+VSCODE_RSS_EMERG_KB=3800000   # ~3.8 GB — emergency cutoff; Copilot Chat peaks at 3.0–3.5 GB (#77)
+VSCODE_RSS_WARN_KB=3400000    # ~3.4 GB — SIGTERM Chrome; Copilot Chat baseline 3.0–3.5 GB (#77)
 NOTIFY_INTERVAL=300           # seconds between desktop notifications per severity
 
 # ── Startup mode — faster polling + tighter thresholds for 90s after VS Code starts ──
@@ -107,8 +107,8 @@ NOTIFY_INTERVAL=300           # seconds between desktop notifications per severi
 # Fix: detect new VS Code PIDs, switch to 0.5s interval, drop emergency threshold to 2 GB.
 STARTUP_INTERVAL=0.5          # seconds between checks during VS Code startup
 STARTUP_DURATION=90           # seconds to stay in startup mode after new VS Code PIDs
-STARTUP_RSS_WARN_KB=3200000   # ~3.2 GB — startup can spike fast; must be ≥ VSCODE_RSS_WARN_KB
-STARTUP_RSS_EMERG_KB=3400000  # ~3.4 GB — emergency ceiling in startup mode
+STARTUP_RSS_WARN_KB=3600000   # ~3.6 GB — startup can spike fast; must be ≥ VSCODE_RSS_WARN_KB (#77)
+STARTUP_RSS_EMERG_KB=4000000  # ~4.0 GB — emergency ceiling in startup mode (#77)
 STARTUP_DEBOUNCE=300          # minimum seconds between startup mode activations
                               # VS Code language servers (TS, ESLint, GitLens workers) spawn
                               # new code PIDs throughout normal development. Without this guard

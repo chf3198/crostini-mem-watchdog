@@ -59,10 +59,10 @@ function writeConfig(cfg) {
     if (warnMB >= emergMB) {
         warnings.push(
             `vscodeRssWarnMB (${warnMB} MB) must be < vscodeRssEmergencyMB (${emergMB} MB). ` +
-            `Reverting both to defaults (warn=2500, emerg=3500).`
+            `Reverting both to defaults (warn=3400, emerg=3800).`
         );
-        warnMB = 2500;
-        emergMB = 3500;
+        warnMB = 3400;
+        emergMB = 3800;
     }
 
     for (const w of warnings) {
