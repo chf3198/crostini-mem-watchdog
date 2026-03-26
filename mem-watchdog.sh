@@ -67,7 +67,7 @@ STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260326.4   # 2026-03-26 v4: raise RSS thresholds for Copilot Chat multi-agent workloads (#77)
+export WATCHDOG_VERSION=20260326.5   # 2026-03-26 v5: process classification gap — targeted PTY Host exclusion (#80)
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -485,6 +485,29 @@ kill_browsers() {
   return 0
 }
 
+# ── Identify PTY Host PID (the one utility with terminal children) ─────────────────
+# VS Code utility processes (--type=utility) include ExtHost, PTY Host, Shared
+# Process, File Watcher, and Network Service. ExtHost is identified by
+# --inspect-port. PTY Host is the only node.mojom.NodeService utility that has
+# child processes (bash terminal shells). All others (Shared, File Watcher,
+# Network Service) have 0 children and are safe to kill — they auto-restart.
+# This function returns the PTY Host PID in _pty_host_pid (empty if not found).
+find_pty_host_pid() {
+  _pty_host_pid=""
+  local pid
+  # Find all node.mojom.NodeService utility PIDs that are NOT the ExtHost
+  for pid in $(ps -C "$TIER_PROTECTED_PNAME" -o pid=,args= 2>/dev/null \
+    | awk '$0 ~ /--type=utility/ && $0 ~ /node\.mojom\.NodeService/ && $0 !~ /--inspect-port/ {print $1}'); do
+    # PTY Host is the one with child processes (bash terminals)
+    # shellcheck disable=SC2009  # grep -q . checks for non-empty output, not process name
+    if ps --ppid "$pid" -o pid= 2>/dev/null | grep -q .; then
+      _pty_host_pid="$pid"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # ── Restart heaviest VS Code helper (never main window process) ───────────────────
 kill_top_vscode_helper() {
   local reason="$1"
@@ -515,6 +538,12 @@ kill_top_vscode_helper() {
 
   local line pid rss args candidate_type
 
+  # Pre-compute PTY Host PID so awk can exclude it specifically.
+  # This replaces the blanket --type=utility exclusion that blocked ALL utility
+  # processes at WARN level, leaving zero kill candidates (#80).
+  find_pty_host_pid
+  local pty_host="${_pty_host_pid:-0}"
+
   # ── Build candidate list: language servers / extension workers first ─────
   # Anti-respawn: classify a process type tag from its cmdline, then skip the
   # last-killed type if it was killed within ANTI_RESPAWN_WINDOW seconds.
@@ -544,7 +573,7 @@ kill_top_vscode_helper() {
 
   # Preferred: language servers / extension workers, excluding recently-killed type
   line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss=,args= 2>/dev/null \
-    | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" -v md="$mode" '
+    | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" -v md="$mode" -v pty_host="$pty_host" '
       function classify(a) {
         if (a ~ /tsserver\.js/)        return "tsserver"
         if (a ~ /htmlServerMain/)       return "html-server"
@@ -564,7 +593,7 @@ kill_top_vscode_helper() {
         if (args ~ /--type=gpu-process/) next;
         if (args ~ /--type=extensionHost/) next;
         if (args ~ /--type=utility/ && args ~ /--inspect-port/) next;
-        if (md != "emerg" && args ~ /--type=utility/) next;
+        if (md != "emerg" && pid == pty_host) next;
         t=classify(args)
         if (skip != "" && t == skip) next;
         if (prot == "true" && t == "tsserver") next;
@@ -576,14 +605,12 @@ kill_top_vscode_helper() {
     ' | sort -k2 -rn | head -1)
 
   # Fallback: any non-main, non-zygote, non-extensionHost child.
-  # At WARN (mode != emerg), exclude --type=utility entirely — utility processes
-  # include PTY host, shared process, file watcher, and network service, which
-  # are indistinguishable by cmdline. Killing PTY host destroys the terminal;
-  # killing shared process shows "shared background process terminated". Only
-  # allow utility kills at EMERG where the alternative is kernel OOM.
+  # At WARN (mode != emerg), exclude PTY Host only (identified by PID from
+  # find_pty_host_pid). Other utility processes (Shared Process, File Watcher,
+  # Network Service) are safe to kill — they auto-restart. (#80)
   if [[ -z "$line" ]]; then
     line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss=,args= 2>/dev/null \
-      | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" -v md="$mode" '
+      | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" -v md="$mode" -v pty_host="$pty_host" '
         function classify(a) {
           if (a ~ /tsserver\.js/)      return "tsserver"
           if (a ~ /htmlServerMain/)     return "html-server"
@@ -603,7 +630,7 @@ kill_top_vscode_helper() {
           if (args ~ /--type=gpu-process/) next;
           if (args ~ /--type=extensionHost/) next;
           if (args ~ /--type=utility/ && args ~ /--inspect-port/) next;
-          if (md != "emerg" && args ~ /--type=utility/) next;
+          if (md != "emerg" && pid == pty_host) next;
           t=classify(args)
           if (skip != "" && t == skip) next;
           if (prot == "true" && t == "tsserver") next;
@@ -616,7 +643,7 @@ kill_top_vscode_helper() {
   # Last-resort fallback: include recently-killed type if nothing else found
   if [[ -z "$line" ]]; then
     line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss=,args= 2>/dev/null \
-      | awk -v prot="$protect_tsserver" -v ls="$protect_langservers" -v md="$mode" '{
+      | awk -v prot="$protect_tsserver" -v ls="$protect_langservers" -v md="$mode" -v pty_host="$pty_host" '{
           pid=$1; rss=$2;
           $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
           if (args ~ /^\/usr\/share\/code\/code$/) next;
@@ -624,7 +651,7 @@ kill_top_vscode_helper() {
           if (args ~ /--type=gpu-process/) next;
           if (args ~ /--type=extensionHost/) next;
           if (args ~ /--type=utility/ && args ~ /--inspect-port/) next;
-          if (md != "emerg" && args ~ /--type=utility/) next;
+          if (md != "emerg" && pid == pty_host) next;
           if (prot == "true" && args ~ /tsserver\.js/) next;
           if (ls == "true" && (args ~ /htmlServerMain/ || args ~ /serverWorkerMain/ || args ~ /cssServerMain/ || args ~ /jsonServerMain/ || args ~ /eslintServer/)) next;
           printf "%s %s %s\n", pid, rss, args;
