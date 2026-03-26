@@ -21,12 +21,14 @@
 #   - sudo -n must work without password (confirmed on this system)
 #   - python3 available (for controlled memory allocation)
 #
-# CGROUP NOTE (cgroup v1 — see docs/technical/system-stability.md §10):
-#   Writing to memory.limit_in_bytes constrains the kernel OOM hard limit
-#   but does NOT change /proc/meminfo values. So the watchdog's MemAvailable
-#   threshold logic is tested by ACTUAL allocation (Phase 2), while the cgroup
-#   limit acts as a safety net preventing runaway allocations from crashing
-#   the real VS Code session.
+# CGROUP NOTE (auto-detected — cgroup v1 or v2):
+#   On v1: writes to memory.limit_in_bytes as a hard safety ceiling.
+#   On v2: writes to memory.max as the equivalent hard limit.
+#   Both constrain the kernel OOM hard limit but do NOT change /proc/meminfo
+#   values. The watchdog's MemAvailable threshold logic is tested by ACTUAL
+#   allocation (Phase 2), while the cgroup limit acts as a safety net
+#   preventing runaway allocations from crashing the real VS Code session.
+#   See docs/technical/system-stability.md §10 for the cgroup v1 technique.
 #
 # Usage:
 #   bash test-pressure.sh              # full suite (requires ~1 GB headroom)
@@ -93,13 +95,65 @@ tee_log "Log: $LOG"
 $DRY_RUN && tee_log "${YEL}  *** DRY-RUN — no memory will be allocated, no processes killed ***${RST}"
 tee_log "════════════════════════════════════════════════════════════════"
 
-# ── Cgroup path discovery ─────────────────────────────────────────────────────
-CGRP=$(awk -F: '$2=="memory"{print "/sys/fs/cgroup/memory" $3; exit}' /proc/self/cgroup 2>/dev/null || echo "")
-if [[ -z "$CGRP" || ! -f "$CGRP/memory.limit_in_bytes" ]]; then
-  tee_log "${RED}ERROR: Cannot find memory cgroup at $CGRP${RST}"
+# ── Cgroup hierarchy detection (v1, v2, or hybrid) ──────────────────────────
+# Sets: CGROUP_MODE (v1|v2), CGRP (path), and per-mode file variables:
+#   _cg_limit_file   — hard limit (v1: memory.limit_in_bytes, v2: memory.max)
+#   _cg_usage_file   — current usage (v1: memory.usage_in_bytes, v2: memory.current)
+#   _cg_limit_unlimited — sentinel for "no limit" (v1: 9223372036854771712, v2: "max")
+CGROUP_MODE=""
+CGRP=""
+_cg_limit_file=""
+_cg_usage_file=""
+_cg_limit_unlimited=""
+
+detect_cgroup_mode() {
+  local v2_root="" v2_rel="" v2_path=""
+  local v1_rel="" v1_path=""
+
+  # ── Try cgroup v2 first (preferred on modern kernels) ─────────────────────
+  # cgroup2 mount point — typically /sys/fs/cgroup on unified systems
+  v2_root=$(mount -t cgroup2 2>/dev/null | awk '{print $3; exit}')
+  if [[ -n "$v2_root" ]]; then
+    # Unified hierarchy: line 0 has empty controller field → "0::/<path>"
+    v2_rel=$(awk -F: '$1=="0" && $2==""{print $3; exit}' /proc/self/cgroup 2>/dev/null)
+    v2_path="${v2_root}${v2_rel}"
+    if [[ -f "${v2_path}/memory.max" ]]; then
+      CGROUP_MODE="v2"
+      CGRP="$v2_path"
+      _cg_limit_file="${v2_path}/memory.max"
+      _cg_usage_file="${v2_path}/memory.current"
+      _cg_limit_unlimited="max"
+      return 0
+    fi
+  fi
+
+  # ── Fall back to cgroup v1 ────────────────────────────────────────────────
+  v1_rel=$(awk -F: '$2=="memory"{print $3; exit}' /proc/self/cgroup 2>/dev/null)
+  if [[ -n "$v1_rel" ]]; then
+    v1_path="/sys/fs/cgroup/memory${v1_rel}"
+    if [[ -f "${v1_path}/memory.limit_in_bytes" ]]; then
+      CGROUP_MODE="v1"
+      CGRP="$v1_path"
+      _cg_limit_file="${v1_path}/memory.limit_in_bytes"
+      _cg_usage_file="${v1_path}/memory.usage_in_bytes"
+      _cg_limit_unlimited="9223372036854771712"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+if ! detect_cgroup_mode; then
+  tee_log "${RED}ERROR: Cannot find memory cgroup (neither v1 nor v2 detected)${RST}"
+  tee_log "  v1 check: /proc/self/cgroup memory controller → ${v1_rel:-none}"
+  tee_log "  v2 check: mount -t cgroup2 → ${v2_root:-none}"
   exit 1
 fi
-tee_log "  Cgroup: $CGRP"
+tee_log "  Cgroup mode: ${CGROUP_MODE}"
+tee_log "  Cgroup path: ${CGRP}"
+tee_log "  Limit file:  ${_cg_limit_file}"
+tee_log "  Usage file:  ${_cg_usage_file}"
 
 # ── SAFETY PREFLIGHT ─────────────────────────────────────────────────────────
 tee_log ""
@@ -145,25 +199,57 @@ tee_log "  ✓ ${avail_pct}% RAM free (${avail_kb} kB) — sufficient headroom"
 tee_log ""
 tee_log "── Installing cgroup safety ceiling"
 
-ORIG_LIMIT=$(cat "$CGRP/memory.limit_in_bytes")
+ORIG_LIMIT=$(cat "$_cg_limit_file")
 # Safety ceiling = 90% of total RAM.
 # This keeps the hard cgroup OOM wall above VS Code's footprint (~2.5 GB) but
 # still prevents runaway allocations from consuming the last 10% (~630 MB).
 # The watchdog's 25% SIGTERM threshold fires at 75% utilization — well before the ceiling.
 safety_ceiling_bytes=$(( total_kb * 90 * 1024 / 100 ))
 
+# ── cgroup write helpers (abstract v1/v2 differences) ─────────────────────────
+# v1: limit is in bytes, unlimited sentinel is a large integer
+# v2: memory.max is in bytes or the literal string "max" for unlimited
+cgroup_write_limit() {
+  local value="$1"
+  if [[ "$CGROUP_MODE" == "v2" ]]; then
+    echo "$value" | sudo -n tee "$_cg_limit_file" > /dev/null 2>&1
+  else
+    echo "$value" | sudo -n tee "$_cg_limit_file" > /dev/null 2>&1
+  fi
+}
+
+cgroup_read_usage_mb() {
+  local val
+  read -r val < "$_cg_usage_file" 2>/dev/null || val=0
+  echo $(( val / 1024 / 1024 ))
+}
+
+cgroup_read_limit_mb() {
+  local val
+  read -r val < "$_cg_limit_file" 2>/dev/null || val=0
+  if [[ "$val" == "max" || "$val" == "$_cg_limit_unlimited" ]]; then
+    echo "unlimited"
+  else
+    echo $(( val / 1024 / 1024 ))
+  fi
+}
+
 cleanup_cgroup() {
   tee_log ""
-  tee_log "── Restoring cgroup limit to original (${ORIG_LIMIT} bytes)"
-  sudo -n sh -c "echo ${ORIG_LIMIT} > '${CGRP}/memory.limit_in_bytes'" 2>/dev/null || true
+  tee_log "── Restoring cgroup limit to original (${ORIG_LIMIT})"
+  cgroup_write_limit "$ORIG_LIMIT" || true
 }
 trap cleanup_cgroup EXIT INT TERM
 
 if $DRY_RUN; then
-  tee_log "  (dry-run: would set ceiling to $((safety_ceiling_bytes / 1024 / 1024)) MB)"
+  tee_log "  (dry-run: would set ceiling to $((safety_ceiling_bytes / 1024 / 1024)) MB via ${_cg_limit_file})"
 else
-  sudo -n sh -c "echo ${safety_ceiling_bytes} > '${CGRP}/memory.limit_in_bytes'"
-  tee_log "  ✓ Ceiling set: $((safety_ceiling_bytes / 1024 / 1024)) MB (90% of total RAM — watchdog fires at 75% utilization, well before this)"
+  if cgroup_write_limit "$safety_ceiling_bytes"; then
+    tee_log "  ✓ Ceiling set: $((safety_ceiling_bytes / 1024 / 1024)) MB via ${_cg_limit_file} (${CGROUP_MODE})"
+  else
+    tee_log "${RED}ERROR: Cannot write to ${_cg_limit_file} — sudo -n may not work${RST}"
+    exit 1
+  fi
 fi
 
 # ── Structured snapshot for post-analysis ─────────────────────────────────────────
@@ -251,17 +337,22 @@ snapshot() {
 
   # ── Cgroup accounting — direct procfs reads (zero fork) ──────────────────────
   cgrp_used_mb=0; cgrp_limit_mb=0
-  { read -r _sv < "$CGRP/memory.usage_in_bytes"  2>/dev/null && cgrp_used_mb=$(( _sv / 1024 / 1024 ));  } || true
-  { read -r _sv < "$CGRP/memory.limit_in_bytes"  2>/dev/null && cgrp_limit_mb=$(( _sv / 1024 / 1024 )); } || true
+  { read -r _sv < "$_cg_usage_file" 2>/dev/null && cgrp_used_mb=$(( _sv / 1024 / 1024 )); } || true
+  { read -r _sv < "$_cg_limit_file" 2>/dev/null; } || _sv=0
+  if [[ "$_sv" == "max" || "$_sv" == "$_cg_limit_unlimited" ]]; then
+    cgrp_limit_mb=0  # sentinel: unlimited
+  else
+    cgrp_limit_mb=$(( _sv / 1024 / 1024 ))
+  fi
 
   # ── Human-readable log line (printf is a bash builtin — zero fork) ───────────
   tee_log "  [snap:${label}] ts=${ts} | avail=${avail_pct}%/${avail_kb}kB | free=${free_kb}kB | dirty=${dirty_kb}kB | psi_full=${psi_full} psi_some=${psi_some} | vscode=${vscode_rss}kB/${vscode_npids}pids | wd_rss=${wd_rss}kB wd_cputicks=${wd_cpu_ticks} | cgroup=${cgrp_used_mb}MB/${cgrp_limit_mb}MB"
 
   # ── JSON line for jq / pandas post-analysis (printf builtin — zero fork) ─────
-  printf '{"label":"%s","ts":%s,"avail_pct":%d,"avail_kb":%d,"free_kb":%d,"dirty_kb":%d,"psi_full":"%s","psi_some":"%s","vscode_rss_kb":%d,"vscode_npids":%d,"wd_rss_kb":%d,"wd_cpu_ticks":%d,"cgroup_used_mb":%d,"cgroup_limit_mb":%d}\n' \
+  printf '{"label":"%s","ts":%s,"avail_pct":%d,"avail_kb":%d,"free_kb":%d,"dirty_kb":%d,"psi_full":"%s","psi_some":"%s","vscode_rss_kb":%d,"vscode_npids":%d,"wd_rss_kb":%d,"wd_cpu_ticks":%d,"cgroup_mode":"%s","cgroup_used_mb":%d,"cgroup_limit_mb":%d}\n' \
     "$label" "$ts" "$avail_pct" "$avail_kb" "$free_kb" "$dirty_kb" \
     "$psi_full" "$psi_some" "$vscode_rss" "$vscode_npids" \
-    "$wd_rss" "$wd_cpu_ticks" "$cgrp_used_mb" "$cgrp_limit_mb" >> "$SNAP_JSON"
+    "$wd_rss" "$wd_cpu_ticks" "$CGROUP_MODE" "$cgrp_used_mb" "$cgrp_limit_mb" >> "$SNAP_JSON"
 }
 
 # ── TEST 1: SIGTERM threshold (MemAvailable ≤ 25%) ─────────────────────────────────
