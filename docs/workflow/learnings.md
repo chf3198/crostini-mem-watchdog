@@ -20,6 +20,26 @@
 
 ---
 
+### 2026-03-26 — Child cgroup isolation enables deterministic pressure testing at any RAM level
+
+**Context**: Implementing issue #22 — making `test-pressure.sh` Tests 1 and 5 runnable at 75% free RAM (they previously skipped when needing >1500 MB allocation to reach the 25% SIGTERM threshold).
+
+**Discovery**: On cgroup v1, `sudo -n mkdir $CGRP/child` creates a child cgroup with all memory controller files auto-populated by the kernel. By placing the test's allocator and decoy processes inside a child cgroup with `memory.limit_in_bytes` set to `alloc_target + 300 MB buffer`, we get:
+1. **Blast-radius isolation**: If the allocator overshoots, the child cgroup's OOM killer fires — VS Code (in the parent cgroup) is never at risk.
+2. **Real system-wide pressure**: The child's memory consumption reduces `/proc/meminfo` MemAvailable normally, so the watchdog's threshold logic is exercised with real pressure (unlike parent-cgroup `memory.limit_in_bytes` manipulation, which does NOT change `/proc/meminfo`).
+3. **Clean lifecycle**: `mkdir` → write PIDs to `cgroup.procs` → test runs → move PIDs back → `rmdir`. No persistent state.
+
+Key finding: the `wc -l < cgroup.procs` pattern avoids SC2002 (useless cat) and the `if [[ -n "$pid" ]]; then ... fi` pattern avoids SC2015 (`A && B || C` not being if-then-else). Both are shellcheck hygiene improvements that matter when the cleanup runs under pressure (where unexpected exit codes can cause cascading failures).
+
+Validated: 5/5 PASS at 76% free RAM — 3,476 MB allocation with 3,776 MB child cgroup limit. Kill latency: 12s (Test 1) and 11s (Test 5).
+
+**Application**:
+- Child cgroup isolation is the correct pattern for any test that needs to allocate more memory than is safe without containment. The parent cgroup limit technique (system-stability.md §10) tests the kernel OOM path; child cgroup isolation tests the watchdog's MemAvailable path safely.
+- The `alloc_target + 300 MB` buffer accounts for Python runtime overhead (~30 MB) plus kernel page cache and slab overhead for the allocation. The 300 MB value is generous but safe.
+- The 3,500 MB hard cap prevents the test from attempting to allocate more than ~55% of total RAM, which would be meaningless on 6.3 GB hardware (the watchdog would have already fired multiple times).
+
+---
+
 ### 2026-03-26 — SwapFree sentinel changed from uint64 overflow to 0 kB on kernel 6.6.99
 
 **Context**: Conducting comprehensive zram/zswap research for issue #13 (v0.4.0 milestone blocker). Ran live `/proc/meminfo` probe expecting to see the historical `SwapFree: 18446744073709551360 kB` overflow sentinel that crashed earlyoom.
