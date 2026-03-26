@@ -53,6 +53,23 @@ Access all commands via `Ctrl+Shift+P` → **Mem Watchdog:**
 
 ---
 
+## Copilot Chat Integration
+
+Type `@memwatchdog` in Copilot Chat for AI-assisted memory operations:
+
+| Command | Description |
+|---|---|
+| `/memwatchdog status` | RAM%, VS Code RSS, PSI, service state snapshot |
+| `/memwatchdog logs` | Last 40 journal lines with action markers |
+| `/memwatchdog tune balanced` | Apply a tuning profile (balanced / conservative / playwright) |
+| `/memwatchdog act kill chrome` | Kill Chrome, restart service, or open dashboard |
+
+The extension also installs a Copilot skill at `~/.copilot/skills/mem-watchdog-ops/` so the assistant carries watchdog context across all repositories.
+
+> Requires VS Code ≥ 1.93 for Chat API. On older versions the chat participant is silently skipped.
+
+---
+
 ## Settings
 
 Configure all thresholds via **VS Code Settings → Mem Watchdog**. Changes take effect immediately — the extension rewrites `~/.config/mem-watchdog/config.sh` and restarts the daemon automatically.
@@ -62,8 +79,8 @@ Configure all thresholds via **VS Code Settings → Mem Watchdog**. Changes take
 | `sigtermThresholdPct` | `25` | `SIGTERM` Chrome when `MemAvailable` falls below this % of total RAM |
 | `sigkillThresholdPct` | `15` | Escalate to `SIGKILL` below this % |
 | `psiThresholdPct` | `25` | `SIGTERM` on PSI `full avg10` above this % |
-| `vscodeRssWarnMB` | `3000` | Warn + `SIGTERM` Chrome when total VS Code RSS exceeds this many MB |
-| `vscodeRssEmergencyMB` | `3500` | `SIGKILL` Chrome (or `SIGTERM` extension host) above this MB |
+| `vscodeRssWarnMB` | `3400` | Warn + `SIGTERM` Chrome when total VS Code RSS exceeds this many MB |
+| `vscodeRssEmergencyMB` | `3800` | `SIGKILL` Chrome (or `SIGTERM` extension host) above this MB |
 
 > All settings use `scope: "machine"` — they do **not** sync across machines via Settings Sync. A threshold tuned for 6 GB RAM would be dangerously wrong on a 16 GB machine.
 
@@ -101,8 +118,10 @@ VS Code Extension (this)            Systemd Daemon (independent process)
 
 On every VS Code activation:
 1. The bundled `mem-watchdog.sh` is SHA-256 compared to the installed version. If different, it is upgraded and the service is restarted automatically.
-2. VS Code Settings are written to `~/.config/mem-watchdog/config.sh`. The daemon sources this file so threshold changes take effect on the next restart — without reinstalling.
-3. OOM scores are tuned: `oom_score_adj=0` for VS Code (counters Electron's default 200–300), `oom_score_adj=1000` for Chrome (kernel kills it first, no root required).
+2. A Copilot skill is installed/refreshed at `~/.copilot/skills/mem-watchdog-ops/`.
+3. VS Code Settings are written to `~/.config/mem-watchdog/config.sh`. The daemon sources this file so threshold changes take effect on the next restart — without reinstalling.
+4. OOM scores are tuned: `oom_score_adj=0` for VS Code (counters Electron's default 200–300), `oom_score_adj=1000` for Chrome (kernel kills it first, no root required).
+5. If the Chat API is available, the `@memwatchdog` chat participant is registered.
 
 The extension is OOM-resilient by design: it reads kernel virtual files directly rather than spawning processes that could themselves fail under `ENOMEM` — the exact condition it is monitoring.
 
@@ -124,7 +143,7 @@ cd vscode-extension
 npm run build
 npm install -g @vscode/vsce
 vsce package
-code --install-extension mem-watchdog-status-0.3.7.vsix
+code --install-extension mem-watchdog-status-0.3.8.vsix
 ```
 
 Reload the window (`Developer: Reload Window`). The daemon installs and starts automatically on first activation.
@@ -151,9 +170,9 @@ Commercial use requires a paid license. See [COMMERCIAL-LICENSE.md](https://gith
 git clone https://github.com/chf3198/crostini-mem-watchdog.git
 cd crostini-mem-watchdog/vscode-extension
 npm run build          # populate resources/ from repo root
-npm test               # 75 JS unit tests via node:test (zero-install)
+npm test               # 100 JS unit tests via node:test (zero-install)
 npm run test:coverage  # same + c8 V8 coverage report
 npm run test:stress    # stress scenarios: pileup guard, EL lag, heap usage
 ```
 
-75 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()`, config validation, command handlers, installer decision logic, `activate()` singleton lifecycle, the `update()` state machine + pileup guard, update checker (version comparison, throttling, dismissal), and installer MIN_SAFE_DAEMON_VERSION guard.
+100 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()`, config validation, command handlers, installer decision logic, `activate()` singleton lifecycle, the `update()` state machine + pileup guard, update checker (version comparison, throttling, dismissal), installer MIN_SAFE_DAEMON_VERSION guard, skill installer (install/update/skip), and `@memwatchdog` chat participant (all 4 commands, profile detection/application, followups, API availability guard).

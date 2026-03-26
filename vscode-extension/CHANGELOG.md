@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.8] — 2026-03-26
+
+### Added
+- **`@memwatchdog` chat participant** (`chatParticipant.js`) — Copilot Chat integration with four slash commands:
+  - `/memwatchdog status` — RAM%, VS Code RSS, PSI, service state snapshot
+  - `/memwatchdog logs` — last 40 journal lines from the daemon
+  - `/memwatchdog tune <profile>` — apply `balanced`, `conservative`, or `playwright` tuning profile
+  - `/memwatchdog act <action>` — kill Chrome, restart service, or open dashboard
+  - Followup suggestions after each command for natural conversation flow
+  - Graceful no-op when Chat API is unavailable (VS Code < 1.93)
+- **`chatSkills` contribution** — bundled `skills/mem-watchdog-ops/SKILL.md` enables Copilot to carry watchdog-specific operational context across all repositories
+- **User-level Copilot skill installer** (`skillInstaller.js`) — on activation, installs or refreshes `~/.copilot/skills/mem-watchdog-ops/` with SKILL.md and `watchdog-snapshot.sh` helper script
+- **Tuning profiles** aligned with daemon v20260326.5 defaults:
+  - `balanced`: warn 3.4 GB, emerg 3.8 GB (matches current daemon)
+  - `conservative`: warn 3.0 GB, emerg 3.4 GB (earlier intervention)
+  - `playwright`: warn 3.8 GB, emerg 4.2 GB (headroom for automation)
+
+### Tests
+- JS unit tests: 75 → **100 passing**
+- Added `chatParticipant.test.js` — 20 tests covering detectProfile, applyProfile, all 4 requestHandler commands (/status, /logs, /tune, /act), null meminfo, followup providers, chat API unavailable
+- Added `skillInstaller.test.js` — 3 tests covering install/update/skip states and executable permissions
+
 ## [0.3.7] — 2026-03-25
 
 ### Fixed
