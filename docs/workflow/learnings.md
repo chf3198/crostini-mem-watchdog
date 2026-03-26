@@ -20,6 +20,27 @@
 
 ---
 
+### 2026-03-26 — Kernel 15-char process name truncation breaks Chrome RSS telemetry
+
+**Context**: Building the Playwright stress harness (#11). Telemetry sampler recorded `chrome_rss_mb=0` for all 63 samples despite Chrome visibly running and consuming ~500–1000 MB.
+
+**Discovery**: The Linux kernel truncates the `Name` field in `/proc/PID/status` to 15 characters (`TASK_COMM_LEN`). Playwright's `chromium_headless_shell` binary becomes `chrome-headless` in `/proc/PID/status`. The original telemetry code used exact-match comparisons (`"$_name" == "chrome"` / `"$_name" == "chromium"` / `"$_name" == "chromium-browser"`) which missed this truncated name entirely.
+
+The fix: use glob patterns (`chrome*` / `chromium*`) instead of exact matches when iterating `/proc/*/status` for process RSS aggregation. This captures all variants:
+- `chrome` — regular Chrome
+- `chrome-headless` — Playwright's headless shell (truncated from `chrome-headless-shell`)
+- `chromium` — Chromium builds
+- `chromium-browser` — Debian packaged Chromium
+
+This also affects the daemon's `kill_browsers()` function, which uses `pgrep -f` (matching the full `/proc/PID/cmdline`, not the 15-char `Name` field) and is therefore **not** affected by this truncation. But any new code that uses `/proc/PID/status` `Name` field for Chrome detection must use glob patterns.
+
+**Application**:
+- Never use exact string matches on `/proc/PID/status` `Name` for process detection — always use prefix/glob patterns to account for the 15-character kernel truncation.
+- When process detection code works with `ps -C` (which matches the 15-char `comm` field) but fails with `/proc/*/status` iteration, the truncation is the likely cause.
+- `pgrep -f` matches the full `/proc/PID/cmdline` and is immune to this issue, but it's also a fork — the zero-fork `/proc/*/status` glob loop is preferred for telemetry hot paths.
+
+---
+
 ### 2026-03-26 — Child cgroup isolation enables deterministic pressure testing at any RAM level
 
 **Context**: Implementing issue #22 — making `test-pressure.sh` Tests 1 and 5 runnable at 75% free RAM (they previously skipped when needing >1500 MB allocation to reach the 25% SIGTERM threshold).
