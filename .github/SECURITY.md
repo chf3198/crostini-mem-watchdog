@@ -113,7 +113,7 @@ The following GitHub-native security tooling is configured or available for this
 
 | Feature | Config file | What it does |
 |---|---|---|
-| **CI gate** | `.github/workflows/ci.yml` | Runs shellcheck + 54 unit tests on every PR |
+| **CI gate** | `.github/workflows/ci.yml` | Runs shellcheck, 18 bash tests, 103 JS unit tests, and docs-integrity check on every PR |
 | **Dependency Review** | `.github/workflows/ci.yml` (job: `dependency-review`) | Blocks PRs that introduce deps with CVEs ≥ moderate severity |
 | **Dependabot version updates** | `.github/dependabot.yml` | Weekly PRs to keep `npm` devDeps and GitHub Actions current |
 | **Least-privilege Actions** | Both workflow files | `permissions: contents: read` globally; jobs override only what they need |
@@ -133,7 +133,7 @@ Navigate to **Settings → Branches → Add branch protection rule** for `main`:
 | Setting | Value | Why |
 |---|---|---|
 | Require a pull request before merging | ✅ | Ensures CI runs before anything reaches main |
-| Require status checks to pass | ✅ `CI / Daemon`, `CI / Extension (18/20/22)` | Gate suite must be green |
+| Require status checks to pass | ✅ `Daemon — bash -n + shellcheck`, `Extension — node:test (Node 20)`, `Docs integrity check`, `Secret scan — gitleaks` | Gate suite must be green |
 | Require branches to be up to date | ✅ | Prevents merging on stale base |
 | Do not allow bypassing the above settings | ✅ | Applies to administrators too |
 | Allow force pushes | ❌ | Prevents history rewriting on main |
