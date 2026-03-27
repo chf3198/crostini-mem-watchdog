@@ -20,6 +20,47 @@
 
 ---
 
+### 2026-03-27 — Extension activate() ordering: config write must precede daemon install/restart
+
+**Context**: VS Code crashed at 01:54:50 CDT. Journal investigation revealed daemon PID 8290 ran 8 hours with stale WARN=3.2 GB / EMERG=3.4 GB (from the previous extension version's defaults) instead of the current 3.4/3.8 GB.
+
+**Discovery**: `activate()` ran `installer.installOrUpgrade()` (which restarts the daemon) BEFORE `configWriter.writeConfig()`. The daemon sourced `~/.config/mem-watchdog/config.sh` at startup — but that file still contained the previous session's thresholds because the new config hadn't been written yet. RSS reached 3.6 GB → EMERGENCY → `kill_vscode_main`. After recovery, the new daemon PID 32203 also loaded stale WARN=3.0 GB because config was written 12 seconds after the restart.
+
+Three interacting factors:
+1. **Ordering bug**: install/restart before config write — daemon always gets stale config on first startup.
+2. **No content-change detection**: `writeConfig()` returned only `warnings[]`; no way to know if the config file actually changed, so the caller couldn't trigger a restart when only config (not the daemon file) changed.
+3. **Cumulative drift**: Each extension version upgrade with new default thresholds left the daemon running on the previous version's values until the next manual restart — which on this system could be 8+ hours.
+
+**Fixes applied (ext v0.3.12)**:
+- `writeConfig()` now returns `{ warnings: string[], changed: boolean }`. Compares new content against existing file before writing. Skips write when identical.
+- `activate()` order swapped: Step 1 = config write, Step 2 = install/restart.
+- When installer returns `'current'` (no daemon file change) but `changed === true` (config file changed), explicit `systemctl --user restart mem-watchdog` ensures fresh thresholds.
+
+**Application**:
+- Any daemon that sources an external config file at startup must have that config file written BEFORE the daemon is (re)started. The "write config → then start" ordering is non-negotiable.
+- Content-change detection (`changed` flag) prevents unnecessary daemon restarts on every `activate()` call — only restart when something actually changed.
+- Extension version upgrades that change default thresholds must be treated as config changes, not just code changes. Without the `changed` detection, each upgrade silently leaves the daemon on stale values.
+
+---
+
+### 2026-03-27 — Marketplace version reservation: cancelled/timed-out vsce publish reserves the version number
+
+**Context**: Publishing v0.3.9 and v0.3.11 to the VS Code Marketplace. Both returned "already exists" errors despite never being successfully published.
+
+**Discovery**: When `vsce publish` is cancelled (Ctrl+C), times out, or fails after the initial upload handshake, the Marketplace reserves the version number permanently. The partial upload creates a version entry that blocks any future publish with the same version. This happened twice:
+- v0.3.9: timed out during upload → reserved → had to bump to v0.3.10
+- v0.3.11: cancelled by user (PAT prompt issue) → reserved → had to bump to v0.3.12
+
+The reservation is immediate and irreversible — there is no Marketplace API to delete a reserved version. The only recovery is to increment the version number.
+
+**Application**:
+- Always use non-interactive PAT passing: `source .env && npx vsce publish --pat "$VSCE_PAT"`. Never rely on interactive PAT prompts that can be cancelled.
+- If `vsce publish` fails for any reason, assume the version is burned. Immediately bump the patch version in package.json, CHANGELOG.md, and any version-tracking files.
+- Run `vsce ls` (no PAT required) before publishing to verify the bundle contents — this catches packaging issues without risking a version reservation.
+- Keep `.env` gitignored but always present in the extension directory for automated publish workflows.
+
+---
+
 ### 2026-03-26 — Kernel 15-char process name truncation breaks Chrome RSS telemetry
 
 **Context**: Building the Playwright stress harness (#11). Telemetry sampler recorded `chrome_rss_mb=0` for all 63 samples despite Chrome visibly running and consuming ~500–1000 MB.
