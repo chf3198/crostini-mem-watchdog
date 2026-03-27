@@ -20,6 +20,30 @@
 
 ---
 
+### 2026-03-27 — Startup burst RSS gate must match eff_warn, not a lower static threshold
+
+**Context**: VS Code showed "A shared background process terminated unexpectedly" pop-up 3 times in 5 minutes during a normal Copilot Chat session. Journal investigation revealed the watchdog killed Network Service (132 MB), Shared Process (192 MB), and File Watcher (110 MB) at 80–82% free RAM.
+
+**Discovery**: The startup churn burst path gated on `STARTUP_BURST_RSS_KB=2200000` (2.2 GB), but the config override set `VSCODE_RSS_WARN_KB=3481600` (3.48 GB). This 1.28 GB gap meant the burst path fired in completely normal territory:
+
+1. **RSS gate too low**: 2.2 GB is normal Copilot Chat baseline (2.0–2.5 GB). The gate passed routinely on every loop iteration where RSS happened to spike above 2.2 GB — which happens during any GC cycle or large tool call response.
+2. **PID churn too sensitive**: 10 new PIDs/120s is expected during multi-agent Copilot sessions. Language server restarts, tool calls spawning terminals, `code` helper processes — all generate new PIDs under the `code` process name.
+3. **Burst danger flag persists**: `_startup_burst_danger` is set in `adjust_oom_scores()` when the count threshold hits, then stays `true` across iterations until acted upon. Even if the specific 120s window was temporary, the flag waits for the first loop where RSS ≥ 2.2 GB — which is nearly every loop.
+
+The ACCEL gate (issue #45) already solved this same class of problem: it gates on `eff_warn` to prevent false-positive kills during V8 JIT startup. The burst path had a separate `STARTUP_BURST_RSS_KB` that drifted out of sync with the system's actual WARN threshold.
+
+**Fixes applied (v20260327.1)**:
+- Replaced `STARTUP_BURST_RSS_KB` with `eff_warn` in the burst condition.
+- Removed the `STARTUP_BURST_RSS_KB` variable from defaults — it was a static duplicate of a dynamic threshold that already exists.
+- Burst detection preserved at WARN level where churn + high RSS is genuinely dangerous.
+
+**Application**:
+- Any intervention gate that serves the same purpose as an existing threshold (WARN, EMERG) should USE that threshold, not maintain a separate constant that can drift. `STARTUP_BURST_RSS_KB` was raised from 1.6→2.2 GB in #49 but should have been changed to `eff_warn` at that time.
+- The `_startup_burst_danger` flag's persistence across loop iterations amplifies false positives: a brief PID burst during one window remains armed indefinitely until RSS crosses the gate. Using `eff_warn` as the gate makes this persistence safe — the flag only fires when RSS is already concerning.
+- When adding process-kill gates, always validate: "Does this gate fire during NORMAL operation?" For this system, 2.2 GB RSS at 82% free = normal. The gate must be above the system's heaviest legitimate baseline.
+
+---
+
 ### 2026-03-27 — Extension activate() ordering: config write must precede daemon install/restart
 
 **Context**: VS Code crashed at 01:54:50 CDT. Journal investigation revealed daemon PID 8290 ran 8 hours with stale WARN=3.2 GB / EMERG=3.4 GB (from the previous extension version's defaults) instead of the current 3.4/3.8 GB.
