@@ -5,10 +5,10 @@
 # Runs a finite set of checks, logs results to scratch/, exits cleanly.
 # NEVER runs indefinitely — every test has an explicit timeout.
 #
-# Usage: bash test-watchdog.sh
+# Usage: bash tests/test-watchdog.sh
 # ─────────────────────────────────────────────────────────────────────────────
 
-REPO="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="$REPO/scratch/watchdog-test-$(date '+%Y%m%d-%H%M%S').log"
 WATCHDOG="$REPO/mem-watchdog.sh"
 
@@ -193,7 +193,7 @@ fi
 # ── TEST 12: watchdog-tray.sh has no /tmp writes (only mkfifo PIPE which is cleaned up) ──
 tee_log ""
 tee_log "── Test 12: watchdog-tray.sh uses only a named FIFO (no stray /tmp writes)"
-tray_tmp=$(grep -c 'echo.*>/tmp/\|write.*>/tmp/\|tee.*/tmp/' "$REPO/watchdog-tray.sh" 2>/dev/null)
+tray_tmp=$(grep -c 'echo.*>/tmp/\|write.*>/tmp/\|tee.*/tmp/' "$REPO/scripts/watchdog-tray.sh" 2>/dev/null)
 tray_tmp=${tray_tmp:-0}
 # watchdog-tray.sh intentionally uses mktemp for a named FIFO (cleaned up on EXIT trap) — that is allowed.
 # The check ensures no uncleaned log/data writes to /tmp were introduced.
@@ -290,29 +290,29 @@ tee_log "── Test 17: test-pressure.sh cgroup hierarchy detection"
 cg_test_ok=true
 
 # Verify the function exists in test-pressure.sh
-if ! grep -q 'detect_cgroup_mode()' "$REPO/test-pressure.sh"; then
+if ! grep -q 'detect_cgroup_mode()' "$REPO/tests/test-pressure.sh"; then
   tee_log "    Missing detect_cgroup_mode() function in test-pressure.sh"
   cg_test_ok=false
 fi
 
 # Verify both v1 and v2 code paths exist
-if ! grep -q 'memory\.max' "$REPO/test-pressure.sh"; then
+if ! grep -q 'memory\.max' "$REPO/tests/test-pressure.sh"; then
   tee_log "    Missing cgroup v2 memory.max reference"
   cg_test_ok=false
 fi
-if ! grep -q 'memory\.limit_in_bytes' "$REPO/test-pressure.sh"; then
+if ! grep -q 'memory\.limit_in_bytes' "$REPO/tests/test-pressure.sh"; then
   tee_log "    Missing cgroup v1 memory.limit_in_bytes reference"
   cg_test_ok=false
 fi
 
 # Verify mode banner is emitted
-if ! grep -q 'Cgroup mode:' "$REPO/test-pressure.sh"; then
+if ! grep -q 'Cgroup mode:' "$REPO/tests/test-pressure.sh"; then
   tee_log "    Missing cgroup mode banner output"
   cg_test_ok=false
 fi
 
 # Live detection: run --dry-run and verify a mode is reported
-dry_output=$(bash "$REPO/test-pressure.sh" --dry-run 2>&1 || true)
+dry_output=$(bash "$REPO/tests/test-pressure.sh" --dry-run 2>&1 || true)
 if echo "$dry_output" | grep -qE 'Cgroup mode: (v1|v2)'; then
   detected_mode=$(echo "$dry_output" | grep 'Cgroup mode:' | awk '{print $NF}')
   tee_log "    Live detection: ${detected_mode}"
