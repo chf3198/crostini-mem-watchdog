@@ -146,7 +146,12 @@ known failure modes.
 mem-watchdog.sh          ← core daemon; single infinite loop, no deps beyond coreutils
 mem-watchdog.service     ← systemd user unit (systemctl --user, NOT system)
 install.sh               ← shell-only installer (no VS Code required)
-test-watchdog.sh         ← 18-test suite; exits 0/1; logs to scratch/
+tests/
+  test-watchdog.sh       ← 18-test suite; exits 0/1; logs to scratch/
+  test-pressure.sh       ← live memory pressure tests
+scripts/
+  watchdog-tray.sh       ← optional yad system tray icon
+  extension-footprint-advisor.sh ← extension RAM advisor (prototype)
 vscode-extension/
   extension.js           ← activate(): install → skill → config → commands → status bar (2s poll) → update check → chat
   installer.js           ← SHA-256 hash-based daemon auto-install/upgrade + MIN_SAFE guard
