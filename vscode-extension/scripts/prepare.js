@@ -28,9 +28,9 @@ const RESOURCES = [
 ];
 
 // Files to copy into the extension root (required by vsce at package time)
+// NOTE: icon.png is tracked directly in vscode-extension/ — no copy needed.
 const ROOT_FILES = [
   'LICENSE',
-  'icon.png',
 ];
 
 console.log('[prepare] Copying daemon files from repo root → vscode-extension/resources/');

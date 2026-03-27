@@ -19,6 +19,3 @@ node_modules/
 .vscode-test/
 .gitignore
 .vscodeignore
-
-# Scratch benchmarks — not needed inside the installed extension
-test/bench/

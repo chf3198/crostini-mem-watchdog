@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Extension Footprint Advisor (prototype)
 # Usage:
-#   bash extension-footprint-advisor.sh [workspace_path]
+#   bash scripts/extension-footprint-advisor.sh [workspace_path]
 #
 # Produces a lightweight recommendation report using:
 # - code helper process RSS by extension/tooling family
