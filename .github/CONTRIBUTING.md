@@ -45,13 +45,13 @@ Run all five checks before every commit. All must exit 0.
 
 ```bash
 # 1. Bash unit tests (18 tests, ~3 s) — run from repo root
-bash test-watchdog.sh
+bash tests/test-watchdog.sh
 
 # 2. Bash syntax check
 bash -n mem-watchdog.sh
 
 # 3. ShellCheck — SC1091 (source) and SC2317 (unreachable) are intentionally suppressed
-shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
+shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh
 
 # 4. JS unit tests (105 tests, ~1 s) — must run from vscode-extension/
 cd vscode-extension && npm test
@@ -179,7 +179,7 @@ detection trivial.
 ./mem-watchdog.sh --dry-run
 
 # Run all 18 validation tests (~3 s, exits 0/1) — logs go to scratch/
-bash test-watchdog.sh
+bash tests/test-watchdog.sh
 
 # Service management
 systemctl --user status mem-watchdog

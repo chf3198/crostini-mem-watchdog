@@ -12,7 +12,7 @@
 # Very low resource: ~3 MB RAM, 0% CPU at idle (sleeps between updates).
 #
 # USAGE:
-#   Start:   ./scripts/watchdog-tray.sh &
+#   Start:   bash scripts/watchdog-tray.sh &
 #   Stop:    pkill -f watchdog-tray.sh
 #   Autostart: add to ~/.config/autostart/ (see below)
 # ─────────────────────────────────────────────────────────────────────────────

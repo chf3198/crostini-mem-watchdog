@@ -14,7 +14,7 @@
 # a running mem-watchdog service, and VS Code installed — none of which are
 # available on a GitHub Actions runner. Run it manually before pushing:
 #
-#   bash test-watchdog.sh   # on your Crostini machine
+#   bash tests/test-watchdog.sh   # on your Crostini machine
 #
 # The CI gate covers: daemon syntax, shellcheck, all 105 JS unit tests, and docs integrity.
 # ──────────────────────────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ jobs:
         run: |
           sudo apt-get install -y shellcheck -q
           shellcheck --shell=bash -e SC1091,SC2317 \
-            mem-watchdog.sh watchdog-tray.sh install.sh
+            mem-watchdog.sh scripts/watchdog-tray.sh install.sh
 
   # ── Job 2: Extension unit tests (Node matrix) ────────────────────────────
   test-extension:

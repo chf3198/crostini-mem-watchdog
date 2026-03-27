@@ -31,9 +31,9 @@
 #   See docs/technical/system-stability.md §10 for the cgroup v1 technique.
 #
 # Usage:
-#   bash test-pressure.sh              # full suite (requires ~1 GB headroom)
-#   bash test-pressure.sh --dry-run    # show what would happen without allocating
-#   bash test-pressure.sh --adaptive   # child-cgroup isolation: Tests 1 & 5 run
+#   bash tests/test-pressure.sh              # full suite (requires ~1 GB headroom)
+#   bash tests/test-pressure.sh --dry-run    # show what would happen without allocating
+#   bash tests/test-pressure.sh --adaptive   # child-cgroup isolation: Tests 1 & 5 run
 #                                      # at any RAM level (never skip for "too much
 #                                      # free RAM").  Requires sudo -n and cgroup
 #                                      # mkdir.  Falls back to capped mode on failure.
@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="$REPO/scratch/pressure-test-$(date '+%Y%m%d-%H%M%S').log"
 mkdir -p "$REPO/scratch"
 

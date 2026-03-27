@@ -8,7 +8,7 @@
 [![Installs](https://img.shields.io/visual-studio-marketplace/i/CurtisFranks.mem-watchdog-status?color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=CurtisFranks.mem-watchdog-status)
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ChromeOS%20Crostini-4285f4)](https://chromeos.dev/en/linux)
-[![Tests](https://img.shields.io/badge/bash-18%2F18-brightgreen)](test-watchdog.sh)
+[![Tests](https://img.shields.io/badge/bash-18%2F18-brightgreen)](tests/test-watchdog.sh)
 [![Tests](https://img.shields.io/badge/js-105%2F105-brightgreen)](vscode-extension/package.json)
 
 _`earlyoom` hard-crashes on Crostini (exit 104, every 3 seconds, zero protection). This replaces it with a VS Code-aware watchdog that kills Chrome before the kernel OOM-kills VS Code._
@@ -102,9 +102,16 @@ crostini-mem-watchdog/
 ├── mem-watchdog.sh              ← core daemon (bash, coreutils only)
 ├── mem-watchdog.service         ← systemd user service unit
 ├── install.sh                   ← shell-only installer (no VS Code required)
-├── test-watchdog.sh             ← 18-test validation suite
-├── test-pressure.sh             ← live memory pressure tests
-├── watchdog-tray.sh             ← optional: yad system tray icon
+├── tests/
+│   ├── test-watchdog.sh         ← 18-test validation suite
+│   ├── test-pressure.sh         ← live memory pressure tests
+│   ├── stress-harness.sh        ← Playwright stress test harness
+│   └── stress-playwright.js     ← Playwright automation driver
+├── scripts/
+│   ├── watchdog-tray.sh         ← optional: yad system tray icon
+│   ├── docs-integrity-check.sh  ← documentation drift check
+│   ├── extension-footprint-advisor.sh ← extension RAM advisor (prototype)
+│   └── psi-calibration.sh       ← PSI threshold calibration
 └── vscode-extension/            ← VS Code extension (primary install path)
     ├── extension.js             ← activate(): install → skill → config → commands → status bar → update check → chat
     ├── installer.js             ← SHA-256 hash-based auto-install/upgrade + MIN_SAFE guard
@@ -158,14 +165,14 @@ crostini-mem-watchdog/
 All 4 gates must pass before any change is published:
 
 ```bash
-bash test-watchdog.sh              # 18 bash tests (~3 s) — service, OOM scores, PSI, SwapFree safety, SIGTERM
+bash tests/test-watchdog.sh              # 18 bash tests (~3 s) — service, OOM scores, PSI, SwapFree safety, SIGTERM
 cd vscode-extension && npm test    # 105 JS unit tests (~1 s) — extension state machine, activation singleton, pileup guard, utils
 bash -n mem-watchdog.sh            # bash syntax check
-shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
+shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh
 ```
 
 ```bash
-bash test-pressure.sh    # live: allocates memory, verifies watchdog fires (requires < 40% RAM free)
+bash tests/test-pressure.sh    # live: allocates memory, verifies watchdog fires (requires < 40% RAM free)
 ```
 
 ---

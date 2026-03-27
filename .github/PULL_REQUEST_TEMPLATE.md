@@ -25,9 +25,9 @@ Closes #
 
 All five checks must exit 0 before this PR is ready for review.
 
-- [ ] `bash test-watchdog.sh` — 18 bash tests (run from repo root)
+- [ ] `bash tests/test-watchdog.sh` — 18 bash tests (run from repo root)
 - [ ] `bash -n mem-watchdog.sh` — bash syntax check
-- [ ] `shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh`
+- [ ] `shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh`
 - [ ] `cd vscode-extension && npm test` — 105 JS unit tests
 - [ ] `bash scripts/docs-integrity-check.sh` — documentation drift check
 

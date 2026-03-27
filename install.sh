@@ -173,5 +173,5 @@ echo "└───────────────────────�
 echo ""
 echo "  Monitor:   systemctl --user status mem-watchdog"
 echo "  Live log:  journalctl --user -u mem-watchdog -f"
-echo "  Validate:  bash test-watchdog.sh"
+echo "  Validate:  bash tests/test-watchdog.sh"
 echo ""
