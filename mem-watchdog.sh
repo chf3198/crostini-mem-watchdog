@@ -68,7 +68,7 @@ STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260326.5   # 2026-03-26 v5: process classification gap — targeted PTY Host exclusion (#80)
+export WATCHDOG_VERSION=20260327.1   # 2026-03-27 v1: burst gate raised from STARTUP_BURST_RSS_KB to eff_warn (#99)
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -121,7 +121,9 @@ STARTUP_DEBOUNCE=300          # minimum seconds between startup mode activations
 # elevated, proactively restart the heaviest helper process to avoid full window crash.
 STARTUP_BURST_WINDOW=120       # seconds in startup-churn detection window
 STARTUP_BURST_COUNT=10         # total new VS Code PIDs in window to flag burst danger
-STARTUP_BURST_RSS_KB=2200000   # only act if VS Code RSS is already above ~2.2 GB
+                               # RSS gate: uses eff_warn (not a separate threshold) since
+                               # burst PID churn is normal during Copilot sessions; only
+                               # dangerous when RSS is already at WARN level (#99)
                               # Changed from 1.6 GB (2026-03-25): 1.6 GB is normal
                               # VS Code steady state on this system. The burst kill
                               # at 1641544 kB (89% free memory) killed the Extension
@@ -1300,9 +1302,14 @@ while true; do
   _prev_vscode_rss=$vscode_rss
 
   # Pre-emergency intervention: startup PID churn burst + elevated RSS.
+  # Gate on eff_warn (not a lower threshold) because 10+ new PIDs/120s is normal
+  # during Copilot multi-agent sessions (language servers, tool calls, terminals).
+  # At 2.2 GB (previous STARTUP_BURST_RSS_KB), burst killed shared processes at
+  # 82% free RAM — false positive. eff_warn ensures burst only fires when RSS is
+  # already in the WARN zone, where PID churn is genuinely concerning.
   # Never run this once emergency threshold is reached; emergency takes priority.
-  if $_startup_burst_danger && (( vscode_rss >= STARTUP_BURST_RSS_KB )) && (( vscode_rss < eff_emerg )); then
-    log "BURST: startup PID churn=${_startup_burst_count} in ${STARTUP_BURST_WINDOW}s with VS Code RSS ${vscode_rss} kB — preemptive helper restart"
+  if $_startup_burst_danger && (( vscode_rss >= eff_warn )) && (( vscode_rss < eff_emerg )); then
+    log "BURST: startup PID churn=${_startup_burst_count} in ${STARTUP_BURST_WINDOW}s with VS Code RSS ${vscode_rss} kB (≥eff_warn ${eff_warn} kB) — preemptive helper restart"
     notify_desktop "warn" "⚠️ VS Code Startup Churn" \
       "Repeated VS Code helper respawns detected; restarting heaviest helper to prevent crash."
     if kill_top_vscode_helper "startup churn burst (${_startup_burst_count} new PIDs/${STARTUP_BURST_WINDOW}s)"; then
