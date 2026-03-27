@@ -182,7 +182,7 @@ bash test-pressure.sh    # live: allocates memory, verifies watchdog fires (requ
 Prototype script available now:
 
 ```bash
-bash extension-footprint-advisor.sh /path/to/workspace
+bash scripts/extension-footprint-advisor.sh /path/to/workspace
 ```
 
 ---
