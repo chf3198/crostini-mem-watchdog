@@ -11,7 +11,7 @@ the non-negotiable invariants, and how to run the gate suite before opening a PR
 git clone https://github.com/chf3198/crostini-mem-watchdog.git
 cd crostini-mem-watchdog/vscode-extension
 npm ci           # install devDependencies (no prod deps)
-npm test         # 54 unit tests — must exit 0
+npm test         # 103 unit tests — must exit 0
 ```
 
 > **Important:** `npm test` must be run from inside `vscode-extension/`, not from
@@ -32,7 +32,7 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
   if the change touches more than 2 files.
 - **IMPLEMENT**: Make the change. After every edit to a shell file, run
   `bash -n <file>` immediately.
-- **GATE**: All four checks must exit 0 — no exceptions, no skips.
+- **GATE**: All five checks must exit 0 — no exceptions, no skips.
 - **REFLECT**: Read your own diff. Ask: _"What did I not test? What could break
   under OOM pressure or during VS Code startup?"_ Fix those gaps.
 - **COMMIT**: One logical change per commit (see format below).
@@ -41,10 +41,10 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
 
 ## Gate Suite
 
-Run all four checks before every commit. All must exit 0.
+Run all five checks before every commit. All must exit 0.
 
 ```bash
-# 1. Bash unit tests (12 tests, ~3 s) — run from repo root
+# 1. Bash unit tests (18 tests, ~3 s) — run from repo root
 bash test-watchdog.sh
 
 # 2. Bash syntax check
@@ -53,8 +53,11 @@ bash -n mem-watchdog.sh
 # 3. ShellCheck — SC1091 (source) and SC2317 (unreachable) are intentionally suppressed
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh watchdog-tray.sh install.sh
 
-# 4. JS unit tests (54 tests, ~1 s) — must run from vscode-extension/
+# 4. JS unit tests (103 tests, ~1 s) — must run from vscode-extension/
 cd vscode-extension && npm test
+
+# 5. Documentation drift check
+bash scripts/docs-integrity-check.sh
 ```
 
 For performance regression checking (optional but encouraged):
@@ -142,14 +145,21 @@ known failure modes.
 ```
 mem-watchdog.sh          ← core daemon; single infinite loop, no deps beyond coreutils
 mem-watchdog.service     ← systemd user unit (systemctl --user, NOT system)
-install.sh               ← installer: copies daemon to ~/.local/bin/, enables service
-test-watchdog.sh         ← 12-test suite; exits 0/1; logs to scratch/
-vscode-extension/        ← self-contained VS Code extension
-  extension.js           ← activate(): orchestrates install, config, commands, status bar
-  installer.js           ← hash-based daemon auto-install/upgrade
-  configWriter.js        ← VS Code settings → ~/.config/mem-watchdog/config.sh
-  commands.js            ← dashboard, preflight, killChrome, restartService commands
+install.sh               ← shell-only installer (no VS Code required)
+test-watchdog.sh         ← 18-test suite; exits 0/1; logs to scratch/
+vscode-extension/
+  extension.js           ← activate(): install → skill → config → commands → status bar (2s poll) → update check → chat
+  installer.js           ← SHA-256 hash-based daemon auto-install/upgrade + MIN_SAFE guard
+  configWriter.js        ← VS Code Settings → ~/.config/mem-watchdog/config.sh
+  commands.js            ← 4 commands: dashboard, preflight, killChrome, restartService
+  updateChecker.js       ← GitHub Releases API self-update check (24h throttled, non-blocking)
+  skillInstaller.js      ← installs/updates ~/.copilot/skills/mem-watchdog-ops/ on activation
+  chatParticipant.js     ← @memwatchdog chat participant: /status, /logs, /tune, /act
+  utils.js               ← readMeminfo(), sh(), checkServiceStatus() — shared helpers
   lifecycle.js           ← vscode:uninstall hook; stops + disables the service
+  scripts/prepare.js     ← vscode:prepublish: copies daemon files → resources/
+  skills/mem-watchdog-ops/ ← bundled Copilot skill (SKILL.md + watchdog-snapshot.sh)
+  resources/             ← BUILD ARTIFACT (gitignored); bundled into .vsix by vsce
   test/                  ← unit tests (node:test, no framework dep)
   test/bench/            ← micro-benchmarks (run manually, not in CI)
 ```
@@ -168,7 +178,7 @@ detection trivial.
 # Test without killing anything
 ./mem-watchdog.sh --dry-run
 
-# Run all 12 validation tests (~3 s, exits 0/1) — logs go to scratch/
+# Run all 18 validation tests (~3 s, exits 0/1) — logs go to scratch/
 bash test-watchdog.sh
 
 # Service management
@@ -179,7 +189,7 @@ journalctl --user -u mem-watchdog -f
 # Build and publish VS Code extension
 cd vscode-extension
 npm run build                     # populate resources/ for local dev/testing
-npm test                          # 54 JS unit tests
+npm test                          # 103 JS unit tests
 npm run test:coverage             # + c8 V8 coverage report
 npm run test:stress               # stress scenarios
 npx vsce package                  # → mem-watchdog-status-x.y.z.vsix
@@ -192,7 +202,7 @@ npx vsce package                  # → mem-watchdog-status-x.y.z.vsix
 1. Fork the repository.
 2. Create a branch: `type/short-description` (e.g., `fix/daemon-psi-threshold`).
 3. Make your change following the workflow above.
-4. Run the full gate suite. All four checks must exit 0.
+4. Run the full gate suite. All five checks must exit 0.
 5. Open a PR against `main`. The PR template checklist will guide you through
    the remaining steps.
 6. Before release/publish, obtain explicit client UAT pass confirmation.
