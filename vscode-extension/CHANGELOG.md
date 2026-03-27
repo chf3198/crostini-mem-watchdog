@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.12] — 2026-03-27
+
+### Notes
+- v0.3.11 was reserved in the Marketplace API during a partial upload; this release contains the same code as v0.3.11.
+
 ## [0.3.11] — 2026-03-27
 
 ### Fixed
