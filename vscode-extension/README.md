@@ -15,13 +15,13 @@ The daemon acts on these conditions (checked every 2 seconds):
 | `MemAvailable ≤ 15%` (~945 MB on 6 GB) | `SIGKILL` Chrome / Playwright |
 | `MemAvailable ≤ 25%` (~1.6 GB on 6 GB) | `SIGTERM` Chrome / Playwright |
 | PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall) |
-| VS Code RSS > 3.0 GB | `SIGTERM` Chrome + desktop notification; if no Chrome → log and defer to EMERGENCY |
-| VS Code RSS > 3.5 GB | `SIGKILL` Chrome; if no Chrome → `SIGTERM` the highest-RSS extension host process to save the VS Code window |
+| VS Code RSS > 3.4 GB | `SIGTERM` Chrome + desktop notification; if no Chrome → log and defer to EMERGENCY |
+| VS Code RSS > 3.8 GB | `SIGKILL` Chrome; if no Chrome → `SIGTERM` the highest-RSS extension host process to save the VS Code window |
 | RSS velocity spike | Kill lowest-value VS Code helper — **never** a language server or Extension Host at normal severity |
 
-**Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process (hosting Copilot, Playwright MCP, and all extensions) are excluded from the helper-kill candidate pool at normal severity. These small processes (80–120 MB) are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing one saves negligible memory while permanently disabling language intelligence or all extensions. They are only considered as last-resort targets at true emergency severity (RSS ≥ 3.5 GB).
+**Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process (hosting Copilot, Playwright MCP, and all extensions) are excluded from the helper-kill candidate pool at normal severity. These small processes (80–120 MB) are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing one saves negligible memory while permanently disabling language intelligence or all extensions. They are only considered as last-resort targets at true emergency severity (RSS ≥ 3.8 GB).
 
-**Startup mode:** when new VS Code PIDs appear, the daemon switches to **0.5 s polling for 90 s** and drops the RSS emergency threshold to 3.4 GB — catching the extension-host spike that caused the crash this tool was built to prevent (0 → 4 GB RSS in under 2 seconds during startup).
+**Startup mode:** when new VS Code PIDs appear, the daemon switches to **0.5 s polling for 90 s** and raises the RSS emergency threshold to 4.0 GB — catching the extension-host spike that caused the crash this tool was built to prevent (0 → 4 GB RSS in under 2 seconds during startup).
 
 ---
 
@@ -91,7 +91,7 @@ Configure all thresholds via **VS Code Settings → Mem Watchdog**. Changes take
 | System RAM | `vscodeRssWarnMB` | `vscodeRssEmergencyMB` |
 |---|---|---|
 | 4 GB | `1500` | `2000` |
-| 6 GB *(default)* | `3000` | `3500` |
+| 6 GB *(default)* | `3400` | `3800` |
 | 8 GB | `3500` | `5000` |
 | 16 GB | `6000` | `10000` |
 
@@ -107,9 +107,11 @@ VS Code Extension (this)            Systemd Daemon (independent process)
 • Auto-installs daemon         →    ~/.local/bin/mem-watchdog.sh
 • Writes config on change      →    ~/.config/mem-watchdog/config.sh
 • Status bar + 4 commands           • Polls /proc/meminfo + PSI every 2 s
-• Upgrade detection via hash        • Kills Chrome on threshold breach
-• Settings → config sync            • Survives VS Code freezing / crashing
-• OOM-resilient service monitoring  • oom_score_adj tuning every loop
+• @memwatchdog chat participant     • Kills Chrome on threshold breach
+• GitHub Releases update checker    • Survives VS Code freezing / crashing
+• Copilot skill installer           • oom_score_adj tuning every loop
+• Upgrade detection via hash        • Config sourcing (no script modification)
+• OOM-resilient service monitoring  • Language-server + ExtHost protection
 ```
 
 ---
@@ -143,7 +145,7 @@ cd vscode-extension
 npm run build
 npm install -g @vscode/vsce
 vsce package
-code --install-extension mem-watchdog-status-0.3.8.vsix
+code --install-extension mem-watchdog-status-*.vsix
 ```
 
 Reload the window (`Developer: Reload Window`). The daemon installs and starts automatically on first activation.
@@ -175,4 +177,4 @@ npm run test:coverage  # same + c8 V8 coverage report
 npm run test:stress    # stress scenarios: pileup guard, EL lag, heap usage
 ```
 
-100 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()`, config validation, command handlers, installer decision logic, `activate()` singleton lifecycle, the `update()` state machine + pileup guard, update checker (version comparison, throttling, dismissal), installer MIN_SAFE_DAEMON_VERSION guard, skill installer (install/update/skip), and `@memwatchdog` chat participant (all 4 commands, profile detection/application, followups, API availability guard).
+103 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()`, config validation, command handlers, installer decision logic, `activate()` singleton lifecycle, the `update()` state machine + pileup guard, update checker (version comparison, throttling, dismissal), installer MIN_SAFE_DAEMON_VERSION guard, skill installer (install/update/skip), and `@memwatchdog` chat participant (all 4 commands, profile detection/application, followups, API availability guard).
