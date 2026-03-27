@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.11] — 2026-03-27
+
+### Fixed
+- **Config-before-restart activation order** ([#95](https://github.com/chf3198/crostini-mem-watchdog/issues/95)) — `activate()` wrote the config file AFTER the daemon restart, causing the daemon to load stale thresholds from the previous session. The daemon ran with WARN=3.0 GB / EMERG=3.4 GB instead of the configured WARN=3.4 GB / EMERG=3.8 GB, leading to a premature `kill_vscode_main` at 3.6 GB. Config is now written BEFORE install/restart, and a config-change-triggered restart ensures the daemon always picks up fresh values.
+- **Config change detection** — `writeConfig()` now compares existing file content before writing. Returns `{ warnings, changed }` instead of plain warnings array. Skips unnecessary writes when content is identical; triggers daemon restart only when config actually changed.
+
+### Tests
+- JS unit tests: 103 → **105 passing** (+2 new `changed`-flag tests for `writeConfig`)
+
 ## [0.3.10] — 2026-03-27
 
 ### Fixed
