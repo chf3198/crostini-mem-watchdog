@@ -83,9 +83,25 @@ function writeConfig(cfg) {
         `VSCODE_RSS_EMERG_KB=${emergKB}`,
     ];
 
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
-    fs.writeFileSync(CONFIG_FILE, lines.join('\n') + '\n', { encoding: 'utf8', mode: 0o644 });
-    return warnings; // empty array = all values valid
+    const newContent = lines.join('\n') + '\n';
+
+    // Detect whether the config file actually changed.  If the on-disk content
+    // is identical, skip the write and report changed=false so the caller can
+    // avoid an unnecessary daemon restart.
+    let changed = true;
+    try {
+        const existing = fs.readFileSync(CONFIG_FILE, 'utf8');
+        if (existing === newContent) { changed = false; }
+    } catch {
+        // File missing or unreadable → will be (re-)created below.
+    }
+
+    if (changed) {
+        fs.mkdirSync(CONFIG_DIR, { recursive: true });
+        fs.writeFileSync(CONFIG_FILE, newContent, { encoding: 'utf8', mode: 0o644 });
+    }
+
+    return { warnings, changed };
 }
 
 module.exports = { writeConfig, CONFIG_FILE };

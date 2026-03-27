@@ -1,9 +1,12 @@
 // extension.js — Mem Watchdog VS Code extension entry point
 // ─────────────────────────────────────────────────────────────────────────────
 // On activation:
-//   1. Installs / upgrades the daemon (installer.js)
-//   1b. Install / refresh user-level Copilot skill (skillInstaller.js)
-//   2. Writes VS Code settings → ~/.config/mem-watchdog/config.sh (configWriter.js)
+//   1. Writes VS Code settings → ~/.config/mem-watchdog/config.sh (configWriter.js)
+//      MUST run before install — the daemon sources this file at startup.
+//   2. Installs / upgrades the daemon (installer.js)
+//      If the config changed and the daemon was already current (no hash-based
+//      restart), forces a daemon restart to pick up the new config.
+//   2b. Install / refresh user-level Copilot skill (skillInstaller.js)
 //   3. Registers 4 commands (commands.js)
 //   4. Watches for settings changes → rewrites config + restarts daemon
 //   5. Runs the status bar status poller every 2 s (original logic preserved)
@@ -152,20 +155,47 @@ async function activate(context) {
     }
     _activated = true;
 
-    // ── 1. Install / upgrade the daemon ──────────────────────────────────────
+    // ── 1. Sync VS Code settings → config file ────────────────────────────────
+    // MUST run before install/upgrade: the daemon sources this file at startup.
+    // If the config file is written AFTER the daemon restarts, it runs with the
+    // PREVIOUS session's stale values (crash confirmed 2026-03-27, issue #95).
+    let configChanged = false;
+    try {
+        const cfgResult = configWriter.writeConfig(vscode.workspace.getConfiguration('memWatchdog'));
+        configChanged = cfgResult.changed;
+        if (cfgResult.warnings && cfgResult.warnings.length > 0) {
+            vscode.window.showWarningMessage(
+                'Mem Watchdog: invalid settings corrected to safe defaults — check Developer Console for details.'
+            );
+        }
+    } catch (err) {
+        // Non-fatal; daemon falls back to its built-in defaults
+        console.error('[memWatchdog] configWriter error:', err.message);
+    }
+
+    // ── 2. Install / upgrade the daemon ──────────────────────────────────────
     try {
         const outcome = await installer.installOrUpgrade(context);
         if (outcome === 'installed') {
             vscode.window.showInformationMessage('Mem Watchdog: daemon installed and service started ✓');
         } else if (outcome === 'upgraded') {
             vscode.window.showInformationMessage('Mem Watchdog: daemon upgraded and service restarted ✓');
+        } else if (outcome === 'current' && configChanged) {
+            // Daemon file unchanged but config file was updated — restart so
+            // the daemon re-sources the fresh config.  Without this, the daemon
+            // runs with whatever config it loaded at its last start, which may
+            // be from a previous extension version with different defaults.
+            const { ok, stderr } = await sh('systemctl --user restart mem-watchdog');
+            if (!ok) {
+                console.error('[memWatchdog] config-triggered restart failed:', stderr);
+            }
         }
-        // 'current' → no notification; service is already running correctly
+        // 'current' + !configChanged → no notification; service is running correctly
     } catch (err) {
         vscode.window.showErrorMessage(`Mem Watchdog: install failed — ${err.message}`);
     }
 
-    // ── 1b. Install / refresh user-level Copilot skill ─────────────────────
+    // ── 2b. Install / refresh user-level Copilot skill ─────────────────────
     // Installs to ~/.copilot/skills/mem-watchdog-ops so the assistant can
     // carry watchdog-specific operational context across repositories.
     try {
@@ -175,19 +205,6 @@ async function activate(context) {
         }
     } catch (err) {
         console.error('[memWatchdog] skillInstaller error:', err.message);
-    }
-
-    // ── 2. Sync VS Code settings → config file ────────────────────────────────
-    try {
-        const cfgWarnings = configWriter.writeConfig(vscode.workspace.getConfiguration('memWatchdog'));
-        if (cfgWarnings && cfgWarnings.length > 0) {
-            vscode.window.showWarningMessage(
-                'Mem Watchdog: invalid settings corrected to safe defaults — check Developer Console for details.'
-            );
-        }
-    } catch (err) {
-        // Non-fatal; daemon falls back to its built-in defaults
-        console.error('[memWatchdog] configWriter error:', err.message);
     }
 
     // ── 3. Register commands ──────────────────────────────────────────────────
@@ -205,7 +222,8 @@ async function activate(context) {
             if (!e.affectsConfiguration('memWatchdog')) { return; }
             let cfgWarnings = [];
             try {
-                cfgWarnings = configWriter.writeConfig(vscode.workspace.getConfiguration('memWatchdog')) || [];
+                const cfgResult = configWriter.writeConfig(vscode.workspace.getConfiguration('memWatchdog'));
+                cfgWarnings = cfgResult.warnings || [];
             } catch (err) {
                 console.error('[memWatchdog] configWriter update error:', err.message);
             }
