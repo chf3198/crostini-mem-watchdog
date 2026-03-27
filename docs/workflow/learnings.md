@@ -20,6 +20,21 @@
 
 ---
 
+### 2026-03-27 — Post-merge governance and docs-drift must be explicit checklist items, not assumed
+
+**Context**: After merging PRs #104 and #106 (repo structure cleanup — moving shell scripts to `tests/` and `scripts/`), the agent declared the task complete without running the post-merge governance checklist: CHANGELOG review, docs drift scan, `repo-profile-governance` audit, or learnings entry.
+
+**Discovery**: The PR implementation correctly updated `README.md`, `.github/copilot-instructions.md`, CI workflows, PR template, and `install.sh`. But `.github/CONTRIBUTING.md` had its own architecture tree (line 147) that was **not** updated — it still showed `test-watchdog.sh` at the repo root with no `tests/` or `scripts/` directories. This was found only when the post-merge governance audit was explicitly requested.
+
+The root cause: CONTRIBUTING.md's architecture tree was a copy-divergence from the canonical trees in `copilot-instructions.md` and `README.md`. The PR's cross-reference sweep searched for *invocation paths* (`bash tests/test-watchdog.sh`) which were all correct, but didn't check *structural diagrams* which had a separate stale copy of the directory layout.
+
+**Application**:
+- The post-merge governance checklist (CHANGELOG, docs drift, `repo-profile-governance`, learnings) must be an explicit final step in every PR merge — not assumed complete because the implementation updated "the obvious files."
+- Architecture trees are duplicated across 3 files (`copilot-instructions.md`, `README.md`, `CONTRIBUTING.md`). When updating one, always grep for `## Architecture` across all `.md` files and update all instances.
+- Cross-reference sweeps must search for both *invocation patterns* (command paths) and *structural patterns* (directory trees, code blocks showing file layouts).
+
+---
+
 ### 2026-03-27 — Startup burst RSS gate must match eff_warn, not a lower static threshold
 
 **Context**: VS Code showed "A shared background process terminated unexpectedly" pop-up 3 times in 5 minutes during a normal Copilot Chat session. Journal investigation revealed the watchdog killed Network Service (132 MB), Shared Process (192 MB), and File Watcher (110 MB) at 80–82% free RAM.
