@@ -79,13 +79,13 @@ This watchdog reads only `MemAvailable` and `MemTotal` — both correct on this 
 | `MemAvailable ≤ 15%`   | `SIGKILL` Chrome / Playwright                                                                    |
 | `MemAvailable ≤ 25%`   | `SIGTERM` Chrome / Playwright                                                                    |
 | PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall)                                                        |
-| VS Code RSS > 3.0 GB   | `SIGTERM` Chrome + desktop notification; if no Chrome → log and defer to EMERGENCY               |
-| VS Code RSS > 3.2 GB   | `SIGKILL` Chrome; if no Chrome → `SIGTERM` highest-RSS extension host to save the VS Code window |
+| VS Code RSS > 3.4 GB   | `SIGTERM` Chrome + desktop notification; if no Chrome → log and defer to EMERGENCY               |
+| VS Code RSS > 3.8 GB   | `SIGKILL` Chrome; if no Chrome → `SIGTERM` highest-RSS extension host to save the VS Code window |
 | RSS velocity spike     | Kill lowest-value VS Code helper — **never** a language server or Extension Host at normal severity |
 | Every loop             | Set `oom_score_adj=0` on VS Code PIDs (counters Electron's 200–300 default)                      |
 | Every loop             | Set `oom_score_adj=1000` on Chrome PIDs (kernel kills it first)                                  |
 
-**Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process are excluded from the helper-kill candidate pool at normal severity. These 80–120 MB processes are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing them saves <2% of memory for 2 seconds (they respawn immediately) while permanently disabling language intelligence until a full VS Code restart. Only at true emergency severity (RSS ≥ 3.2 GB) are they considered as last-resort targets.
+**Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process are excluded from the helper-kill candidate pool at normal severity. These 80–120 MB processes are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing them saves <2% of memory for 2 seconds (they respawn immediately) while permanently disabling language intelligence until a full VS Code restart. Only at true emergency severity (RSS ≥ 3.8 GB) are they considered as last-resort targets.
 
 - Checks every **2 seconds** (4s was confirmed too slow — missed a 4 GB spike in < 4s on 2026-03-05)
 - **Startup mode**: 0.5 s polling for 90 s after new VS Code PIDs detected — catches extension-host spikes during startup
@@ -106,10 +106,13 @@ crostini-mem-watchdog/
 ├── test-pressure.sh             ← live memory pressure tests
 ├── watchdog-tray.sh             ← optional: yad system tray icon
 └── vscode-extension/            ← VS Code extension (primary install path)
-    ├── extension.js             ← activate(): install → config → commands → status bar
-    ├── installer.js             ← SHA-256 hash-based auto-install/upgrade
+    ├── extension.js             ← activate(): install → skill → config → commands → status bar → update check → chat
+    ├── installer.js             ← SHA-256 hash-based auto-install/upgrade + MIN_SAFE guard
     ├── configWriter.js          ← VS Code Settings → ~/.config/mem-watchdog/config.sh
     ├── commands.js              ← dashboard, preflight, killChrome, restartService
+    ├── updateChecker.js         ← GitHub Releases API self-update check (24h throttled)
+    ├── skillInstaller.js        ← installs/updates ~/.copilot/skills/mem-watchdog-ops/
+    ├── chatParticipant.js       ← @memwatchdog chat participant: /status, /logs, /tune, /act
     ├── utils.js                 ← readMeminfo(), readPsi(), sh(), checkServiceStatus() — shared helpers
     ├── lifecycle.js             ← vscode:uninstall: stop + disable service
     └── scripts/prepare.js       ← vscode:prepublish: bundles daemon files into resources/
@@ -135,8 +138,8 @@ crostini-mem-watchdog/
 | `INTERVAL`            | `2`       | Seconds between normal checks                          |
 | `STARTUP_INTERVAL`    | `0.5`     | Seconds between checks in startup mode                 |
 | `STARTUP_DURATION`    | `90`      | Seconds to stay in startup mode after new VS Code PIDs |
-| `VSCODE_RSS_WARN_KB`  | `3000000` | ~3.0 GB — VS Code RSS warning level                    |
-| `VSCODE_RSS_EMERG_KB` | `3200000` | ~3.2 GB — VS Code RSS emergency level                  |
+| `VSCODE_RSS_WARN_KB`  | `3400000` | ~3.4 GB — VS Code RSS warning level                    |
+| `VSCODE_RSS_EMERG_KB` | `3800000` | ~3.8 GB — VS Code RSS emergency level                  |
 | `NOTIFY_INTERVAL`     | `300`     | Seconds between desktop notifications per severity     |
 
 ### Tuning for Your RAM
@@ -144,7 +147,7 @@ crostini-mem-watchdog/
 | Total RAM        | `VSCODE_RSS_WARN_KB` | `VSCODE_RSS_EMERG_KB` |
 | ---------------- | -------------------- | --------------------- |
 | 4 GB             | `1500000`            | `2000000`             |
-| 6 GB _(default)_ | `3000000`            | `3200000`             |
+| 6 GB _(default)_ | `3400000`            | `3800000`             |
 | 8 GB             | `3500000`            | `5000000`             |
 | 16 GB            | `6000000`            | `10000000`            |
 
