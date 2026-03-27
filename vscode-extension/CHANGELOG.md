@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.10] — 2026-03-27
+
+### Fixed
+- **Documentation threshold sync** — both READMEs now correctly show WARN 3.4 GB / EMERG 3.8 GB (were showing stale 3.0/3.2 GB from pre-#77 era). Architecture diagrams updated with `updateChecker.js`, `skillInstaller.js`, `chatParticipant.js`. Extension README test count corrected (103). Install-from-source vsix filename made version-agnostic.
+
+### Notes
+- v0.3.9 was reserved in the Marketplace API during a partial upload; this release contains the same code plus the docs sync from PR #91.
+
 ## [0.3.9] — 2026-03-26
 
 ### Fixed
