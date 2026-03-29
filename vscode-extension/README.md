@@ -21,6 +21,8 @@ The daemon acts on these conditions (checked every 2 seconds):
 
 **Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process (hosting Copilot, Playwright MCP, and all extensions) are excluded from the helper-kill candidate pool at normal severity. These small processes (80–120 MB) are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing one saves negligible memory while permanently disabling language intelligence or all extensions. They are only considered as last-resort targets at true emergency severity (RSS ≥ 3.8 GB).
 
+**Playwright awareness:** When a Playwright MCP session is active (detected via `node.*playwright`), the daemon automatically defers non-critical Chrome kills — Playwright legitimately spawns 5–10 Chrome PIDs. The Chrome process count cap (`CHROME_COUNT_MAX`) is also skipped during active sessions. At true emergency severity (≤ 15% free RAM), Chrome is always killed regardless.
+
 **Startup mode:** when new VS Code PIDs appear, the daemon switches to **0.5 s polling for 90 s** and raises the RSS emergency threshold to 4.0 GB — catching the extension-host spike that caused the crash this tool was built to prevent (0 → 4 GB RSS in under 2 seconds during startup).
 
 ---
@@ -119,7 +121,7 @@ VS Code Extension (this)            Systemd Daemon (independent process)
 ## How It Works
 
 On every VS Code activation:
-1. The bundled `mem-watchdog.sh` is SHA-256 compared to the installed version. If different, it is upgraded and the service is restarted automatically.
+1. The bundled `mem-watchdog.sh` is SHA-256 compared to the installed version. If different, it is upgraded and the service is restarted automatically. **Downgrade protection** ensures a newer manually-deployed daemon is never overwritten by an older bundled version.
 2. A Copilot skill is installed/refreshed at `~/.copilot/skills/mem-watchdog-ops/`.
 3. VS Code Settings are written to `~/.config/mem-watchdog/config.sh`. The daemon sources this file so threshold changes take effect on the next restart — without reinstalling.
 4. OOM scores are tuned: `oom_score_adj=0` for VS Code (counters Electron's default 200–300), `oom_score_adj=1000` for Chrome (kernel kills it first, no root required).
@@ -172,9 +174,9 @@ Commercial use requires a paid license. See [COMMERCIAL-LICENSE.md](https://gith
 git clone https://github.com/chf3198/crostini-mem-watchdog.git
 cd crostini-mem-watchdog/vscode-extension
 npm run build          # populate resources/ from repo root
-npm test               # 105 JS unit tests via node:test (zero-install)
+npm test               # 106 JS unit tests via node:test (zero-install)
 npm run test:coverage  # same + c8 V8 coverage report
 npm run test:stress    # stress scenarios: pileup guard, EL lag, heap usage
 ```
 
-105 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()`, config validation, command handlers, installer decision logic, `activate()` singleton lifecycle, the `update()` state machine + pileup guard, update checker (version comparison, throttling, dismissal), installer MIN_SAFE_DAEMON_VERSION guard, skill installer (install/update/skip), and `@memwatchdog` chat participant (all 4 commands, profile detection/application, followups, API availability guard).
+106 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()`, config validation, command handlers, installer decision logic, `activate()` singleton lifecycle, the `update()` state machine + pileup guard, update checker (version comparison, throttling, dismissal), installer MIN_SAFE_DAEMON_VERSION guard, installer downgrade protection (export-prefix version parsing), skill installer (install/update/skip), and `@memwatchdog` chat participant (all 4 commands, profile detection/application, followups, API availability guard).

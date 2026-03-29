@@ -87,6 +87,8 @@ This watchdog reads only `MemAvailable` and `MemTotal` — both correct on this 
 
 **Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process are excluded from the helper-kill candidate pool at normal severity. These 80–120 MB processes are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing them saves <2% of memory for 2 seconds (they respawn immediately) while permanently disabling language intelligence until a full VS Code restart. Only at true emergency severity (RSS ≥ 3.8 GB) are they considered as last-resort targets.
 
+**Playwright awareness:** When a Playwright MCP session is active (detected via `node.*playwright`), the daemon defers non-critical Chrome kills and skips the `CHROME_COUNT_MAX` cap — Playwright legitimately spawns 5–10 Chrome PIDs. At true emergency severity (≤ 15% free), Chrome is always killed regardless (safety net).
+
 - Checks every **2 seconds** (4s was confirmed too slow — missed a 4 GB spike in < 4s on 2026-03-05)
 - **Startup mode**: 0.5 s polling for 90 s after new VS Code PIDs detected — catches extension-host spikes during startup
 - Reads only `MemAvailable`, `MemTotal`, and `/proc/pressure/memory` (PSI) — all safe on Crostini
@@ -114,7 +116,7 @@ crostini-mem-watchdog/
 │   └── psi-calibration.sh       ← PSI threshold calibration
 └── vscode-extension/            ← VS Code extension (primary install path)
     ├── extension.js             ← activate(): install → skill → config → commands → status bar → update check → chat
-    ├── installer.js             ← SHA-256 hash-based auto-install/upgrade + MIN_SAFE guard
+    ├── installer.js             ← SHA-256 hash-based auto-install/upgrade + downgrade protection + MIN_SAFE guard
     ├── configWriter.js          ← VS Code Settings → ~/.config/mem-watchdog/config.sh
     ├── commands.js              ← dashboard, preflight, killChrome, restartService
     ├── updateChecker.js         ← GitHub Releases API self-update check (24h throttled)
