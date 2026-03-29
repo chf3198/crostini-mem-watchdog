@@ -47,16 +47,35 @@ Use this skill when working in constrained Crostini environments where VS Code, 
 
 When recommending profile changes, explain expected trade-off between stability and interruption frequency.
 
-## Kill Hierarchy (daemon v20260326.5+)
+## Kill Hierarchy (daemon v20260329.1+)
 
 | Condition | Action |
 |---|---|
 | `MemAvailable ≤ 15%` | SIGKILL Chrome/Playwright |
-| `MemAvailable ≤ 25%` | SIGTERM Chrome/Playwright |
-| PSI full avg10 > 25% | SIGTERM Chrome |
-| VS Code RSS ≥ 3.8 GB | SIGKILL Chrome; if none → kill_vscode_main() |
-| VS Code RSS ≥ 3.4 GB | SIGTERM Chrome; if none → kill helper (Shared Process, File Watcher, Network Service); if none → cgroup throttle/reclaim |
+| `MemAvailable ≤ 25%` | SIGTERM Chrome/Playwright (deferred if Playwright active) |
+| PSI full avg10 > 25% | SIGTERM Chrome (deferred if Playwright active) |
+| VS Code RSS ≥ 3.8 GB | SIGKILL Chrome (always — even during Playwright sessions); if none → kill_vscode_main() |
+| VS Code RSS ≥ 3.4 GB | SIGTERM Chrome (deferred if Playwright active); if none → kill helper (Shared Process, File Watcher, Network Service); if none → cgroup throttle/reclaim |
 | RSS velocity spike | Kill lowest-value helper — never a language server or Extension Host at normal severity |
+| Chrome PIDs > 3 | SIGKILL oldest excess (skipped when Playwright is active) |
+
+## Playwright Awareness (daemon v20260329.1+, Issue #109)
+
+The daemon detects active Playwright sessions via `pgrep -f 'node.*playwright'`.
+
+**When Playwright is active:**
+- `CHROME-EXCESS` cap enforcement is skipped — Playwright legitimately spawns 5-10 Chrome PIDs
+- Non-critical Chrome kills (WARN, ACCEL, Stage 2-3) are deferred — callers fall through to helper kills or cgroup throttle/reclaim
+- EMERGENCY and Stage 4 **always** kill Chrome regardless — genuine OOM must be prevented
+
+**Before launching Playwright automation:**
+1. Check memory status: `/memwatchdog status`
+2. If RSS is already above 3.0 GB, consider applying the playwright profile: `/memwatchdog tune playwright`
+3. Close any idle Chrome browsers from previous sessions
+
+**If the watchdog kills Playwright Chrome during automation:**
+- This only happens at EMERGENCY level (≥3.8 GB RSS or ≤15% free memory)
+- Consider: closing other VS Code windows, reducing open editor tabs, or restarting the Extension Host to reclaim memory before retrying
 
 ## Key Repo References
 
