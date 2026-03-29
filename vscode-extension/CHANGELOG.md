@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.13] — 2026-03-29
+
+### Fixed
+- **Daemon downgrade protection was dead code** ([#112](https://github.com/chf3198/crostini-mem-watchdog/issues/112)) — `watchdogVersion()` regex expected `^WATCHDOG_VERSION=` but the daemon uses `export WATCHDOG_VERSION=`. The regex never matched, both versions returned `0`, and the comparison `0 > 0` always failed — allowing the extension to overwrite a newer daemon with an older bundled version on every activation. This caused the second Playwright-fight-loop crash (2026-03-29 00:45:34): the Playwright-awareness fix (v20260329.1) was deployed at 00:22:55, but the frankspressurewashing window's extension downgraded it to v20260326.5 at 00:33:48.
+- **Daemon bundle updated to v20260329.1** — includes Playwright-awareness (`playwright_is_active()`, `check_chrome_cap()` skip, `kill_browsers()` deferral at non-critical severity).
+
+### Tests
+- JS unit tests: 105 → **106 passing** (+1 new export-prefix downgrade protection test)
+- Existing downgrade and MIN_SAFE tests updated to use real daemon format (`export WATCHDOG_VERSION=...`)
+
 ## [0.3.12] — 2026-03-27
 
 ### Notes
