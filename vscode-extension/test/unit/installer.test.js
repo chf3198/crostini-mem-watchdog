@@ -170,8 +170,9 @@ describe('installOrUpgrade — hash comparison paths', () => {
     });
 
     test('installed daemon newer than bundled: skips downgrade and stays current', async (t) => {
-        const BUNDLED_OLDER = '#!/usr/bin/env bash\nWATCHDOG_VERSION=20260313.1\n';
-        const INSTALLED_NEWER = '#!/usr/bin/env bash\nWATCHDOG_VERSION=20260313.2\n';
+        // Use 'export WATCHDOG_VERSION=...' to match real daemon format
+        const BUNDLED_OLDER = '#!/usr/bin/env bash\nexport WATCHDOG_VERSION=20260313.1\n';
+        const INSTALLED_NEWER = '#!/usr/bin/env bash\nexport WATCHDOG_VERSION=20260313.2\n';
         const olderHash = crypto.createHash('sha256').update(BUNDLED_OLDER).digest('hex');
 
         t.mock.method(fs, 'existsSync', (p) => {
@@ -203,7 +204,8 @@ describe('installOrUpgrade — hash comparison paths', () => {
         // Scenario: bundled daemon is old (below MIN_SAFE) AND installed is also
         // old — the hashes match (same file), so installer returns 'current' but
         // _warnIfOutdated fires because both are below MIN_SAFE.
-        const OLD_DAEMON = '#!/usr/bin/env bash\nWATCHDOG_VERSION=20260316.1\n';
+        // Use 'export WATCHDOG_VERSION=...' to match real daemon format
+        const OLD_DAEMON = '#!/usr/bin/env bash\nexport WATCHDOG_VERSION=20260316.1\n';
         const oldHash = crypto.createHash('sha256').update(OLD_DAEMON).digest('hex');
 
         t.mock.method(fs, 'existsSync', () => true);
@@ -226,5 +228,31 @@ describe('installOrUpgrade — hash comparison paths', () => {
             'warning should mention critical bugs');
         assert.ok(mockWindow._warnMessages[0].includes('20260316.1'),
             'warning should mention the outdated version');
+    });
+
+    test('version regex handles export prefix (real daemon format)', async (t) => {
+        // This is the REAL daemon format — 'export WATCHDOG_VERSION=...'
+        // The regex must handle the 'export' prefix to prevent downgrades.
+        const BUNDLED_OLDER = '#!/usr/bin/env bash\nexport WATCHDOG_VERSION=20260326.5   # old\n';
+        const INSTALLED_NEWER = '#!/usr/bin/env bash\nexport WATCHDOG_VERSION=20260329.1   # new\n';
+        const olderHash = crypto.createHash('sha256').update(BUNDLED_OLDER).digest('hex');
+
+        t.mock.method(fs, 'existsSync', () => true);
+        t.mock.method(fs, 'readFileSync', (p) => {
+            if (p === '/fake/ext/resources/mem-watchdog.sh') { return BUNDLED_OLDER; }
+            if (typeof p === 'string' && p.includes('.local/bin/mem-watchdog.sh')) { return INSTALLED_NEWER; }
+            throw new Error(`unexpected readFileSync: ${p}`);
+        });
+
+        // File writes indicate downgrade — must NOT happen
+        t.mock.method(fs, 'mkdirSync', () => { throw new Error('should not mkdir on downgrade skip'); });
+        t.mock.method(fs, 'copyFileSync', () => { throw new Error('should not copy files on downgrade skip'); });
+        t.mock.method(fs, 'chmodSync', () => { throw new Error('should not chmod on downgrade skip'); });
+
+        const ctx = makeContext(olderHash);
+        const result = await installOrUpgrade(ctx);
+
+        assert.equal(result, 'current',
+            'must skip downgrade when installed (export WATCHDOG_VERSION=20260329.1) > bundled (export WATCHDOG_VERSION=20260326.5)');
     });
 });

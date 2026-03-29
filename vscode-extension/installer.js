@@ -47,7 +47,7 @@ function sha256(filePath) {
 function watchdogVersion(filePath) {
     try {
         const src = fs.readFileSync(filePath, 'utf8');
-        const m = src.match(/^WATCHDOG_VERSION=([0-9]+(?:\.[0-9]+)?)/m);
+        const m = src.match(/^(?:export\s+)?WATCHDOG_VERSION=([0-9]+(?:\.[0-9]+)?)/m);
         return m ? Number(m[1]) : 0;
     } catch (_) {
         return 0;

@@ -9,7 +9,7 @@
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ChromeOS%20Crostini-4285f4)](https://chromeos.dev/en/linux)
 [![Tests](https://img.shields.io/badge/bash-18%2F18-brightgreen)](tests/test-watchdog.sh)
-[![Tests](https://img.shields.io/badge/js-105%2F105-brightgreen)](vscode-extension/package.json)
+[![Tests](https://img.shields.io/badge/js-106%2F106-brightgreen)](vscode-extension/package.json)
 
 _`earlyoom` hard-crashes on Crostini (exit 104, every 3 seconds, zero protection). This replaces it with a VS Code-aware watchdog that kills Chrome before the kernel OOM-kills VS Code._
 
@@ -166,7 +166,7 @@ All 4 gates must pass before any change is published:
 
 ```bash
 bash tests/test-watchdog.sh              # 18 bash tests (~3 s) — service, OOM scores, PSI, SwapFree safety, SIGTERM
-cd vscode-extension && npm test    # 105 JS unit tests (~1 s) — extension state machine, activation singleton, pileup guard, utils
+cd vscode-extension && npm test    # 106 JS unit tests (~1 s) — extension state machine, activation singleton, pileup guard, utils
 bash -n mem-watchdog.sh            # bash syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh
 ```
