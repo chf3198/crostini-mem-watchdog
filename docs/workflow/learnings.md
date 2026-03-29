@@ -20,6 +20,34 @@
 
 ---
 
+### 2026-03-29 — Installer downgrade: watchdogVersion() regex never matched real daemon format
+
+**Context**: VS Code crashed 3 times (non-OOM) at 00:45:34 while the frankspressurewashing Copilot Agent resumed work. The Playwright-awareness fix (v20260329.1, PR #110) had been deployed just 23 minutes earlier. Journal showed CHROME-EXCESS: 11 PIDs → SIGKILL 8 with zero "Playwright session active — deferring" messages — the fix was completely absent from the running daemon.
+
+**Discovery**: The installed daemon was v20260326.5, not v20260329.1. The `watchdogVersion()` function in `installer.js` used the regex `^WATCHDOG_VERSION=([0-9]+(?:\.[0-9]+)?)` to extract the version number. But the daemon has **always** declared its version as `export WATCHDOG_VERSION=20260329.1` — the line starts with `export `, not `WATCHDOG_VERSION=`. The regex never matched. Both `watchdogVersion(bundledSh)` and `watchdogVersion(installedScript)` returned `0`. The downgrade guard `0 > 0 → false` was dead code.
+
+Timeline:
+1. 00:22:55 — v20260329.1 deployed (PID 26062) with Playwright-awareness fix
+2. 00:33:43 — frankspressurewashing VS Code window opened
+3. 00:33:48 — Extension v0.3.12 `activate()` → installer saw hash mismatch → version check returned `0 > 0 = false` → overwrote v20260329.1 with bundled v20260326.5 → restarted daemon (PID 17677)
+4. 00:45:34 — Old daemon (no `playwright_is_active()`) fired CHROME-EXCESS: 11 PIDs → SIGKILL 8 → fight loop → 3 `kill_vscode_main` events
+
+The existing unit test for "installed daemon newer than bundled: skips downgrade and stays current" used `WATCHDOG_VERSION=20260313.2` **without** the `export` prefix — matching the broken regex. The test passed but didn't test the real daemon format.
+
+**Fixes applied (ext v0.3.13)**:
+- `watchdogVersion()` regex changed to `^(?:export\s+)?WATCHDOG_VERSION=` — handles both formats
+- Existing downgrade test updated to use real daemon format (`export WATCHDOG_VERSION=...`)
+- New explicit test for the export-prefix downgrade scenario
+- Daemon v20260329.1 bundled into the extension and published to Marketplace
+
+**Application**:
+- Unit tests for regex-based parsers must use **real-world input**, not simplified versions. The test's `WATCHDOG_VERSION=20260313.2` matched the regex but didn't represent the actual daemon format. A test that doesn't test the real format proves nothing.
+- Version comparison guards that always return the same value (both sides 0) are effectively dead code. Add a log or assertion when both versions are 0 — it means the regex failed.
+- The `_warnIfOutdated()` MIN_SAFE check was also dead: it received `version=0` for all files, and `0 < MIN_SAFE` is meaningless. Both the downgrade guard and the safety warning depended on the same broken parser.
+- Every VS Code window opening runs `activate()` → `installOrUpgrade()`. A broken downgrade guard means EVERY window activation can revert daemon hotfixes. The blast radius is proportional to the number of open VS Code windows.
+
+---
+
 ### 2026-03-29 — CHROME-EXCESS cap and non-critical Chrome kills must be Playwright-aware
 
 **Context**: VS Code crashed 6 times in 14 minutes while a Copilot AI Agent used Playwright MCP for Claude Vision screenshots on the frankspressurewashing repo. Journal showed 12 CHROME-EXCESS events, ~61 Chrome SIGKILLs, 2 Playwright node SIGTERMs, 15 ACCEL events, 6 `kill_vscode_main` events. dmesg was clean — no kernel OOM. All damage was self-inflicted by the watchdog.
