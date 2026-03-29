@@ -20,6 +20,29 @@
 
 ---
 
+### 2026-03-29 — CHROME-EXCESS cap and non-critical Chrome kills must be Playwright-aware
+
+**Context**: VS Code crashed 6 times in 14 minutes while a Copilot AI Agent used Playwright MCP for Claude Vision screenshots on the frankspressurewashing repo. Journal showed 12 CHROME-EXCESS events, ~61 Chrome SIGKILLs, 2 Playwright node SIGTERMs, 15 ACCEL events, 6 `kill_vscode_main` events. dmesg was clean — no kernel OOM. All damage was self-inflicted by the watchdog.
+
+**Discovery**: The `CHROME_COUNT_MAX=3` cap was designed for idle Chrome accumulation between Playwright sessions. But Playwright MCP legitimately spawns 5-10 Chrome PIDs per active session (main + GPU + renderer(s) + utility). The cap instantly SIGKILL'd the excess, breaking the Agent's automation. The Agent relaunched Playwright, spawning more Chrome, which the watchdog killed again — creating a constant spawn/kill fight loop. Each cycle consumed RSS for process startup overhead, spiking aggregate VS Code RSS from 2.2 GB to 4.8 GB, triggering cascading ACCEL, WARN, and EMERGENCY kills.
+
+Secondary issue: `kill_browsers()` at WARN and ACCEL severity also killed Chrome/Playwright when the Agent was actively using them. These non-critical kills were unnecessary during automation — the RSS-based thresholds were being crossed precisely because of the fight-loop churn, not because Playwright's actual memory usage was dangerous.
+
+**Fixes applied (v20260329.1)**:
+- New `playwright_is_active()` helper — `pgrep -f 'node.*playwright'` detects active sessions
+- `check_chrome_cap()`: early return when Playwright is active — the cap only applies between sessions
+- `kill_browsers()`: returns 1 at non-critical severity (WARN/ACCEL/Stage 2-3) when Playwright is active — callers fall through to helper kills or cgroup throttle/reclaim
+- EMERGENCY and Stage 4: always kill Chrome regardless (safety net — genuine OOM must be prevented)
+- Copilot skill (SKILL.md) updated with Playwright awareness section and pre-launch guidance
+
+**Application**:
+- Any kill gate that targets Chrome must ask: "Is Chrome currently being used for automation?" The answer changes the correct response from "kill" to "defer to alternatives."
+- The daemon's existing `TIER_DISPOSABLE_PATTERN_AUX` (`node.*playwright`) already detected Playwright for OOM scoring — it just wasn't used as a kill-deferral gate. New kill paths should always check for Playwright awareness.
+- When the watchdog itself causes the RSS spike (via constant process spawn/kill churn), it amplifies the very pressure it's trying to relieve. Breaking the fight loop is more effective than tuning thresholds.
+- Count-based caps (CHROME_COUNT_MAX) are inappropriate during active automation where the count is legitimately high. RSS-based and pressure-based thresholds are the correct intervention path.
+
+---
+
 ### 2026-03-27 — Post-merge governance and docs-drift must be explicit checklist items, not assumed
 
 **Context**: After merging PRs #104 and #106 (repo structure cleanup — moving shell scripts to `tests/` and `scripts/`), the agent declared the task complete without running the post-merge governance checklist: CHANGELOG review, docs drift scan, `repo-profile-governance` audit, or learnings entry.

@@ -51,12 +51,15 @@ vscode-extension/
 | Condition | Action |
 |---|---|
 | `MemAvailable ≤ 15%` | `SIGKILL` Chrome/Playwright |
-| `MemAvailable ≤ 25%` | `SIGTERM` Chrome/Playwright |
-| PSI `full avg10 > 25%` | `SIGTERM` Chrome/Playwright |
-| VS Code RSS ≥ `VSCODE_RSS_EMERG_KB` (3.8 GB) | `SIGKILL` Chrome; if no Chrome → `kill_vscode_main()` |
-| VS Code RSS ≥ `VSCODE_RSS_WARN_KB` (3.4 GB) | `SIGTERM` Chrome + desktop alert; if no Chrome → `kill_top_vscode_helper()` (Shared Process, File Watcher, Network Service ≈300 MB); if no candidate → cgroup throttle/reclaim, defer to EMERGENCY |
-| RSS delta ≥ `RSS_ACCEL_KB` (300 MB/cycle) **AND** `vscode_rss ≥ eff_warn` | `kill_top_vscode_helper()` or `kill_browsers(TERM)` |
+| `MemAvailable ≤ 25%` | `SIGTERM` Chrome/Playwright (deferred if Playwright active) |
+| PSI `full avg10 > 25%` | `SIGTERM` Chrome/Playwright (deferred if Playwright active) |
+| VS Code RSS ≥ `VSCODE_RSS_EMERG_KB` (3.8 GB) | `SIGKILL` Chrome (always, even during Playwright); if no Chrome → `kill_vscode_main()` |
+| VS Code RSS ≥ `VSCODE_RSS_WARN_KB` (3.4 GB) | `SIGTERM` Chrome (deferred if Playwright active) + desktop alert; if no Chrome or deferred → `kill_top_vscode_helper()` (Shared Process, File Watcher, Network Service ≈300 MB); if no candidate → cgroup throttle/reclaim, defer to EMERGENCY |
+| RSS delta ≥ `RSS_ACCEL_KB` (300 MB/cycle) **AND** `vscode_rss ≥ eff_warn` | `kill_browsers(TERM)` (deferred if Playwright active) or `kill_top_vscode_helper()` |
 | `RSS_RUNAWAY_STREAK=3` consecutive ACCEL cycles above `RSS_RUNAWAY_MIN_KB` (2.6 GB) | Circuit-breaker: `kill_vscode_main()` |
+| Chrome PIDs > `CHROME_COUNT_MAX` (3) | SIGKILL oldest excess (skipped when Playwright active) |
+
+**Playwright awareness** (Issue #109, v20260329.1): `playwright_is_active()` detects active sessions via `pgrep -f "$TIER_DISPOSABLE_PATTERN_AUX"` (`node.*playwright`). When active, `check_chrome_cap()` is skipped (Playwright legitimately spawns 5-10 Chrome PIDs) and `kill_browsers()` returns 1 at non-critical severity (WARN/ACCEL/Stage 2-3) — callers fall through to helper kills or cgroup throttle. EMERGENCY and Stage 4 always kill Chrome regardless (safety net).
 
 **ACCEL gate (critical)**: The `vscode_rss >= eff_warn` guard on the RSS velocity check is non-negotiable. Without it, V8 JIT compilation during startup legitimately spikes 300–900 MB/cycle at 1–2 GB total RSS, causing the watchdog to kill the Extension Host in a restart loop. Confirmed 2026-03-16: "Extension host terminated unexpectedly 3 times."
 
