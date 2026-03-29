@@ -84,7 +84,7 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
 bash tests/test-watchdog.sh                                                          # 18 bash tests, ~3s
 bash -n mem-watchdog.sh                                                        # syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh
-cd vscode-extension && npm test                                                # 105 JS unit tests, ~1s
+cd vscode-extension && npm test                                                # 106 JS unit tests, ~1s
 bash scripts/docs-integrity-check.sh                                           # docs drift check
 ```
 
@@ -97,7 +97,7 @@ bash scripts/docs-integrity-check.sh                                           #
 ```bash
 cd vscode-extension
 npm run build              # populate resources/ for dev (gitignored; required before vsce package)
-npm test                   # 105 unit tests via node:test (~1s)
+npm test                   # 106 unit tests via node:test (~1s)
 npm run test:coverage      # + c8 V8 lcov output
 npm run test:stress        # pileup guard + event-loop lag + heap scenarios
 npx vsce package           # → mem-watchdog-status-x.y.z.vsix
