@@ -68,7 +68,7 @@ STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260327.1   # 2026-03-27 v1: burst gate raised from STARTUP_BURST_RSS_KB to eff_warn (#99)
+export WATCHDOG_VERSION=20260329.1   # 2026-03-29 v1: Playwright-awareness — skip CHROME-EXCESS + defer non-critical Chrome kills (#109)
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -446,6 +446,15 @@ kill_browsers() {
   local signal="$1"   # TERM or KILL
   local reason="$2"
   local mode="${3:-normal}" # normal|critical
+
+  # Issue #109: When Playwright is active and the severity is non-critical,
+  # refuse to kill Chrome — the Copilot Agent needs it for automation.
+  # Callers at WARN/ACCEL/Stage 2-3 fall through to helper kills or cgroup.
+  # EMERGENCY/Stage 4 pass mode="critical" and bypass this guard.
+  if [[ "$mode" != "critical" ]] && playwright_is_active; then
+    log "  (Playwright session active — deferring Chrome kill; severity=${mode})"
+    return 1
+  fi
 
   action_budget_allows "$mode" || return 1
 
@@ -842,9 +851,26 @@ check_restart_loop() {
   fi
 }
 
+# ── Playwright session detection (Issue #109) ────────────────────────────────
+# Returns 0 (true) if a Playwright automation process is running.
+# When active, Chrome processes are being used for Copilot Agent work —
+# the CHROME-EXCESS cap and non-critical kill_browsers calls must defer.
+# EMERGENCY/Stage 4 paths still kill Chrome regardless (safety net).
+playwright_is_active() {
+  pgrep -f "$TIER_DISPOSABLE_PATTERN_AUX" &>/dev/null
+}
+
 # ── Chrome process count cap (Issue #26) ─────────────────────────────────────
 # Count Chrome/Chromium PIDs. SIGKILL oldest processes above CHROME_COUNT_MAX.
+# Skipped when Playwright is active — a single Playwright session legitimately
+# spawns 5-10 Chrome PIDs (main + GPU + renderer(s) + utility). The cap was
+# designed for idle Chrome accumulation between sessions, not active automation.
 check_chrome_cap() {
+  # Issue #109: Playwright needs all its Chrome processes for automation.
+  # The RSS/pressure paths still protect against genuine memory emergencies.
+  if playwright_is_active; then
+    return
+  fi
   local chrome_pids=()
   mapfile -t chrome_pids < <(pgrep -f "$TIER_DISPOSABLE_PATTERN" 2>/dev/null | sort -n)
   local count=${#chrome_pids[@]}
@@ -1287,7 +1313,13 @@ while true; do
         (( vscode_rss >= eff_emerg )) && accel_mode="emerg"
         kill_top_vscode_helper "RSS acceleration: +${_rss_delta} kB/cycle (${vscode_rss} kB total)" "$accel_mode"
       else
-        kill_browsers "TERM" "RSS acceleration: +${_rss_delta} kB/cycle (${vscode_rss} kB total)"
+        # Issue #109: kill_browsers returns 1 when Playwright is active (non-critical).
+        # Fall through to helper kill / cgroup when Chrome kill is deferred.
+        if ! kill_browsers "TERM" "RSS acceleration: +${_rss_delta} kB/cycle (${vscode_rss} kB total)"; then
+          accel_mode="normal"
+          (( vscode_rss >= eff_emerg )) && accel_mode="emerg"
+          kill_top_vscode_helper "RSS acceleration (Chrome deferred): +${_rss_delta} kB/cycle (${vscode_rss} kB total)" "$accel_mode"
+        fi
       fi
     fi
   else
@@ -1356,8 +1388,23 @@ while true; do
       notify_desktop "warn" "⚠️ VS Code Memory High" \
         "VS Code RSS: $(( vscode_rss / 1024 )) MB — terminating Chrome.\nConsider: Developer: Restart Extension Host"
       # 2026-03-25 crash fix: check chrome_running BEFORE calling kill_browsers.
+      # Issue #109: when kill_browsers returns 1 (Playwright active), fall through
+      # to helper kill / cgroup instead of leaving RSS unaddressed.
       if [[ -n "$chrome_running" ]]; then
-        kill_browsers "TERM" "VS Code RSS high: ${vscode_rss} kB (sustained ${_hyst_warn_count} polls)"
+        if ! kill_browsers "TERM" "VS Code RSS high: ${vscode_rss} kB (sustained ${_hyst_warn_count} polls)"; then
+          # kill_browsers refused (e.g., Playwright active) — try helper kill or cgroup
+          if ! kill_top_vscode_helper "VS Code RSS warn: Chrome deferred (${vscode_rss} kB)" "normal"; then
+            if [[ -n "$_cgroup_mem_path" ]]; then
+              if ! $_soft_limit_active; then
+                log "WARN fallback: Chrome deferred, no candidate — activating cgroup throttle"
+                cgroup_throttle
+              fi
+              cgroup_reclaim
+            else
+              log "WARN fallback: Chrome deferred, no candidate, no cgroup — deferring to EMERGENCY"
+            fi
+          fi
+        fi
       else
         if ! kill_top_vscode_helper "VS Code RSS warn: no Chrome to SIGTERM (${vscode_rss} kB)" "normal"; then
           # Do NOT escalate to kill_extension_host at WARN level.
@@ -1432,7 +1479,9 @@ while true; do
           incr_counter _low_mem_term_events
           notify_desktop "warn" "⚠️ Memory Pressure Stage 2: ${pct}% free" \
             "Throttling memory + terminating Chrome. PSI some=$(( psi_some_x100 / 100 )).$(( psi_some_x100 % 100 ))%"
-          kill_browsers "TERM" "Stage 2 throttle: pct=${pct}% psi_some=${psi_some_x100}"
+          # Issue #109: if kill_browsers defers (Playwright active), cgroup throttle
+          # above is already applied — no further action needed at Stage 2.
+          kill_browsers "TERM" "Stage 2 throttle: pct=${pct}% psi_some=${psi_some_x100}" || true
         fi
       fi
       ;;
@@ -1446,7 +1495,13 @@ while true; do
         notify_desktop "warn" "⚠️ Memory Pressure Stage 3: ${pct}% free" \
           "Reclaiming pages + terminating Chrome. PSI full=$(( psi_x100 / 100 )).$(( psi_x100 % 100 ))%"
         if [[ -n "$chrome_running" ]]; then
-          kill_browsers "TERM" "Stage 3 reclaim: pct=${pct}% psi_full=${psi_x100}"
+          # Issue #109: if kill_browsers defers (Playwright active), fall through
+          # to helper kill just like the no-Chrome path.
+          if ! kill_browsers "TERM" "Stage 3 reclaim: pct=${pct}% psi_full=${psi_x100}"; then
+            if ! kill_top_vscode_helper "Stage 3: Chrome deferred (pct=${pct}%, psi_full=${psi_x100})" "normal"; then
+              log "Stage 3 fallback: Chrome deferred, no helper candidate — deferring to Stage 4/EMERGENCY"
+            fi
+          fi
         else
           if ! kill_top_vscode_helper "Stage 3: no Chrome (pct=${pct}%, psi_full=${psi_x100})" "normal"; then
             # Do NOT escalate to kill_extension_host at Stage 3.
