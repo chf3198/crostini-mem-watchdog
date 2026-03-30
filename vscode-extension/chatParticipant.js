@@ -3,6 +3,7 @@
 const vscode = require('vscode');
 
 const commands = require('./commands');
+const optimizer = require('./optimizer');
 const { readMeminfo, readPsi, sh } = require('./utils');
 
 // ── Chat API detection ────────────────────────────────────────────────────────
@@ -135,6 +136,22 @@ async function requestHandler(request, _context, stream) {
         return { metadata: { command } };
     }
 
+    if (command === 'optimize') {
+        const cfg = vscode.workspace.getConfiguration();
+        const settingsAudit = optimizer.auditSettings(cfg);
+        const argvAudit     = optimizer.auditArgv();
+        const report        = optimizer.renderReport(settingsAudit, argvAudit);
+
+        stream.markdown(report);
+
+        const totalMissing = settingsAudit.missing.length + argvAudit.missing.length;
+        if (totalMissing > 0) {
+            stream.button({ command: 'memWatchdog.optimizeMemory', title: 'Apply Optimizations' });
+        }
+        stream.button({ command: 'memWatchdog.showDashboard', title: 'Open Dashboard' });
+        return { metadata: { command } };
+    }
+
     // Unrecognised command → default to status
     stream.markdown(await renderStatus());
     return { metadata: { command: 'status' } };
@@ -157,6 +174,7 @@ function registerChatParticipant(context) {
                 return [
                     { prompt: '/memwatchdog logs', label: 'Show recent logs' },
                     { prompt: '/memwatchdog tune conservative', label: 'Apply conservative profile' },
+                    { prompt: '/memwatchdog optimize', label: 'Audit VS Code memory settings' },
                 ];
             }
             if (last === 'logs') {
@@ -165,9 +183,15 @@ function registerChatParticipant(context) {
                     { prompt: '/memwatchdog act restart service', label: 'Restart service' },
                 ];
             }
+            if (last === 'optimize') {
+                return [
+                    { prompt: '/memwatchdog status', label: 'Show status' },
+                    { prompt: '/memwatchdog tune balanced', label: 'Apply balanced profile' },
+                ];
+            }
             return [
                 { prompt: '/memwatchdog status', label: 'Show status' },
-                { prompt: '/memwatchdog tune balanced', label: 'Apply balanced profile' },
+                { prompt: '/memwatchdog optimize', label: 'Audit VS Code memory settings' },
             ];
         },
     };
