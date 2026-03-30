@@ -14,12 +14,12 @@ function hasChatApi() {
 }
 
 // ── Tuning profiles ───────────────────────────────────────────────────────────
-// Values are MB for RSS thresholds, percent for MemAvailable thresholds.
-// Aligned with daemon defaults (v20260326.5): warn=3400, emerg=3800.
+// Values are percent for MemAvailable thresholds (stage triggers).
+// Aligned with daemon defaults (v20260330.1): MemAvail-primary, no RSS triggers.
 const PROFILES = {
-    balanced:     { warn: 3400, emerg: 3800, sigterm: 25, sigkill: 15 },
-    conservative: { warn: 3000, emerg: 3400, sigterm: 28, sigkill: 18 },
-    playwright:   { warn: 3800, emerg: 4200, sigterm: 22, sigkill: 12 },
+    balanced:     { sigterm: 25, sigkill: 15 },
+    conservative: { sigterm: 28, sigkill: 18 },
+    playwright:   { sigterm: 22, sigkill: 12 },
 };
 
 function detectProfile(prompt = '') {
@@ -35,8 +35,6 @@ async function applyProfile(profile) {
     const next = PROFILES[profile];
     if (!next) { return false; }
 
-    await cfg.update('vscodeRssWarnMB', next.warn, vscode.ConfigurationTarget.Global);
-    await cfg.update('vscodeRssEmergencyMB', next.emerg, vscode.ConfigurationTarget.Global);
     await cfg.update('sigtermThresholdPct', next.sigterm, vscode.ConfigurationTarget.Global);
     await cfg.update('sigkillThresholdPct', next.sigkill, vscode.ConfigurationTarget.Global);
     return true;

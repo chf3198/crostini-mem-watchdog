@@ -122,16 +122,14 @@ describe('chatParticipant — PROFILES', () => {
         assert.deepEqual(Object.keys(PROFILES).sort(), ['balanced', 'conservative', 'playwright']);
         for (const name of Object.keys(PROFILES)) {
             const p = PROFILES[name];
-            assert.equal(typeof p.warn, 'number');
-            assert.equal(typeof p.emerg, 'number');
             assert.equal(typeof p.sigterm, 'number');
             assert.equal(typeof p.sigkill, 'number');
         }
     });
 
     test('balanced profile matches daemon defaults', () => {
-        assert.equal(PROFILES.balanced.warn, 3400);
-        assert.equal(PROFILES.balanced.emerg, 3800);
+        assert.equal(PROFILES.balanced.sigterm, 25);
+        assert.equal(PROFILES.balanced.sigkill, 15);
     });
 });
 
@@ -141,11 +139,11 @@ describe('chatParticipant — applyProfile()', () => {
     test('applies balanced profile settings', async () => {
         const ok = await _test.applyProfile('balanced');
         assert.equal(ok, true);
-        assert.equal(_configUpdates.length, 4);
-        assert.equal(_configUpdates[0].key, 'vscodeRssWarnMB');
-        assert.equal(_configUpdates[0].value, 3400);
-        assert.equal(_configUpdates[1].key, 'vscodeRssEmergencyMB');
-        assert.equal(_configUpdates[1].value, 3800);
+        assert.equal(_configUpdates.length, 2);
+        assert.equal(_configUpdates[0].key, 'sigtermThresholdPct');
+        assert.equal(_configUpdates[0].value, 25);
+        assert.equal(_configUpdates[1].key, 'sigkillThresholdPct');
+        assert.equal(_configUpdates[1].value, 15);
     });
 
     test('returns false for unknown profile', async () => {
@@ -232,7 +230,7 @@ describe('chatParticipant — requestHandler()', () => {
         );
         assert.equal(result.metadata.command, 'tune');
         assert.ok(stream._out.markdowns.some(m => m.includes('conservative')));
-        assert.equal(_configUpdates.length, 4);
+        assert.equal(_configUpdates.length, 2);
     });
 
     test('unknown command defaults to status', async () => {
