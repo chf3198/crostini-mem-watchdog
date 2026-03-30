@@ -241,13 +241,30 @@ else
   FAIL "Language-server exclusion regex missing expected protections"
 fi
 
-# ── TEST 15: Startup burst fallback does not kill VS Code main process ───────
+# ── TEST 15: Outward-facing kill policy — never kills VS Code ────────────────
 tee_log ""
-tee_log "── Test 15: Startup burst fallback is non-destructive"
-if grep -q 'BURST: no safe helper candidate available' "$WATCHDOG"; then
-  PASS "Startup burst safe-skip fallback present"
+tee_log "── Test 15: Outward-facing kill policy (no kill_vscode_main or kill_extension_host)"
+policy_ok=true
+if grep -q 'kill_vscode_main' "$WATCHDOG"; then
+  tee_log "    DANGER: kill_vscode_main function still exists in daemon"
+  policy_ok=false
+fi
+if grep -q 'kill_extension_host' "$WATCHDOG"; then
+  tee_log "    DANGER: kill_extension_host function still exists in daemon"
+  policy_ok=false
+fi
+if ! grep -q 'kill_nonessential_apps' "$WATCHDOG"; then
+  tee_log "    Missing kill_nonessential_apps function"
+  policy_ok=false
+fi
+if ! grep -q 'deferring to kernel OOM' "$WATCHDOG"; then
+  tee_log "    Missing kernel OOM deferral in Stage 4"
+  policy_ok=false
+fi
+if $policy_ok; then
+  PASS "Outward-facing kill policy: no VS Code kills, kernel OOM deferral present"
 else
-  FAIL "Startup burst safe-skip fallback missing"
+  FAIL "Kill policy still contains VS Code self-destruction paths"
 fi
 
 # ── TEST 16: Process classification tier constants and logging (Issue #6) ────

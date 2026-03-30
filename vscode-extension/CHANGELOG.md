@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.14] — 2026-03-30
+
+### Changed
+- **Outward-facing kill policy — never kill VS Code** ([#117](https://github.com/chf3198/crostini-mem-watchdog/issues/117)) — critical analysis revealed 0 kernel OOM kills ever vs 17 watchdog-inflicted VS Code kills, with RSS overcounting by 26% (shared Electron pages). The daemon now exclusively targets Chrome, Playwright, and non-essential apps. Stage 4 defers to the kernel OOM killer instead of calling `kill_vscode_main()`.
+- **Removed VS Code RSS trigger system** — `kill_vscode_main()`, `kill_extension_host()`, EMERGENCY/WARN/ACCEL/BURST standalone RSS triggers, and all related state variables removed. MemAvailable percentage + PSI pressure are now the sole intervention triggers.
+- **Extension settings simplified** — removed `vscodeRssWarnMB` and `vscodeRssEmergencyMB` settings. Config writes 3 variables (SIGTERM/SIGKILL thresholds + PSI) instead of 5.
+- **Chat tuning profiles simplified** — profiles now carry `sigterm`/`sigkill` only (no `warn`/`emerg`).
+- **Daemon bundle updated to v20260330.1**
+
+### Tests
+- JS unit tests: 106 → **98 passing** (RSS-related test blocks removed, remaining tests updated)
+- New bash Test 15: "Outward-facing kill policy" validates no kill_vscode_main, no kill_extension_host, kernel OOM deferral present
+
 ## [0.3.13] — 2026-03-29
 
 ### Fixed
