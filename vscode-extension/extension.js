@@ -213,6 +213,7 @@ async function activate(context) {
         vscode.commands.registerCommand('memWatchdog.preflightCheck', commands.preflightCheck),
         vscode.commands.registerCommand('memWatchdog.killChrome',     commands.killChrome),
         vscode.commands.registerCommand('memWatchdog.restartService', commands.restartService),
+        vscode.commands.registerCommand('memWatchdog.optimizeMemory', commands.optimizeMemory),
         { dispose: commands.dispose },
     );
 

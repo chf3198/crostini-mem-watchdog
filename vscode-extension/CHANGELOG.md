@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.15] — 2026-03-30
+
+### Added
+- **Memory optimizer command** — new `Mem Watchdog: Optimize VS Code for Low Memory` command audits `settings.json` and `argv.json` against a 28-setting low-memory profile, reports what's already applied vs. missing, and applies all optimizations with one click. Biggest win: `disable-hardware-acceleration` in `argv.json` saves ~100-200 MB on Crostini (no real GPU).
+- **`/memwatchdog optimize` chat command** — same audit/apply flow available via the `@memwatchdog` chat participant.
+- **`optimizer.js` module** — new module with `SETTINGS_PROFILE` (28 settings), `ARGV_PROFILE` (2 entries), `auditSettings()`, `auditArgv()`, `applySettings()`, `applyArgv()`, and `renderReport()`. No `vscode` import dependency — receives the API as parameter.
+
+### Tests
+- JS unit tests: 98 → **128 passing** (+30 new optimizer tests covering `settingMatches`, `auditSettings`, `auditArgv`, `applyArgv`, `renderReport`, and profile completeness)
+
 ## [0.3.14] — 2026-03-30
 
 ### Changed

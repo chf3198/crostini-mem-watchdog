@@ -8,11 +8,13 @@
 //   memWatchdog.preflightCheck  — RAM / Chrome / watchdog pass-fail summary
 //   memWatchdog.killChrome      — immediate SIGTERM to all Chrome/Playwright
 //   memWatchdog.restartService  — systemctl --user restart mem-watchdog
+//   memWatchdog.optimizeMemory  — audit+apply low-memory settings profile
 // ─────────────────────────────────────────────────────────────────────────────
 'use strict';
 
 const vscode = require('vscode');
 const { readMeminfo, readPsi, sh } = require('./utils');
+const optimizer = require('./optimizer');
 
 // ── Shared output channel (created lazily) ────────────────────────────────────
 let _channel = null;
@@ -195,4 +197,113 @@ function dispose() {
     if (_channel) { _channel.dispose(); _channel = null; }
 }
 
-module.exports = { showDashboard, preflightCheck, killChrome, restartService, dispose };
+// ── Command: Optimize VS Code for Low Memory ─────────────────────────────────
+
+async function optimizeMemory() {
+    const cfg = vscode.workspace.getConfiguration();
+    const settingsAudit = optimizer.auditSettings(cfg);
+    const argvAudit     = optimizer.auditArgv();
+
+    const totalMissing = settingsAudit.missing.length + argvAudit.missing.length;
+    const totalApplied = settingsAudit.applied.length + argvAudit.applied.length;
+    const totalChecked = totalApplied + totalMissing;
+
+    if (totalMissing === 0) {
+        vscode.window.showInformationMessage(
+            `Mem Watchdog: VS Code is fully optimized — ${totalApplied}/${totalChecked} settings match the low-memory profile. ✓`
+        );
+        return;
+    }
+
+    // Build a detail string for the confirmation dialog
+    const detailLines = [];
+    for (const m of argvAudit.missing) {
+        detailLines.push(`[argv.json] ${m.key} → ${JSON.stringify(m.value)} (${m.savings})`);
+    }
+    for (const m of settingsAudit.missing) {
+        const val = typeof m.value === 'object' ? '(merge profile)' : JSON.stringify(m.value);
+        detailLines.push(`${m.key} → ${val} (${m.savings})`);
+    }
+
+    const choice = await vscode.window.showInformationMessage(
+        `Mem Watchdog: ${totalMissing} memory optimization(s) available (${totalApplied}/${totalChecked} already applied).`,
+        { detail: detailLines.join('\n'), modal: true },
+        'Apply All',
+        'Show Details'
+    );
+
+    if (choice === 'Show Details') {
+        const ch = channel();
+        ch.clear();
+        ch.show(true);
+        ch.appendLine('══════════════════════════════════════════════════════════════');
+        ch.appendLine('  Mem Watchdog — Memory Optimization Audit');
+        ch.appendLine(`  ${new Date().toLocaleString()}`);
+        ch.appendLine('══════════════════════════════════════════════════════════════');
+        ch.appendLine('');
+        ch.appendLine(`  ${totalApplied}/${totalChecked} optimizations already applied.`);
+        ch.appendLine(`  ${totalMissing} optimization(s) available:`);
+        ch.appendLine('');
+
+        if (argvAudit.missing.length > 0) {
+            ch.appendLine('  ── argv.json (requires VS Code restart) ──');
+            for (const m of argvAudit.missing) {
+                ch.appendLine(`    ${m.key}: ${JSON.stringify(m.currentValue)} → ${JSON.stringify(m.value)}`);
+                ch.appendLine(`      Savings: ${m.savings} — ${m.reason}`);
+            }
+            ch.appendLine('');
+        }
+
+        if (settingsAudit.missing.length > 0) {
+            ch.appendLine('  ── settings.json ──');
+            for (const m of settingsAudit.missing) {
+                const cur = typeof m.currentValue === 'object' ? JSON.stringify(m.currentValue) : String(m.currentValue);
+                const val = typeof m.value === 'object' ? '(merge profile keys)' : String(m.value);
+                ch.appendLine(`    ${m.key}: ${cur} → ${val}`);
+                ch.appendLine(`      Savings: ${m.savings} — ${m.reason}`);
+            }
+            ch.appendLine('');
+        }
+
+        ch.appendLine('  ── Already applied ──');
+        for (const a of [...settingsAudit.applied, ...argvAudit.applied]) {
+            ch.appendLine(`    ✓ ${a.key} (${a.savings})`);
+        }
+        ch.appendLine('');
+        ch.appendLine('══════════════════════════════════════════════════════════════');
+        return;
+    }
+
+    if (choice !== 'Apply All') { return; }
+
+    // ── Apply settings ────────────────────────────────────────────────────────
+    let settingsCount = 0;
+    let argvChanged   = false;
+
+    if (settingsAudit.missing.length > 0) {
+        settingsCount = await optimizer.applySettings(vscode, settingsAudit.missing);
+    }
+
+    if (argvAudit.missing.length > 0) {
+        argvChanged = optimizer.applyArgv(argvAudit.missing, argvAudit.argvContent);
+    }
+
+    const parts = [];
+    if (settingsCount > 0) { parts.push(`${settingsCount} settings applied`); }
+    if (argvChanged)        { parts.push('argv.json updated'); }
+
+    if (argvChanged) {
+        const restart = await vscode.window.showInformationMessage(
+            `Mem Watchdog: ${parts.join(', ')}. VS Code restart required for argv.json changes.`,
+            'Restart Now',
+            'Later'
+        );
+        if (restart === 'Restart Now') {
+            vscode.commands.executeCommand('workbench.action.reloadWindow');
+        }
+    } else if (settingsCount > 0) {
+        vscode.window.showInformationMessage(`Mem Watchdog: ${parts.join(', ')}. ✓`);
+    }
+}
+
+module.exports = { showDashboard, preflightCheck, killChrome, restartService, optimizeMemory, dispose };
