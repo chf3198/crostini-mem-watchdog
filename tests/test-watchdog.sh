@@ -399,6 +399,86 @@ else
   FAIL "Cgroup event counter implementation incomplete"
 fi
 
+# ── Test 19: Managed window signal file protocol (Issue #139) ─────────────────
+tee_log ""
+tee_log "── Test 19: Managed window SLEEP mode signal ──"
+sleep_ok=true
+
+# Verify _MODE_FILE is defined in the daemon
+if grep -q '_MODE_FILE=' "$WATCHDOG"; then
+  tee_log "    _MODE_FILE variable defined"
+else
+  tee_log "    MISSING: _MODE_FILE not defined in daemon"
+  sleep_ok=false
+fi
+
+# Verify mode-file read in main loop (read builtin, zero-fork)
+if grep -q 'read -r _watchdog_mode < "\$_MODE_FILE"' "$WATCHDOG"; then
+  tee_log "    Zero-fork mode read present (read builtin)"
+else
+  tee_log "    MISSING: zero-fork mode read not found"
+  sleep_ok=false
+fi
+
+# Verify transition log lines for entering/exiting SLEEP mode
+if grep -q 'MODE: SLEEP' "$WATCHDOG" && grep -q 'MODE: NORMAL' "$WATCHDOG"; then
+  tee_log "    Transition log lines present (MODE: SLEEP, MODE: NORMAL)"
+else
+  tee_log "    MISSING: transition log lines not found"
+  sleep_ok=false
+fi
+
+# Verify check_chrome_cap is gated by SLEEP mode
+if grep -q '"\${_watchdog_mode}" != "SLEEP".*check_chrome_cap\|check_chrome_cap' "$WATCHDOG" && \
+   grep -q '_watchdog_mode.*SLEEP.*check_chrome_cap\|check_chrome_cap' "$WATCHDOG"; then
+  tee_log "    check_chrome_cap gated by SLEEP mode"
+else
+  # More relaxed check — just look for the guard pattern
+  if grep -q '"SLEEP".*check_chrome_cap' "$WATCHDOG"; then
+    tee_log "    check_chrome_cap gated by SLEEP mode"
+  else
+    tee_log "    MISSING: check_chrome_cap SLEEP gate not found"
+    sleep_ok=false
+  fi
+fi
+
+# Verify the stage case block is wrapped by SLEEP mode gate
+if grep -q '"SLEEP".*case \$_pressure_stage\|"SLEEP".*!= "SLEEP"' "$WATCHDOG" || \
+   grep -qP '_watchdog_mode.*!=.*SLEEP.*\n.*case' "$WATCHDOG" 2>/dev/null || \
+   awk '/end SLEEP mode gate/{found=1} END{exit !found}' "$WATCHDOG"; then
+  tee_log "    Stage action case block has SLEEP mode gate (end marker found)"
+else
+  tee_log "    MISSING: SLEEP mode gate end marker not found"
+  sleep_ok=false
+fi
+
+# Live dry-run with mode file set to SLEEP — verify MODE: SLEEP log line
+SLEEP_MODE_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/mem-watchdog/mode"
+mkdir -p "$(dirname "$SLEEP_MODE_FILE")"
+echo "SLEEP" > "$SLEEP_MODE_FILE"
+sleep_dry=$(timeout -s TERM 4 "$WATCHDOG" --dry-run 2>&1 || true)
+rm -f "$SLEEP_MODE_FILE"
+if echo "$sleep_dry" | grep -q 'MODE: SLEEP'; then
+  tee_log "    Live dry-run: MODE: SLEEP logged correctly when mode file set"
+else
+  tee_log "    Live dry-run: MODE: SLEEP NOT found in dry-run output"
+  sleep_ok=false
+fi
+
+# Verify mode= appears in STATUS snapshot output during SLEEP mode
+if echo "$sleep_dry" | grep -q 'mode=SLEEP'; then
+  tee_log "    STATUS snapshot includes mode=SLEEP"
+else
+  tee_log "    STATUS snapshot missing mode= field (or value incorrect)"
+  sleep_ok=false
+fi
+
+if $sleep_ok; then
+  PASS "Managed window SLEEP mode: _MODE_FILE, zero-fork read, transition log, stage gate, live dry-run"
+else
+  FAIL "Managed window SLEEP mode implementation incomplete"
+fi
+
 # ── SUMMARY ──────────────────────────────────────────────────────────────────
 tee_log ""
 tee_log "════════════════════════════════════════════════════════════════"

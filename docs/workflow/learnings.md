@@ -916,3 +916,29 @@ Writing to `memory.limit_in_bytes` artificially constrains the hard memory limit
 - Created explicit milestone epics (#17, #18, #19) and linked them to project tracking.
 - Updated PR checklist and contributor docs to require taxonomy + milestone + label coverage for every PR.
 - Added `docs/workflow/repo-admin-playbook.md` as the canonical admin process for repository transparency.
+
+---
+
+### 2026-03-31 — systemd-run --user --scope MemoryMax is non-functional on Crostini cgroup v1
+
+**Context**: Ticket FPW #124 specified wrapping the Playwright publish script in a `systemd-run --user --scope -p MemoryMax=1500M` scope to cage Chrome's memory. Empirically tested before implementation.
+
+**Discovery**: `systemd-run --user --scope -p MemoryMax=300M -- bash -c 'sleep 5'` created a systemd unit (visible in `systemctl --user list-units --state=running`) but **zero child cgroup appeared** in `/sys/fs/cgroup/memory/user.slice/user-1000.slice/user@1000.service/`. `find /sys/fs/cgroup/memory/user.slice -name "*.scope"` returned nothing. The processes ran in the parent `user@1000.service` cgroup, uncapped.
+
+Root cause: The memory controller is not delegated to user sessions on Crostini cgroup v1. On cgroup v1, delegation requires explicit system-level configuration. The Crostini Termina VM kernel uses pure cgroup v1 with no hybrid/v2 layer (confirmed by absence of `cgroup.controllers` in the systemd hierarchy). Without delegation, `systemd-run --user` can create units for tracking purposes but cannot create child cgroups in controllers the user manager does not own.
+
+This is different from cgroup v2 systems (modern Fedora, Ubuntu 22+) where `Delegate=yes` in `user@.service` properly cascades controllers to user manager sessions.
+
+**Verified working alternative**: `sudo -n` operates passwordlessly on this system. The following sequence is empirically confirmed:
+```bash
+sudo -n mkdir -p "$CAGE_DIR"                                    # creates child cgroup
+sudo -n sh -c "echo $((1500*1024*1024)) > '$CAGE_DIR/memory.limit_in_bytes'"   # limit_in_bytes: 1572864000 ✓
+sudo -n sh -c "echo $$ > '$CAGE_DIR/cgroup.procs'"             # move PID into cage
+```
+All fork() children inherit cage membership (cgroup v1 semantics). A Playwright `executablePath` wrapper script that enters the cage before `exec`'ing Chrome is the correct implementation.
+
+**Application**:
+- Never assume `systemd-run --user --scope -p MemoryMax=` enforces memory on cgroup v1 systems. It is a no-op for memory enforcement without controller delegation.
+- Before writing any ticket that uses `systemd-run --user` for resource enforcement, verify whether the target system uses cgroup v1 or v2 and whether the memory controller is delegated.
+- The `cgroup.controllers` file in the systemd hierarchy is the discriminating check: absent = pure cgroup v1 = no user-session delegation.
+- `sudo -n` passwordless operation on this system is the correct enforcement path. The cgroup wrapper pattern (mkdir + limit + cgroup.procs + exec) is robust and follows the same pattern as `cgexec` from libcgroup but without requiring that package to be installed.

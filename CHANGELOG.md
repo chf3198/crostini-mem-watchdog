@@ -8,6 +8,17 @@ Daemon versions use `YYYYMMDD.N` (datestamp + revision).
 
 ## [Unreleased]
 
+## [20260331.1] — 2026-03-31
+
+### Added
+- **Managed window signal file protocol** ([#139](https://github.com/chf3198/crostini-mem-watchdog/issues/139)) — external callers (e.g., publish scripts) write `SLEEP` to `~/.config/mem-watchdog/mode` to defer all kills and cgroup reclaim during a protected window. The daemon continues monitoring so it resumes the instant the file is removed. Mode is read via zero-fork `read` builtin each loop; transitions log `MODE: SLEEP / MODE: NORMAL`. `check_chrome_cap` also gated in SLEEP mode. Status snapshots include `mode=` field.
+
+### Fixed
+- **PSI-only kill gate** ([Stage 2/3](https://github.com/chf3198/crostini-mem-watchdog/)) — PSI-only triggers (memory has already recovered above the stage threshold) now apply cgroup throttle/reclaim but skip process kills. After an OOM event, PSI avg10 stays elevated ~10 s while MemAvailable is already 70–80%+; killing Chrome at 70% free was wasteful. Kills only fire when `pct` is below the stage threshold.
+
+### Changed
+- Test suite expanded from 18 to 19 tests: Test 19 verifies SLEEP mode end-to-end (static checks + live dry-run with mode file).
+
 ## [20260327.1] — 2026-03-27
 
 ### Fixed

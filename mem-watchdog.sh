@@ -68,7 +68,7 @@ STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260330.1   # 2026-03-30 v1: Outward-facing kill policy — never kill VS Code; defer Stage 4 to kernel OOM
+export WATCHDOG_VERSION=20260331.1   # 2026-03-31 v1: Managed window signal file protocol (Issue #139) — SLEEP mode defers all kills
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -156,6 +156,13 @@ _WATCHDOG_CFG="${XDG_CONFIG_HOME:-${HOME}/.config}/mem-watchdog/config.sh"
 [[ -f "$_WATCHDOG_CFG" ]] && source "$_WATCHDOG_CFG"
 unset _WATCHDOG_CFG
 
+# ── Managed window signal file path (Issue #139) ───────────────────────────────
+# External callers (e.g., publish scripts) write 'SLEEP' to this file to request
+# that the watchdog defer all kill and reclaim actions during a protected window.
+# The daemon continues monitoring memory; only interventions are gated.
+# Removing the file or writing any other content restores normal operation.
+_MODE_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/mem-watchdog/mode"
+
 # ── Backward-compatible config mapping (Issue #4 transition) ─────────────
 # configWriter.js (v0.3.x) writes SIGTERM_THRESHOLD, SIGKILL_THRESHOLD,
 # PSI_THRESHOLD to the config file. Map them to stage constants so existing
@@ -229,6 +236,8 @@ _action_budget_window_start=0
 _action_budget_count=0
 _action_taken=false
 _helper_no_candidate_suppressed=0  # consecutive no-candidate results suppressed from log
+_watchdog_mode=""         # current value read from mode file: "SLEEP" or "" (normal)
+_last_logged_mode=""      # last mode written to log — prevents per-poll log spam
 
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
@@ -262,7 +271,7 @@ log_status_snapshot() {
   if (( now < _startup_mode_end )); then
     startup_left=$(( _startup_mode_end - now ))
   fi
-  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} pressure_stage=${_pressure_stage} stage_transitions=${_stage_transitions} soft_limit_active=${_soft_limit_active} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} anti_respawn_type=${_last_killed_type} action_budget_used=${_action_budget_count} cooldown_skips=${_cooldown_skips} hyst_skips=${_hysteresis_skips} recovery_confirms=${_recovery_confirmations} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events} cg_failcnt=${_cg_failcnt} cg_oom_kill=${_cg_oom_kill} cg_high=${_cg_high_events} cg_under_oom=${_cg_under_oom}"
+  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} pressure_stage=${_pressure_stage} stage_transitions=${_stage_transitions} soft_limit_active=${_soft_limit_active} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} anti_respawn_type=${_last_killed_type} action_budget_used=${_action_budget_count} cooldown_skips=${_cooldown_skips} hyst_skips=${_hysteresis_skips} recovery_confirms=${_recovery_confirmations} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events} cg_failcnt=${_cg_failcnt} cg_oom_kill=${_cg_oom_kill} cg_high=${_cg_high_events} cg_under_oom=${_cg_under_oom} mode=${_watchdog_mode:-normal}"
   _last_status_log=$now
 }
 
@@ -1144,9 +1153,25 @@ while true; do
     continue
   fi
 
+  # ── Read managed window signal file (Issue #139) ──────────────────────────
+  # Zero-fork: bash `read` builtin reads the mode file directly — no subprocess.
+  _watchdog_mode=""
+  if [[ -f "$_MODE_FILE" ]]; then
+    read -r _watchdog_mode < "$_MODE_FILE" 2>/dev/null || _watchdog_mode=""
+  fi
+  if [[ "$_watchdog_mode" == "SLEEP" && "$_last_logged_mode" != "SLEEP" ]]; then
+    log "MODE: SLEEP — managed protection window active; all kill/reclaim actions deferred"
+    _last_logged_mode="SLEEP"
+  elif [[ "$_watchdog_mode" != "SLEEP" && "$_last_logged_mode" == "SLEEP" ]]; then
+    log "MODE: NORMAL — managed protection window cleared; resuming normal operation"
+    _last_logged_mode=""
+  fi
+
   # ── Restart-loop and Chrome-cap checks ───────────────────────────────────
   check_restart_loop
-  check_chrome_cap
+  # Chrome-cap check skipped in SLEEP mode — during managed windows (e.g., a
+  # Playwright automation run), Chrome PID counts are legitimately elevated.
+  [[ "${_watchdog_mode}" != "SLEEP" ]] && check_chrome_cap
 
   # Read MemAvailable and MemTotal.
   # IMPORTANT: Never use SwapFree — Crostini kernel has historically reported
@@ -1224,6 +1249,10 @@ while true; do
   fi
 
   # ── Execute stage-specific actions ──────────────────────────────────────
+  # SLEEP mode: skip all kills and cgroup reclaim. The daemon keeps monitoring
+  # so pressure stage tracking stays current and it resumes the moment the mode
+  # file is removed or its content changes to anything other than 'SLEEP'.
+  if [[ "${_watchdog_mode}" != "SLEEP" ]]; then
   case $_pressure_stage in
     1)
       # Stage 1 — Monitor: log + Chrome oom_score_adj already managed per-loop
@@ -1237,7 +1266,13 @@ while true; do
         if ! $_soft_limit_active; then
           cgroup_throttle
         fi
-        if [[ -n "$chrome_running" ]]; then
+        # Kill gate: PSI-only triggers (pct above stage threshold) get cgroup
+        # throttle above but NO process kills.  After an OOM recovery, PSI avg10
+        # stays elevated for ~10 s while memory has already recovered to 70-80%+.
+        # Killing Chrome at 70% free wastes browser state for zero benefit.
+        if (( pct > STAGE2_MEM_PCT )); then
+          log "  Stage 2 PSI-only trigger (pct=${pct}% > ${STAGE2_MEM_PCT}%) — cgroup throttle applied, kills skipped"
+        elif [[ -n "$chrome_running" ]]; then
           incr_counter _low_mem_term_events
           notify_desktop "warn" "⚠️ Memory Pressure Stage 2: ${pct}% free" \
             "Throttling memory + terminating Chrome. PSI some=$(( psi_some_x100 / 100 )).$(( psi_some_x100 % 100 ))%"
@@ -1253,20 +1288,28 @@ while true; do
       _pressure_active=true
       if kill_cooldown_allows "normal"; then
         cgroup_reclaim
-        incr_counter _low_mem_term_events
-        notify_desktop "warn" "⚠️ Memory Pressure Stage 3: ${pct}% free" \
-          "Reclaiming pages + terminating Chrome. PSI full=$(( psi_x100 / 100 )).$(( psi_x100 % 100 ))%"
-        if [[ -n "$chrome_running" ]]; then
-          # Issue #109: if kill_browsers defers (Playwright active), fall through
-          # to helper kill just like the no-Chrome path.
-          if ! kill_browsers "TERM" "Stage 3 reclaim: pct=${pct}% psi_full=${psi_x100}"; then
-            if ! kill_top_vscode_helper "Stage 3: Chrome deferred (pct=${pct}%, psi_full=${psi_x100})"; then
-              kill_nonessential_apps "Stage 3: no candidate (pct=${pct}%, psi_full=${psi_x100})"
-            fi
-          fi
+        # Kill gate: PSI-only triggers (pct above stage threshold) get cgroup
+        # reclaim above but NO process kills.  After an OOM recovery, PSI avg10
+        # stays elevated for ~10 s while memory has already recovered to 70-80%+.
+        # Killing NetworkService (10 MB) at 83% free is harmful and pointless.
+        if (( pct > STAGE3_MEM_PCT )); then
+          log "  Stage 3 PSI-only trigger (pct=${pct}% > ${STAGE3_MEM_PCT}%) — cgroup reclaim applied, kills skipped"
         else
-          if ! kill_top_vscode_helper "Stage 3: no Chrome (pct=${pct}%, psi_full=${psi_x100})"; then
-            kill_nonessential_apps "Stage 3: no candidate, no Chrome (pct=${pct}%, psi_full=${psi_x100})"
+          incr_counter _low_mem_term_events
+          notify_desktop "warn" "⚠️ Memory Pressure Stage 3: ${pct}% free" \
+            "Reclaiming pages + terminating Chrome. PSI full=$(( psi_x100 / 100 )).$(( psi_x100 % 100 ))%"
+          if [[ -n "$chrome_running" ]]; then
+            # Issue #109: if kill_browsers defers (Playwright active), fall through
+            # to helper kill just like the no-Chrome path.
+            if ! kill_browsers "TERM" "Stage 3 reclaim: pct=${pct}% psi_full=${psi_x100}"; then
+              if ! kill_top_vscode_helper "Stage 3: Chrome deferred (pct=${pct}%, psi_full=${psi_x100})"; then
+                kill_nonessential_apps "Stage 3: no candidate (pct=${pct}%, psi_full=${psi_x100})"
+              fi
+            fi
+          else
+            if ! kill_top_vscode_helper "Stage 3: no Chrome (pct=${pct}%, psi_full=${psi_x100})"; then
+              kill_nonessential_apps "Stage 3: no candidate, no Chrome (pct=${pct}%, psi_full=${psi_x100})"
+            fi
           fi
         fi
       fi
@@ -1290,6 +1333,7 @@ while true; do
       fi
       ;;
   esac
+  fi # end SLEEP mode gate (Issue #139)
 
   # ── Recovery confirmation (Issues #4, #5) ─────────────────────────────────
   # When ALL conditions are clear: stage 0 (below all stage thresholds)
