@@ -18,3 +18,5 @@ Use repository and global customization layers together for every task:
    - Run `repo-profile-governance` to audit community health and metadata
    - Run `docs-drift-maintenance` to detect stale documentation
    - Add learnings entry if a significant discovery was made
+   - If the merge changes extension behavior, run `release-version-integrity` to
+     validate tag/manifest/changelog alignment, then publish the new version
