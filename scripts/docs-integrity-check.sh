@@ -9,6 +9,7 @@
 #   2. .github/copilot-instructions.md test count matches actual
 #   3. CHANGELOG.md has an entry for the current package.json version
 #   4. ci.yml test count comment matches actual
+#   5. installer MIN_SAFE_DAEMON_VERSION matches daemon WATCHDOG_VERSION
 #
 # Usage:
 #   bash scripts/docs-integrity-check.sh          # from repo root
@@ -86,6 +87,20 @@ if [[ -f vscode-extension/package.json && -f vscode-extension/CHANGELOG.md ]]; t
     else
         FAIL "CHANGELOG.md: no entry for v$pkg_version (current package.json version)"
     fi
+fi
+
+# ── Check 5: MIN_SAFE_DAEMON_VERSION matches daemon WATCHDOG_VERSION ───────
+daemon_version="$(grep -m1 -oP '^(?:export\s+)?WATCHDOG_VERSION=\K[0-9]+(?:\.[0-9]+)?' mem-watchdog.sh 2>/dev/null || true)"
+min_safe_version="$(grep -m1 -oP "MIN_SAFE_DAEMON_VERSION = '\K[^']+" vscode-extension/installer.js 2>/dev/null || true)"
+
+if [[ -z "$daemon_version" ]]; then
+    FAIL "mem-watchdog.sh: WATCHDOG_VERSION not found"
+elif [[ -z "$min_safe_version" ]]; then
+    FAIL "installer.js: MIN_SAFE_DAEMON_VERSION not found"
+elif [[ "$daemon_version" != "$min_safe_version" ]]; then
+    FAIL "installer.js: MIN_SAFE_DAEMON_VERSION=$min_safe_version does not match daemon WATCHDOG_VERSION=$daemon_version"
+else
+    PASS "installer.js: MIN_SAFE_DAEMON_VERSION matches daemon WATCHDOG_VERSION ($daemon_version)"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────

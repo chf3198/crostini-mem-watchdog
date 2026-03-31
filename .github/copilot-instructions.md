@@ -101,6 +101,7 @@ npm test                   # 146 unit tests via node:test (~1s)
 npm run test:coverage      # + c8 V8 lcov output
 npm run test:stress        # pileup guard + event-loop lag + heap scenarios
 npx vsce package           # → mem-watchdog-status-x.y.z.vsix
+bash scripts/release-integrity-check.sh --post-publish   # release metadata guard (tag/release/Marketplace + MIN_SAFE)
 
 bash tests/test-watchdog.sh      # 18 bash tests (repo root — REPO=$(dirname $0)/.., not scripts/)
 bash tests/test-pressure.sh      # live memory allocation tests; needs RAM < 40% free
