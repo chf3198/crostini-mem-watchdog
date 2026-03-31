@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.17] — 2026-03-31
+
+### Added
+- **SLEEP mode daemon bundle** ([#139](https://github.com/chf3198/crostini-mem-watchdog/issues/139)) — daemon updated to v20260331.1, which honours the managed-window signal file protocol: writing `SLEEP` to `~/.config/mem-watchdog/mode` defers all kills and cgroup ops until the file is removed. Required for FPW publish automation compatibility (`signalMemWatchdogSleep`/`clearMemWatchdogSleep`).
+
+### Changed
+- **`MIN_SAFE_DAEMON_VERSION` raised to `20260331.1`** — extensions with daemon < v20260331.1 installed will show a warning to upgrade. Older daemons ignore the SLEEP mode signal file and will interfere with Playwright/publish automation.
+
 ## [0.3.16] — 2026-03-30
 
 ### Added
