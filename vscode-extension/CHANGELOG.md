@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.16] — 2026-03-30
 
 ### Added
 - **V8 memory flags in optimizer** ([#124](https://github.com/chf3198/crostini-mem-watchdog/issues/124)) — `ARGV_PROFILE` `js-flags` entry now includes 4 new flags benchmarked in [#120](https://github.com/chf3198/crostini-mem-watchdog/issues/120) (53% per-isolate RSS reduction, p99 GC < 35ms): `--optimize-for-size`, `--flush-baseline-code`, `--concurrent-turbofan-max-threads=1`, `--concurrent-maglev-max-threads=1`.
