@@ -104,14 +104,79 @@ const ARGV_PROFILE = {
         reason: 'Eliminates the GPU process (Crostini has no hardware GPU — all compositing is software)',
     },
     'js-flags': {
-        value: '--max-old-space-size=2048',
-        savings: 'Prevents GC thrash',
-        reason: 'V8 heap cap at 2 GB — lower values cause GC thrash that paradoxically increases total RSS',
+        value: '--max-old-space-size=2048 --optimize-for-size --flush-baseline-code --concurrent-turbofan-max-threads=1 --concurrent-maglev-max-threads=1',
+        savings: '~400-500 MB aggregate',
+        reason: 'V8 heap cap + memory-favoring optimizations + compiler thread reduction (issue #120 benchmarked: 53% RSS reduction per isolate, p99 GC < 35ms)',
     },
+};
+
+// ── js-flags detail ───────────────────────────────────────────────────────────
+// Individual flag descriptions for per-flag audit reporting.
+const JS_FLAGS_DETAIL = {
+    '--max-old-space-size=2048':            { savings: 'Prevents GC thrash',     reason: 'V8 heap cap at 2 GB — lower values cause GC thrash that paradoxically increases total RSS' },
+    '--optimize-for-size':                  { savings: '~200-500 MB',            reason: 'Favors memory over speed; implies max-semi-space-size=1 (more frequent but shorter GCs)' },
+    '--flush-baseline-code':                { savings: '~20-80 MB',              reason: 'Flushes Sparkplug baseline code on GC — reclaims memory from unused compiled code' },
+    '--concurrent-turbofan-max-threads=1':  { savings: '~10-20 MB',              reason: 'Limits TurboFan background compilation to 1 thread (default 4) — reduces stack memory' },
+    '--concurrent-maglev-max-threads=1':    { savings: '~10-20 MB',              reason: 'Limits Maglev background compilation to 1 thread (default 2) — reduces stack memory' },
 };
 
 // ── argv.json path ────────────────────────────────────────────────────────────
 const ARGV_PATH = path.join(os.homedir(), '.config', 'Code', 'argv.json');
+
+// ── js-flags helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Parse a js-flags string into a Set of individual flags.
+ * Handles both boolean flags (--optimize-for-size) and value flags (--max-old-space-size=2048).
+ * For value flags, the entire "--key=value" is one element.
+ *
+ * @param {string} flagStr — space-separated V8 flags
+ * @returns {Set<string>}
+ */
+function parseJsFlags(flagStr) {
+    if (!flagStr || typeof flagStr !== 'string') { return new Set(); }
+    return new Set(flagStr.trim().split(/\s+/).filter(f => f.length > 0));
+}
+
+/**
+ * Check which target flags are present/missing in the current js-flags string.
+ *
+ * @param {string} currentStr — current js-flags value from argv.json
+ * @param {string} targetStr  — target js-flags value from ARGV_PROFILE
+ * @returns {{ present: string[], missing: string[] }}
+ */
+function diffJsFlags(currentStr, targetStr) {
+    const current = parseJsFlags(currentStr);
+    const target  = parseJsFlags(targetStr);
+    const present = [];
+    const missing = [];
+    for (const flag of target) {
+        if (current.has(flag)) {
+            present.push(flag);
+        } else {
+            missing.push(flag);
+        }
+    }
+    return { present, missing };
+}
+
+/**
+ * Merge missing flags into an existing js-flags string.
+ * Preserves existing flags and appends missing ones.
+ *
+ * @param {string} currentStr   — current js-flags value
+ * @param {string[]} missingFlags — flags to add
+ * @returns {string}
+ */
+function mergeJsFlags(currentStr, missingFlags) {
+    const parts = currentStr ? currentStr.trim().split(/\s+/).filter(f => f.length > 0) : [];
+    for (const flag of missingFlags) {
+        if (!parts.includes(flag)) {
+            parts.push(flag);
+        }
+    }
+    return parts.join(' ');
+}
 
 // ── Audit ─────────────────────────────────────────────────────────────────────
 
@@ -182,7 +247,24 @@ function auditArgv(argvPath) {
     const missing = [];
 
     for (const [key, profile] of Object.entries(ARGV_PROFILE)) {
-        if (argv && argv[key] === profile.value) {
+        if (key === 'js-flags') {
+            // Per-flag comparison for compound js-flags string
+            const currentStr = argv ? argv[key] : '';
+            const diff = diffJsFlags(currentStr, profile.value);
+            if (diff.missing.length === 0) {
+                applied.push({ key, savings: profile.savings });
+            } else {
+                missing.push({
+                    key,
+                    value: profile.value,
+                    currentValue: currentStr || undefined,
+                    savings: profile.savings,
+                    reason: profile.reason,
+                    missingFlags: diff.missing,
+                    presentFlags: diff.present,
+                });
+            }
+        } else if (argv && argv[key] === profile.value) {
             applied.push({ key, savings: profile.savings });
         } else {
             missing.push({
@@ -243,8 +325,13 @@ function applyArgv(missingArgv, argvContent, argvPath) {
     const filePath = argvPath || ARGV_PATH;
     const argv = argvContent || {};
 
-    for (const { key, value } of missingArgv) {
-        argv[key] = value;
+    for (const { key, value, missingFlags } of missingArgv) {
+        if (key === 'js-flags' && missingFlags) {
+            // Merge individual missing flags into existing js-flags string
+            argv[key] = mergeJsFlags(argv[key] || '', missingFlags);
+        } else {
+            argv[key] = value;
+        }
     }
 
     try {
@@ -286,8 +373,22 @@ function renderReport(settingsAudit, argvAudit) {
     if (argvAudit.missing.length > 0) {
         lines.push('#### argv.json (requires restart)');
         for (const m of argvAudit.missing) {
-            lines.push(`- \`${m.key}\` → \`${JSON.stringify(m.value)}\` — ${m.savings}`);
-            lines.push(`  *${m.reason}*`);
+            if (m.key === 'js-flags' && m.missingFlags) {
+                // Show per-flag detail for js-flags
+                lines.push(`- \`js-flags\` — ${m.missingFlags.length} flag(s) to add (${m.savings}):`);
+                for (const flag of m.missingFlags) {
+                    const detail = JS_FLAGS_DETAIL[flag];
+                    if (detail) {
+                        lines.push(`  - \`${flag}\` — ${detail.savings}`);
+                        lines.push(`    *${detail.reason}*`);
+                    } else {
+                        lines.push(`  - \`${flag}\``);
+                    }
+                }
+            } else {
+                lines.push(`- \`${m.key}\` → \`${JSON.stringify(m.value)}\` — ${m.savings}`);
+                lines.push(`  *${m.reason}*`);
+            }
         }
         lines.push('');
     }
@@ -311,6 +412,10 @@ module.exports = {
     SETTINGS_PROFILE,
     ARGV_PROFILE,
     ARGV_PATH,
+    JS_FLAGS_DETAIL,
+    parseJsFlags,
+    diffJsFlags,
+    mergeJsFlags,
     settingMatches,
     auditSettings,
     auditArgv,

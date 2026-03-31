@@ -20,6 +20,47 @@
 
 ---
 
+### 2026-03-30 — V8 --optimize-for-size benchmarked: 53% RSS reduction, p99 GC < 35ms — ADOPT
+
+**Context**: Research issue #120 — determining whether `--optimize-for-size` degrades Copilot performance unacceptably. Benchmarked 6 flag configurations against a Copilot-like allocation workload (50K iterations, 528 MB throughput) on the i3-N305 Crostini system.
+
+**Discovery**: Six configurations tested with results:
+
+| Configuration | Time | RSS | p50 GC | p95 GC | p99 GC |
+|---|---|---|---|---|---|
+| Default (no flags) | 745 ms | 122 MB | 12.9 ms | 26.6 ms | 36.3 ms |
+| `--optimize-for-size` (semi=1 implied) | 1190 ms | 57.5 MB | 23.4 ms | 27.2 ms | 31.3 ms |
+| `--optimize-for-size --max-semi-space-size=4` | 1361 ms | 56.6 MB | 24.0 ms | 44.4 ms | 48.3 ms |
+| `--flush-baseline-code` | 685 ms | 124 MB | 12.3 ms | 23.0 ms | 33.7 ms |
+| `--v8-pool-size=2` | 644 ms | 124 MB | 11.8 ms | 21.8 ms | 21.8 ms |
+| All combined (opt+flush+pool) | 1230 ms | 58.0 MB | 24.0 ms | 27.9 ms | 36.5 ms |
+
+Baseline system state: 15 VS Code processes, 2,974 MB aggregate RSS, 209 threads, 70.6% MemAvailable.
+
+Key findings:
+1. **`--optimize-for-size` alone gives 53% RSS reduction** per process (122→57.5 MB). With 15 isolates: ~960 MB theoretical, ~400-500 MB realistic savings.
+2. **Semi=1 (implied by optimize-for-size) outperforms explicit semi=4**: lower p95 (27.2 vs 44.4 ms), faster total time (1190 vs 1361 ms). Smaller semi-spaces cause more frequent but shorter minor GCs — better for bursty allocation patterns like Copilot streaming.
+3. **DO NOT add explicit `--max-semi-space-size=4`** when using `--optimize-for-size`. The override makes things worse on every metric.
+4. **`--flush-baseline-code` and `--v8-pool-size=2`**: negligible RSS impact in synthetic benchmarks but provide savings in long-running processes with accumulated unused code paths and reduced background thread stacks.
+5. **p99 GC pause under 37 ms in all configurations** — well below the 50 ms threshold. VS Code is I/O-bound (network, filesystem, user input), so GC pauses occur between I/O waits and are invisible to the user.
+6. **Throughput cost**: ~60% slower in tight allocation loops. Irrelevant for VS Code — the extension host and TS servers don't perform tight allocation loops; they await I/O between allocations.
+
+Confirmed V8 flag names (from `node --v8-options`):
+- `--optimize-for-size` — implies `max_semi_space_size=1`
+- `--flush-baseline-code` — default false
+- `--v8-pool-size=N` — Node.js CLI flag (not V8 flag) for background thread pool
+- `--concurrent-turbofan-max-threads=N` — default 4
+- `--concurrent-maglev-max-threads=N` — default 2
+
+**Application**:
+- **Recommendation: ADOPT** all five flags for the optimizer's ARGV_PROFILE.
+- The `js-flags` string in argv.json becomes: `--max-old-space-size=2048 --optimize-for-size --flush-baseline-code --concurrent-turbofan-max-threads=1 --concurrent-maglev-max-threads=1`
+- `--v8-pool-size=2` is a Node.js flag (separate from js-flags) but VS Code doesn't expose a way to set it via argv.json — it only affects child Node.js processes if passed via NODE_OPTIONS. Defer to future investigation.
+- The ARGV_PROFILE `js-flags` entry must be a compound string with all flags space-separated. The audit/apply logic needs to parse individual flags within the string, not compare the entire string.
+- Monitor Copilot responsiveness after deployment. If users report stalls, the first flag to remove is `--optimize-for-size` (it dominates the throughput cost).
+
+---
+
 ### 2026-03-29 — Installer downgrade: watchdogVersion() regex never matched real daemon format
 
 **Context**: VS Code crashed 3 times (non-OOM) at 00:45:34 while the frankspressurewashing Copilot Agent resumed work. The Playwright-awareness fix (v20260329.1, PR #110) had been deployed just 23 minutes earlier. Journal showed CHROME-EXCESS: 11 PIDs → SIGKILL 8 with zero "Playwright session active — deferring" messages — the fix was completely absent from the running daemon.

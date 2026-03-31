@@ -18,6 +18,10 @@ const os     = require('os');
 const {
     SETTINGS_PROFILE,
     ARGV_PROFILE,
+    JS_FLAGS_DETAIL,
+    parseJsFlags,
+    diffJsFlags,
+    mergeJsFlags,
     settingMatches,
     auditSettings,
     auditArgv,
@@ -196,7 +200,7 @@ describe('auditArgv', () => {
 {
     // Use software rendering
     "disable-hardware-acceleration": true,
-    "js-flags": "--max-old-space-size=2048"
+    "js-flags": "${ARGV_PROFILE['js-flags'].value}"
 }
 `;
         fs.writeFileSync(tmpFile, raw, 'utf8');
@@ -204,6 +208,31 @@ describe('auditArgv', () => {
             const result = auditArgv(tmpFile);
             assert.equal(result.applied.length, 2);
             assert.equal(result.missing.length, 0);
+        } finally {
+            fs.unlinkSync(tmpFile);
+        }
+    });
+
+    test('argv.json with partial js-flags reports per-flag diff', () => {
+        const tmpFile = writeTmpArgv({
+            'disable-hardware-acceleration': true,
+            'js-flags': '--max-old-space-size=2048',
+        });
+        try {
+            const result = auditArgv(tmpFile);
+            assert.equal(result.applied.length, 1, 'disable-hardware-acceleration should be applied');
+            assert.equal(result.missing.length, 1, 'js-flags should be missing (partial)');
+
+            const jsFlagsMissing = result.missing[0];
+            assert.equal(jsFlagsMissing.key, 'js-flags');
+            assert.ok(jsFlagsMissing.missingFlags, 'should have missingFlags array');
+            assert.ok(jsFlagsMissing.presentFlags, 'should have presentFlags array');
+            assert.ok(jsFlagsMissing.presentFlags.includes('--max-old-space-size=2048'),
+                'existing flag should be in presentFlags');
+            assert.ok(jsFlagsMissing.missingFlags.includes('--optimize-for-size'),
+                '--optimize-for-size should be missing');
+            assert.equal(jsFlagsMissing.missingFlags.length, 4,
+                'should have 4 missing flags');
         } finally {
             fs.unlinkSync(tmpFile);
         }
@@ -240,7 +269,7 @@ describe('applyArgv', () => {
         try {
             const missing = [
                 { key: 'disable-hardware-acceleration', value: true },
-                { key: 'js-flags', value: '--max-old-space-size=2048' },
+                { key: 'js-flags', value: '--max-old-space-size=2048', missingFlags: ['--max-old-space-size=2048'] },
             ];
             const changed = applyArgv(missing, null, tmpFile);
             assert.equal(changed, true);
@@ -250,6 +279,27 @@ describe('applyArgv', () => {
             assert.equal(written['js-flags'], '--max-old-space-size=2048');
         } finally {
             try { fs.unlinkSync(tmpFile); } catch { /* may not exist */ }
+        }
+    });
+
+    test('merges individual js-flags into existing string', () => {
+        const tmpFile = writeTmpArgv({ 'js-flags': '--max-old-space-size=2048' });
+        try {
+            const missing = [{
+                key: 'js-flags',
+                value: ARGV_PROFILE['js-flags'].value,
+                missingFlags: ['--optimize-for-size', '--flush-baseline-code'],
+            }];
+            const changed = applyArgv(missing, { 'js-flags': '--max-old-space-size=2048' }, tmpFile);
+            assert.equal(changed, true);
+
+            const written = JSON.parse(fs.readFileSync(tmpFile, 'utf8'));
+            const flags = written['js-flags'].split(/\s+/);
+            assert.ok(flags.includes('--max-old-space-size=2048'), 'should preserve existing flag');
+            assert.ok(flags.includes('--optimize-for-size'), 'should add optimize-for-size');
+            assert.ok(flags.includes('--flush-baseline-code'), 'should add flush-baseline-code');
+        } finally {
+            fs.unlinkSync(tmpFile);
         }
     });
 
@@ -323,9 +373,111 @@ describe('renderReport', () => {
         const report = renderReport(settings, argv);
         assert.ok(report.includes('(merge profile keys)'), 'should show merge label for objects');
     });
+    test('report with js-flags missing shows per-flag detail', () => {
+        const settings = { applied: [], missing: [] };
+        const argv = {
+            applied: [],
+            missing: [{
+                key: 'js-flags',
+                value: ARGV_PROFILE['js-flags'].value,
+                savings: '~400-500 MB aggregate',
+                reason: 'test',
+                missingFlags: ['--optimize-for-size', '--flush-baseline-code'],
+                presentFlags: ['--max-old-space-size=2048'],
+            }],
+        };
+        const report = renderReport(settings, argv);
+
+        assert.ok(report.includes('js-flags'), 'should mention js-flags');
+        assert.ok(report.includes('2 flag(s) to add'), 'should show flag count');
+        assert.ok(report.includes('--optimize-for-size'), 'should list missing flag');
+        assert.ok(report.includes('--flush-baseline-code'), 'should list missing flag');
+        assert.ok(report.includes('Favors memory over speed'), 'should include flag detail reason');
+    });
 });
 
-// ── Profile completeness ──────────────────────────────────────────────────────
+// ── js-flags helpers ──────────────────────────────────────────────────────────
+
+describe('parseJsFlags', () => {
+    test('parses space-separated flags', () => {
+        const flags = parseJsFlags('--optimize-for-size --max-old-space-size=2048');
+        assert.equal(flags.size, 2);
+        assert.ok(flags.has('--optimize-for-size'));
+        assert.ok(flags.has('--max-old-space-size=2048'));
+    });
+
+    test('handles empty string', () => {
+        assert.equal(parseJsFlags('').size, 0);
+    });
+
+    test('handles null/undefined', () => {
+        assert.equal(parseJsFlags(null).size, 0);
+        assert.equal(parseJsFlags(undefined).size, 0);
+    });
+
+    test('handles extra whitespace', () => {
+        const flags = parseJsFlags('  --a   --b  ');
+        assert.equal(flags.size, 2);
+    });
+
+    test('handles non-string input', () => {
+        assert.equal(parseJsFlags(42).size, 0);
+        assert.equal(parseJsFlags(true).size, 0);
+    });
+});
+
+describe('diffJsFlags', () => {
+    test('all flags present returns empty missing', () => {
+        const target = '--a --b --c';
+        const current = '--a --b --c --d';
+        const diff = diffJsFlags(current, target);
+        assert.deepEqual(diff.missing, []);
+        assert.equal(diff.present.length, 3);
+    });
+
+    test('some flags missing returns correct split', () => {
+        const diff = diffJsFlags('--a --c', '--a --b --c --d');
+        assert.deepEqual(diff.present, ['--a', '--c']);
+        assert.deepEqual(diff.missing, ['--b', '--d']);
+    });
+
+    test('empty current returns all missing', () => {
+        const diff = diffJsFlags('', '--a --b');
+        assert.equal(diff.present.length, 0);
+        assert.equal(diff.missing.length, 2);
+    });
+
+    test('handles value flags with = correctly', () => {
+        const diff = diffJsFlags(
+            '--max-old-space-size=2048',
+            '--max-old-space-size=2048 --optimize-for-size'
+        );
+        assert.deepEqual(diff.present, ['--max-old-space-size=2048']);
+        assert.deepEqual(diff.missing, ['--optimize-for-size']);
+    });
+});
+
+describe('mergeJsFlags', () => {
+    test('appends missing flags to existing string', () => {
+        const result = mergeJsFlags('--a --b', ['--c', '--d']);
+        assert.equal(result, '--a --b --c --d');
+    });
+
+    test('does not duplicate existing flags', () => {
+        const result = mergeJsFlags('--a --b', ['--b', '--c']);
+        assert.equal(result, '--a --b --c');
+    });
+
+    test('handles empty current string', () => {
+        const result = mergeJsFlags('', ['--a', '--b']);
+        assert.equal(result, '--a --b');
+    });
+
+    test('handles null current string', () => {
+        const result = mergeJsFlags(null, ['--a']);
+        assert.equal(result, '--a');
+    });
+});
 
 describe('profile completeness', () => {
     test('every SETTINGS_PROFILE entry has value, savings, and reason', () => {
@@ -351,5 +503,19 @@ describe('profile completeness', () => {
 
     test('ARGV_PROFILE has at least 2 entries', () => {
         assert.ok(Object.keys(ARGV_PROFILE).length >= 2);
+    });
+
+    test('JS_FLAGS_DETAIL has an entry for every flag in ARGV_PROFILE js-flags', () => {
+        const flags = ARGV_PROFILE['js-flags'].value.trim().split(/\s+/);
+        for (const flag of flags) {
+            assert.ok(JS_FLAGS_DETAIL[flag], `JS_FLAGS_DETAIL missing entry for ${flag}`);
+            assert.ok(JS_FLAGS_DETAIL[flag].savings, `${flag} missing savings`);
+            assert.ok(JS_FLAGS_DETAIL[flag].reason, `${flag} missing reason`);
+        }
+    });
+
+    test('js-flags value contains exactly 5 flags', () => {
+        const flags = ARGV_PROFILE['js-flags'].value.trim().split(/\s+/);
+        assert.equal(flags.length, 5, `Expected 5 js-flags, got ${flags.length}`);
     });
 });
