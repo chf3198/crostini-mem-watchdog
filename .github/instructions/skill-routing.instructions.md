@@ -19,4 +19,8 @@ Use repository and global customization layers together for every task:
    - Run `docs-drift-maintenance` to detect stale documentation
    - Add learnings entry if a significant discovery was made
    - If the merge changes extension behavior, run `release-version-integrity` to
-     validate tag/manifest/changelog alignment, then publish the new version
+       validate tag/manifest/changelog alignment, then publish the new version
+    - Run `bash scripts/release-integrity-check.sh --post-publish` and require:
+       - package.json version == Marketplace version
+       - git tag exists for package version
+       - GitHub release object exists for the tag

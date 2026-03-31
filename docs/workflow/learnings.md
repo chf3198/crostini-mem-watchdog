@@ -20,6 +20,29 @@
 
 ---
 
+### 2026-03-31 — Release-governance drift needs machine checks, not checklist memory
+
+**Context**: Post-sprint governance audit after FPW v1.4 completion and extension version drift investigation.
+
+**Discovery**: Three release-governance gaps occurred together despite tags and Marketplace publishes succeeding:
+
+1. **Tag/release drift**: Versions `v0.3.13`–`v0.3.16` had git tags and Marketplace artifacts but no GitHub release objects.
+2. **Safety-floor drift**: `MIN_SAFE_DAEMON_VERSION` remained at `20260325.8` while daemon behavior changed in `v20260331.1` (SLEEP mode protocol).
+3. **Bundling drift risk**: The extension bundles daemon files from `resources/` (build artifact) while `resources/` is gitignored, so release correctness depends on running `npm run build` before packaging/publish.
+
+Checklist-only governance was insufficient; these are structural consistency checks and need explicit machine gates.
+
+**Application**:
+- Added `scripts/release-integrity-check.sh` with `--post-publish` mode to require:
+  - `package.json` version has matching git tag
+  - GitHub release object exists for that tag
+  - Marketplace version matches `package.json`
+  - `MIN_SAFE_DAEMON_VERSION` matches daemon `WATCHDOG_VERSION`
+- Added a new docs-integrity guard: `MIN_SAFE_DAEMON_VERSION == WATCHDOG_VERSION`.
+- Updated instruction checklist to require `bash scripts/release-integrity-check.sh --post-publish` for extension behavior changes.
+
+---
+
 ### 2026-03-31 — Sequential Chrome phase isolation eliminates per-publish OOM risk via OS RSS reclaim
 
 **Context**: FPW v1.4 sprint — implementing PRs #130–#134 to address Chrome OOM crashes during Squarespace publish automation on the 6.3 GB Crostini container.
