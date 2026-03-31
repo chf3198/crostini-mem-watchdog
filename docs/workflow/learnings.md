@@ -20,6 +20,36 @@
 
 ---
 
+### 2026-03-31 — Sequential Chrome phase isolation eliminates per-publish OOM risk via OS RSS reclaim
+
+**Context**: FPW v1.4 sprint — implementing PRs #130–#134 to address Chrome OOM crashes during Squarespace publish automation on the 6.3 GB Crostini container.
+
+**Discovery**: Five independent OOM mitigation layers were implemented in sequence, each addressing a distinct failure mode:
+
+1. **SLEEP mode signal (#123)**: `signalMemWatchdogSleep()` / `clearMemWatchdogSleep()` writing `~/.config/mem-watchdog/mode` eliminates the `systemctl stop` window during which Chrome runs unmonitored. The watchdog stays alive but defers aggressive action via cooperative signal rather than being killed outright.
+
+2. **Cgroup v1 Chrome cage (#124)**: `sudo -n` passwordless cgroup child creation at `/sys/fs/cgroup/memory/.../cage-$$/` with `memory.limit_in_bytes = 1500 MB` hard-caps Chrome RSS at the OS level. When Chrome exceeds the cap, the child cgroup OOM killer fires — VS Code is in the parent cgroup and is never at risk. `exec google-chrome "$@"` inherits cage membership via cgroup v1 process inheritance.
+
+3. **Sequential isolated child processes (#125)**: Replacing the monolithic `runPublishWithBrowser()` IIFE with `spawnSync` orchestrator + 3 phase scripts (publish-css.js, publish-code-injection.js, publish-verify.js). Each phase spawns its own Chrome, completes, and exits — the OS reclaims Chrome RSS (~150–300 MB) between phases. Exit code 2 = browser channel failure → orchestrator retries all 3 phases with `USE_SYSTEM_CHROME=0`.
+
+4. **Memory preflight raise + wait loop (#126)**: Threshold 1500→3000 MB with 60s/3s polling loop prevents all 3 Chrome phases from launching into an already-constrained memory state.
+
+5. **MALLOC_ARENA_MAX=2 (#127)**: Added to all Playwright launch `env` blocks. Limits glibc ptmalloc2 from 8 arenas (8 × 64 MB = 512 MB pre-allocated) to 2 arenas. Zero risk, expected 100–300 MB Chrome RSS savings.
+
+**Key architecture insight**: The spawnSync orchestrator pattern (not async/await child_process) is the correct primitive for sequential isolation — `spawnSync` blocks until the child exits, guaranteeing RSS is reclaimed before the next phase begins. Using async `spawn` with `await exit` is NOT equivalent: the process may not release RSS immediately when the promise resolves due to V8 microtask scheduling.
+
+**module.exports with require.main guard**: The orchestrator exports 10+ symbols consumed by phase scripts. The `require.main === module` guard ensures the orchestrator IIFE only runs when the file is the entry point — not when phase scripts `require()` it. This is the standard Node.js "library + executable in one file" pattern and was confirmed necessary because `require()` executes the top-level code.
+
+**Research finding — Squarespace internal API (FPW #129)**: No public documentation exists for internal REST/GraphQL endpoints governing Custom CSS or Code Injection saves. The CSRF token is `Static.SQUARESPACE_CONTEXT.authenticatedAccount.crumb` (embedded in page HTML). Firsthand DevTools capture is required for endpoint discovery. Closed as Won't Implement: ToS §5.3 violation, zero stability guarantee, Playwright approach already solves the OOM concern.
+
+**Application**:
+- When multiple Chrome phases must run sequentially, `spawnSync` (not async spawn) is the correct isolation primitive — it guarantees RSS reclaim before the next phase.
+- `MALLOC_ARENA_MAX=2` should be set on ALL Chrome/Chromium Playwright launches on memory-constrained systems. It is zero-risk and should be a default, not an opt-in.
+- The cgroup v1 cage pattern (`mkdir + limit + cgroup.procs + exec`) is portable and requires no additional packages beyond `sudo -n` passwordless access. Use it whenever Chrome RSS needs a hard ceiling.
+- Research tickets for "internal APIs" of SaaS platforms (Squarespace, Notion, etc.) almost universally resolve to "no public documentation exists; firsthand DevTools capture required; ToS-violating." Close them as Won't Implement unless empirical endpoint capture has already been done.
+
+---
+
 ### 2026-03-30 — V8 --optimize-for-size benchmarked: 53% RSS reduction, p99 GC < 35ms — ADOPT
 
 **Context**: Research issue #120 — determining whether `--optimize-for-size` degrades Copilot performance unacceptably. Benchmarked 6 flag configurations against a Copilot-like allocation workload (50K iterations, 528 MB throughput) on the i3-N305 Crostini system.
