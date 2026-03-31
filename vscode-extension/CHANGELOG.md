@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **V8 memory flags in optimizer** ([#124](https://github.com/chf3198/crostini-mem-watchdog/issues/124)) — `ARGV_PROFILE` `js-flags` entry now includes 4 new flags benchmarked in [#120](https://github.com/chf3198/crostini-mem-watchdog/issues/120) (53% per-isolate RSS reduction, p99 GC < 35ms): `--optimize-for-size`, `--flush-baseline-code`, `--concurrent-turbofan-max-threads=1`, `--concurrent-maglev-max-threads=1`.
+- **Per-flag js-flags audit** — `auditArgv()` now diffs individual flags within the compound `js-flags` string. Users with only `--max-old-space-size=2048` will see only the 4 missing flags reported, not the entire string as missing.
+- **Flag merge on apply** — `applyArgv()` merges only missing flags into existing `js-flags`, preserving any user-added flags.
+- **Per-flag report detail** — `renderReport()` shows each missing flag with savings estimate and rationale from `JS_FLAGS_DETAIL`.
+- New helpers exported: `parseJsFlags()`, `diffJsFlags()`, `mergeJsFlags()`, `JS_FLAGS_DETAIL`.
+
+### Tests
+- JS unit tests: 128 → **146 passing** (+18 new: js-flags parsing, diffing, merging, partial audit, merge apply, per-flag rendering, profile invariants)
+
 ## [0.3.15] — 2026-03-30
 
 ### Added
