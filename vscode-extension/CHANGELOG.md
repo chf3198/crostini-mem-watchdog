@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.18] — 2026-04-01
+
 ### Added
 - **Chat Continuity Guard** ([#148](https://github.com/chf3198/crostini-mem-watchdog/issues/148)) — new `memWatchdog.chatRescue` command plus `/memwatchdog rescue` chat command archive oversized Copilot chat sessions out of VS Code's live `chatSessions/` store, generate a continuity pack under `~/.config/mem-watchdog/chat-archives/`, open `resume.prompt.md`, and optionally reload the window.
 
