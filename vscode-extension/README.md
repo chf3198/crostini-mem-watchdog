@@ -91,7 +91,7 @@ Configure all thresholds via **VS Code Settings → Mem Watchdog**. Changes take
 | `psiThresholdPct` | `25` | `SIGTERM` on PSI `full avg10` above this % |
 | `vscodeRssWarnMB` | `3400` | Warn + `SIGTERM` Chrome when total VS Code RSS exceeds this many MB |
 | `vscodeRssEmergencyMB` | `3800` | `SIGKILL` Chrome (or `SIGTERM` extension host) above this MB |
-| `chatGuard.enabled` | `true` | Enable oversized-chat detection and rescue prompting |
+| `chatGuard.enabled` | `true` | Enable oversized-chat detection and rescue prompting (including preemptive inactive-workspace archival) |
 | `chatGuard.sessionSizeMB` | `120` | Session JSON size that triggers rescue eligibility |
 | `chatGuard.autoRescue` | `prompt` | `off`, `prompt`, or `auto` behavior when an oversized chat is detected |
 | `chatGuard.restartAfterRescue` | `true` | Reload the window after rescue so the extension host doesn't re-parse the giant archived session |
@@ -188,9 +188,9 @@ Commercial use requires a paid license. See [COMMERCIAL-LICENSE.md](https://gith
 git clone https://github.com/chf3198/crostini-mem-watchdog.git
 cd crostini-mem-watchdog/vscode-extension
 npm run build          # populate resources/ from repo root
-npm test               # 172 JS unit tests via node:test (zero-install)
+npm test               # 184 JS unit tests via node:test (zero-install)
 npm run test:coverage  # same + c8 V8 coverage report
 npm run test:stress    # stress scenarios: pileup guard, EL lag, heap usage
 ```
 
-180 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()` plus thematic state helpers (`readWatchdogMode()`, `readRssThresholds()`, `determineState()`, `stateDescription()`), chat continuity archival/resume generation, low-memory profile classification/guidance, config validation, command handlers, installer decision logic, `activate()` singleton lifecycle, the `update()` state machine + pileup guard, update checker (version comparison, throttling, dismissal), installer MIN_SAFE_DAEMON_VERSION guard, installer downgrade protection (export-prefix version parsing), skill installer (install/update/skip), and `@memwatchdog` chat participant (status, logs, tune, optimize, lowmem, rescue, followups, API availability guard).
+184 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()` plus thematic state helpers (`readWatchdogMode()`, `readRssThresholds()`, `determineState()`, `stateDescription()`), chat continuity archival/resume generation (including preemptive inactive-workspace rescue), low-memory profile classification/guidance, config validation, command handlers, installer decision logic, `activate()` singleton lifecycle, the `update()` state machine + pileup guard, update checker (version comparison, throttling, dismissal), installer MIN_SAFE_DAEMON_VERSION guard, installer downgrade protection (export-prefix version parsing), skill installer (install/update/skip), and `@memwatchdog` chat participant (status, logs, tune, optimize, lowmem, rescue, followups, API availability guard).

@@ -8,8 +8,8 @@
 [![Installs](https://img.shields.io/visual-studio-marketplace/i/CurtisFranks.mem-watchdog-status?color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=CurtisFranks.mem-watchdog-status)
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ChromeOS%20Crostini-4285f4)](https://chromeos.dev/en/linux)
-[![Tests](https://img.shields.io/badge/bash-19%2F19-brightgreen)](tests/test-watchdog.sh)
-[![Tests](https://img.shields.io/badge/js-180%2F180-brightgreen)](vscode-extension/package.json)
+[![Tests](https://img.shields.io/badge/bash-20%2F20-brightgreen)](tests/test-watchdog.sh)
+[![Tests](https://img.shields.io/badge/js-184%2F184-brightgreen)](vscode-extension/package.json)
 
 _`earlyoom` hard-crashes on Crostini (exit 104, every 3 seconds, zero protection). This replaces it with a VS Code-aware watchdog that kills Chrome before the kernel OOM-kills VS Code._
 
@@ -94,7 +94,7 @@ This watchdog reads only `MemAvailable` and `MemTotal` — both correct on this 
 - Reads only `MemAvailable`, `MemTotal`, and `/proc/pressure/memory` (PSI) — all safe on Crostini
 - Logs via `logger -t mem-watchdog` → journald (no `/tmp` writes)
 - Desktop notifications via `notify-send`, throttled to 1 per 5 minutes per severity level
-- **Chat Continuity Guard** in the VS Code extension can archive oversized Copilot chat sessions, generate a continuity pack, open a resumable prompt, and reload VS Code before the extension host re-parses a multi-hundred-MB chat JSON.
+- **Chat Continuity Guard** in the VS Code extension can archive oversized Copilot chat sessions, generate a continuity pack, open a resumable prompt, and reload VS Code before the extension host re-parses a multi-hundred-MB chat JSON. It also preemptively auto-archives oversized sessions in inactive workspaces so workspace switches do not trigger session-load OOM spikes.
 
 ---
 
@@ -106,7 +106,7 @@ crostini-mem-watchdog/
 ├── mem-watchdog.service         ← systemd user service unit
 ├── install.sh                   ← shell-only installer (no VS Code required)
 ├── tests/
-│   ├── test-watchdog.sh         ← 19-test validation suite
+│   ├── test-watchdog.sh         ← 20-test validation suite
 │   ├── test-pressure.sh         ← live memory pressure tests
 │   ├── stress-harness.sh        ← Playwright stress test harness
 │   └── stress-playwright.js     ← Playwright automation driver
@@ -158,13 +158,17 @@ crostini-mem-watchdog/
 
 When Copilot chat history becomes dangerously large, use the extension command **Mem Watchdog: Rescue Oversized Chat Session**. It:
 
-1. Moves the active giant session JSON out of VS Code's live `chatSessions/` store.
+1. Moves giant session JSON out of VS Code's live `chatSessions/` store.
 2. Writes a continuity bundle to `~/.config/mem-watchdog/chat-archives/<timestamp>-<workspaceId>/`.
 3. Generates:
   - `session-original.json` — the full archived session
   - `continuity-pack.md` — compact forensic summary
   - `resume.prompt.md` — paste-ready fresh-chat prompt
 4. Optionally reloads VS Code immediately so the extension host does not re-parse the oversized chat on restart.
+
+Background guard behavior:
+- Active workspace oversized session: prompt/auto behavior based on `chatGuard.autoRescue`.
+- Inactive workspace oversized session: preemptive auto-archive (no reload) to prevent cross-workspace startup OOM.
 
 ### Managed Protection Window (Repo-Agnostic)
 
@@ -198,8 +202,8 @@ Other commands:
 All 4 gates must pass before any change is published:
 
 ```bash
-bash tests/test-watchdog.sh              # 19 bash tests (~3 s) — service, OOM scores, PSI, RSS circuit-breaker policy, SwapFree safety, SIGTERM
-cd vscode-extension && npm test    # 180 JS unit tests (~1 s) — continuity rescue flow, extension state machine, activation singleton, low-memory profile guidance, utils
+bash tests/test-watchdog.sh              # 20 bash tests (~3 s) — service, OOM scores, PSI, RSS circuit-breaker policy, SwapFree safety, startup chat-footprint warning scan, SIGTERM
+cd vscode-extension && npm test    # 184 JS unit tests (~1 s) — continuity rescue flow (including cross-workspace preemptive archival), extension state machine, activation singleton, low-memory profile guidance, utils
 bash -n mem-watchdog.sh            # bash syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh
 ```

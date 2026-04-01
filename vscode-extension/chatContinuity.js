@@ -13,6 +13,18 @@ const DEFAULT_ACTIVE_WINDOW_HOURS = 168;
 const HEAD_BYTES = 128 * 1024;
 const TAIL_BYTES = 256 * 1024;
 
+function normalizeFsPath(value) {
+    if (!value || typeof value !== 'string') { return ''; }
+    const withoutFileScheme = value.startsWith('file://')
+        ? value.replace(/^file:\/\//, '')
+        : value;
+    try {
+        return path.resolve(decodeURIComponent(withoutFileScheme));
+    } catch {
+        return path.resolve(withoutFileScheme);
+    }
+}
+
 function formatBytes(bytes) {
     if (bytes < 1024) { return `${bytes} B`; }
     if (bytes < 1024 * 1024) { return `${Math.round(bytes / 1024)} KB`; }
@@ -48,6 +60,41 @@ function listChatSessions(rootDir = WORKSPACE_STORAGE_DIR) {
         }
     }
     return sessions.sort((a, b) => b.mtimeMs - a.mtimeMs || b.sizeBytes - a.sizeBytes);
+}
+
+function workspaceStorageMeta(rootDir = WORKSPACE_STORAGE_DIR, workspaceId) {
+    if (!workspaceId) { return null; }
+    const wsMetaPath = path.join(rootDir, workspaceId, 'workspace.json');
+    try {
+        const raw = fs.readFileSync(wsMetaPath, 'utf8');
+        const meta = JSON.parse(raw);
+        return {
+            workspaceId,
+            folder: normalizeFsPath(meta.folder || ''),
+            workspace: normalizeFsPath(meta.workspace || ''),
+        };
+    } catch {
+        return { workspaceId, folder: '', workspace: '' };
+    }
+}
+
+function activeWorkspaceRoots(vscode) {
+    return (vscode.workspace.workspaceFolders || [])
+        .map((f) => normalizeFsPath(f.uri?.fsPath || f.name || ''))
+        .filter(Boolean);
+}
+
+function sessionInActiveWorkspace(vscode, session, options = {}) {
+    if (!session || !session.workspaceId) { return false; }
+    const activeRoots = options.activeRoots || activeWorkspaceRoots(vscode);
+    if (activeRoots.length === 0) { return false; }
+
+    const meta = workspaceStorageMeta(options.rootDir || WORKSPACE_STORAGE_DIR, session.workspaceId);
+    if (!meta) { return false; }
+    const target = meta.folder || meta.workspace;
+    if (!target) { return false; }
+
+    return activeRoots.some((root) => root === target || root.startsWith(`${target}${path.sep}`) || target.startsWith(`${root}${path.sep}`));
 }
 
 function findRescueCandidate(options = {}) {
@@ -259,6 +306,7 @@ module.exports = {
     DEFAULT_SESSION_THRESHOLD_MB,
     listChatSessions,
     findRescueCandidate,
+    sessionInActiveWorkspace,
     extractSnippets,
     rescueSession,
     formatBytes,

@@ -72,7 +72,7 @@ CODE_RECOVERY_COOLDOWN=30      # minimum seconds between controlled VS Code main
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260331.3   # 2026-03-31 v3: Stack-agnostic disposable-process naming + CHROME_COUNT_MAX compatibility alias
+export WATCHDOG_VERSION=20260401.1   # 2026-04-01 v1: Startup warning scan for oversized workspace chat session storage (cross-workspace OOM early warning)
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -154,6 +154,7 @@ RECOVERY_MEM_PCT=40             # MemAvailable > 40% to count as clean (above St
 RECLAIM_TIMEOUT_S=${RECLAIM_TIMEOUT_S:-3}          # max seconds to wait on a cgroup reclaim write before aborting
 RECLAIM_MIN_INTERVAL_S=${RECLAIM_MIN_INTERVAL_S:-10} # minimum seconds between reclaim attempts (prevents reclaim storms)
 MEM_SLEEP_TIMEOUT_S=${MEM_SLEEP_TIMEOUT_S:-300}      # stale SLEEP mode auto-clear timeout (seconds)
+CHAT_WARN_MB=${CHAT_WARN_MB:-200}                    # startup warning threshold per workspace chatSessions footprint
 
 # ── Disposable process count cap — accumulation guard (Issue #26) ─────────
 # Discovered 2026-03-10: browser scopes accumulated over 3.5 hours.
@@ -1158,6 +1159,55 @@ read_cgroup_events() {
   fi
 }
 
+# ── Workspace chat session footprint warning (Issue #153) ───────────────────
+# Extension guard runs every 60s and can miss fast session-load spikes when
+# switching workspaces. This startup scan emits an early warning if any
+# workspaceStorage/*/chatSessions footprint is already oversized.
+scan_workspace_chat_footprint() {
+  local ws_root="${XDG_CONFIG_HOME:-${HOME}/.config}/Code/User/workspaceStorage"
+  [[ -d "$ws_root" ]] || return 0
+
+  local warn_bytes=$(( CHAT_WARN_MB * 1024 * 1024 ))
+  local warned=0
+  local ws_dir
+
+  shopt -s nullglob
+  for ws_dir in "$ws_root"/*; do
+    [[ -d "$ws_dir/chatSessions" ]] || continue
+
+    local total_bytes=0
+    local file_count=0
+    local chat_file
+    for chat_file in "$ws_dir"/chatSessions/*.json; do
+      [[ -f "$chat_file" ]] || continue
+      local size_bytes
+      size_bytes=$(stat -c%s "$chat_file" 2>/dev/null || echo 0)
+      total_bytes=$(( total_bytes + size_bytes ))
+      file_count=$(( file_count + 1 ))
+    done
+
+    (( file_count == 0 )) && continue
+    if (( total_bytes >= warn_bytes )); then
+      warned=1
+      local ws_id ws_hint
+      ws_id="${ws_dir##*/}"
+      ws_hint="unknown"
+      if [[ -r "$ws_dir/workspace.json" ]]; then
+        ws_hint=$(awk -F'"' '/"folder"[[:space:]]*:/{print $4; exit}' "$ws_dir/workspace.json" 2>/dev/null)
+        [[ -z "$ws_hint" ]] && ws_hint=$(awk -F'"' '/"workspace"[[:space:]]*:/{print $4; exit}' "$ws_dir/workspace.json" 2>/dev/null)
+        [[ -z "$ws_hint" ]] && ws_hint="unknown"
+      fi
+      log "WARN: chat session storage high — workspace_id=${ws_id} chat_json_mb=$(( total_bytes / 1024 / 1024 )) files=${file_count} source=${ws_hint}"
+    fi
+  done
+  shopt -u nullglob
+
+  if (( warned > 0 )); then
+    notify_desktop "warn" "⚠️ Oversized Chat Sessions Detected" \
+      "One or more VS Code workspaces have chatSessions footprint ≥ ${CHAT_WARN_MB} MB. Consider archive rescue before opening those workspaces."
+  fi
+}
+
 # ── Evaluate pressure stage from current metrics ─────────────────────────
 # Returns the stage number (0-4) that current conditions warrant.
 # Called every loop iteration; actual transition uses hysteresis.
@@ -1223,6 +1273,9 @@ adjust_oom_scores
 
 # Log tier assignments at startup for diagnostics (Issue #6)
 log_tier_assignments
+
+# Startup early warning for cross-workspace oversized chat sessions (Issue #153)
+scan_workspace_chat_footprint
 
 while true; do
   incr_counter _loops

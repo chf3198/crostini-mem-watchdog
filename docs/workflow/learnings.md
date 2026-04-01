@@ -20,6 +20,24 @@
 
 ---
 
+### 2026-04-01 — Cross-workspace guard fix requires immediate activation scan, not just periodic polling
+
+**Context**: Shipping issue #153 after a cross-workspace OOM where two oversized FPW sessions (458 MB + 357 MB) were loaded on workspace open before the 60-second Chat Continuity Guard interval could run.
+
+**Discovery**: Even when scanning all workspaceStorage directories, a **timer-only** guard leaves a startup blind spot. VS Code can load an oversized workspace's chat JSON in < 40 seconds, which beats a 60-second interval. The robust pattern is:
+1. Run a **preemptive guard pass immediately on activation**.
+2. Keep the 60-second periodic guard for steady-state drift.
+3. Distinguish active vs inactive workspaces: inactive oversized sessions should auto-archive silently (no reload), active sessions should still respect prompt/auto policy.
+4. Add daemon-side startup warning (`CHAT_WARN_MB`) for defense-in-depth telemetry when extension timing is not enough.
+
+**Application**:
+- `extension.activate()` now triggers `maybePromptChatRescue({ preemptive: true })` immediately, before the interval.
+- `maybePromptChatRescue()` now auto-archives oversized sessions from inactive workspaces with `openResume:false` and `restart:false`, then logs an informational toast.
+- `chatContinuity.sessionInActiveWorkspace()` maps workspaceStorage IDs to real folders via `workspace.json` to classify candidate session scope safely.
+- Daemon startup calls `scan_workspace_chat_footprint()` and emits WARN if any workspace exceeds `CHAT_WARN_MB`.
+
+---
+
 ### 2026-04-01 — Chat Continuity Guard scope is single-workspace; cross-workspace OOM still possible
 
 **Context**: User opened the frankspressurewashing VS Code workspace. VS Code immediately loaded two oversized Copilot chat sessions (458 MB + 357 MB = 815 MB) from that workspace's `chatSessions/` directory. RSS spiked from 1.3 GB to 4.4 GB within ~38 seconds. Daemon reached Stage 4 twice (pct=11%, pct=8%) with no disposable target, kernel OOM-killed a process both times. Both sessions archived manually post-crash.

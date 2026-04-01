@@ -59,7 +59,7 @@ vscode-extension/
 | `RSS_RUNAWAY_STREAK=3` consecutive ACCEL cycles above `RSS_RUNAWAY_MIN_KB` (2.6 GB) | Circuit-breaker: `kill_vscode_main()` |
 | Disposable PIDs > `DISPOSABLE_COUNT_MAX` (3) | SIGKILL oldest excess (skipped when automation active) |
 
-**Automation awareness** (Issue #109, v20260331.3): `automation_session_active()` detects active sessions via `pgrep -f "$TIER_DISPOSABLE_PATTERN_AUX"` (default `node.*(playwright|puppeteer|cypress|selenium-webdriver)`). When active, `check_disposable_cap()` is skipped and `kill_disposable_processes()` returns 1 at non-critical severity (WARN/ACCEL/Stage 2-3) — callers fall through to helper kills or cgroup throttle. EMERGENCY and Stage 4 always kill disposable targets regardless (safety net).
+**Automation awareness** (Issue #109, v20260401.1): `automation_session_active()` detects active sessions via `pgrep -f "$TIER_DISPOSABLE_PATTERN_AUX"` (default `node.*(playwright|puppeteer|cypress|selenium-webdriver)`). When active, `check_disposable_cap()` is skipped and `kill_disposable_processes()` returns 1 at non-critical severity (WARN/ACCEL/Stage 2-3) — callers fall through to helper kills or cgroup throttle. EMERGENCY and Stage 4 always kill disposable targets regardless (safety net).
 
 **ACCEL gate (critical)**: The `vscode_rss >= eff_warn` guard on the RSS velocity check is non-negotiable. Without it, V8 JIT compilation during startup legitimately spikes 300–900 MB/cycle at 1–2 GB total RSS, causing the watchdog to kill the Extension Host in a restart loop. Confirmed 2026-03-16: "Extension host terminated unexpectedly 3 times."
 
@@ -81,10 +81,10 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
 **GATE**: All five checks must exit 0 — no exceptions, no skips:
 
 ```bash
-bash tests/test-watchdog.sh                                                          # 18 bash tests, ~3s
+bash tests/test-watchdog.sh                                                          # 20 bash tests, ~3s
 bash -n mem-watchdog.sh                                                        # syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh
-cd vscode-extension && npm test                                                # 180 JS unit tests, ~1s
+cd vscode-extension && npm test                                                # 184 JS unit tests, ~1s
 bash scripts/docs-integrity-check.sh                                           # docs drift check
 ```
 
@@ -97,13 +97,13 @@ bash scripts/docs-integrity-check.sh                                           #
 ```bash
 cd vscode-extension
 npm run build              # populate resources/ for dev (gitignored; required before vsce package)
-npm test                   # 180 unit tests via node:test (~1s)
+npm test                   # 184 unit tests via node:test (~1s)
 npm run test:coverage      # + c8 V8 lcov output
 npm run test:stress        # pileup guard + event-loop lag + heap scenarios
 npx vsce package           # → mem-watchdog-status-x.y.z.vsix
 bash scripts/release-integrity-check.sh --post-publish   # release metadata guard (tag/release/Marketplace + MIN_SAFE)
 
-bash tests/test-watchdog.sh      # 18 bash tests (repo root — REPO=$(dirname $0)/.., not scripts/)
+bash tests/test-watchdog.sh      # 20 bash tests (repo root — REPO=$(dirname $0)/.., not scripts/)
 bash tests/test-pressure.sh      # live memory allocation tests; needs RAM < 40% free
 ./mem-watchdog.sh --dry-run
 

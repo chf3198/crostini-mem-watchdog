@@ -9,6 +9,7 @@ const path = require('path');
 const {
     listChatSessions,
     findRescueCandidate,
+    sessionInActiveWorkspace,
     extractSnippets,
     rescueSession,
 } = require('../../chatContinuity');
@@ -82,5 +83,49 @@ describe('chatContinuity helpers', () => {
         assert.ok(fs.existsSync(result.resumePath));
         assert.ok(!fs.existsSync(file), 'original active session file should be moved out of chatSessions');
         assert.equal(shown.length, 1, 'resume prompt should be opened');
+    });
+
+    test('sessionInActiveWorkspace detects active folder-backed workspace', () => {
+        const { dir, ws } = makeTempTree();
+        const workspaceRoot = path.join(dir, 'project-a');
+        fs.mkdirSync(workspaceRoot, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'workspaceStorage', 'abc123', 'workspace.json'), JSON.stringify({
+            folder: `file://${workspaceRoot}`,
+        }));
+
+        const vscode = {
+            workspace: {
+                workspaceFolders: [{ uri: { fsPath: workspaceRoot } }],
+            },
+        };
+
+        const match = sessionInActiveWorkspace(vscode, {
+            workspaceId: 'abc123',
+            filePath: path.join(ws, 'session.json'),
+        }, { rootDir: path.join(dir, 'workspaceStorage') });
+
+        assert.equal(match, true);
+    });
+
+    test('sessionInActiveWorkspace returns false for inactive workspace', () => {
+        const { dir, ws } = makeTempTree();
+        const workspaceRoot = path.join(dir, 'project-a');
+        fs.mkdirSync(workspaceRoot, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'workspaceStorage', 'abc123', 'workspace.json'), JSON.stringify({
+            folder: `file://${workspaceRoot}`,
+        }));
+
+        const vscode = {
+            workspace: {
+                workspaceFolders: [{ uri: { fsPath: path.join(dir, 'project-b') } }],
+            },
+        };
+
+        const match = sessionInActiveWorkspace(vscode, {
+            workspaceId: 'abc123',
+            filePath: path.join(ws, 'session.json'),
+        }, { rootDir: path.join(dir, 'workspaceStorage') });
+
+        assert.equal(match, false);
     });
 });

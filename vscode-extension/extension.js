@@ -297,6 +297,13 @@ async function activate(context) {
     update(item);
     const timer = setInterval(() => update(item), POLL_INTERVAL_MS);
     _statusTimer = timer;
+
+    // Run chat guard immediately on activation so oversized sessions in other
+    // workspaces are rescued before the next workspace switch/OOM window.
+    commands.maybePromptChatRescue({ preemptive: true }).catch((err) => {
+        console.error('[memWatchdog] initial chat guard error:', err.message);
+    });
+
     const chatGuardTimer = setInterval(() => {
         commands.maybePromptChatRescue().catch((err) => {
             console.error('[memWatchdog] chat guard error:', err.message);
