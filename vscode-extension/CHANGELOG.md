@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.19] — 2026-04-01
+
 ### Fixed
 - **Cross-workspace Chat Continuity Guard scope** ([#153](https://github.com/chf3198/crostini-mem-watchdog/issues/153)) — guard now runs a preemptive startup scan and archives oversized sessions in inactive workspaces before a workspace switch can load hundreds of MB of chat JSON into the extension host. Active-workspace behavior remains prompt/auto per `chatGuard.autoRescue`.
 - **Daemon compatibility floor raised** — `MIN_SAFE_DAEMON_VERSION` updated to `20260401.1` to require startup chat-footprint warning support.
