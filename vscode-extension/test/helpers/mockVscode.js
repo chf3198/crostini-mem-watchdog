@@ -57,11 +57,18 @@ const mockWindow = {
     createStatusBarItem() {
         return { text: '', color: '', tooltip: '', show() {}, dispose() {} };
     },
+    visibleTextEditors: [],
+    showTextDocument(doc) {
+        this._shownDocuments = this._shownDocuments || [];
+        this._shownDocuments.push(doc);
+        return Promise.resolve(doc);
+    },
 };
 
 const mockWorkspace = {
     _configValues: {},
     reset() { this._configValues = {}; },
+    workspaceFolders: [],
     getConfiguration(/* section */) {
         const vals = mockWorkspace._configValues;
         return {
@@ -71,6 +78,7 @@ const mockWorkspace = {
         };
     },
     onDidChangeConfiguration() { return { dispose() {} }; },
+    openTextDocument(filePath) { return Promise.resolve({ uri: { fsPath: filePath } }); },
 };
 
 // ── ThemeColor and MarkdownString stubs ───────────────────────────────────────

@@ -20,10 +20,10 @@ vscode-extension/
   extension.js           ← activate(): install → skill → config → commands → status bar (2s poll) → update check → chat
   installer.js           ← SHA-256 hash-based daemon auto-install/upgrade + MIN_SAFE guard
   configWriter.js        ← VS Code Settings → ~/.config/mem-watchdog/config.sh
-  commands.js            ← 4 commands: dashboard, preflight, killChrome, restartService
+  commands.js            ← 6 commands: dashboard, preflight, killDisposable, restartService, optimizeMemory, createLowMemProfile
   updateChecker.js       ← GitHub Releases API self-update check (24h throttled, non-blocking)
   skillInstaller.js      ← installs/updates ~/.copilot/skills/mem-watchdog-ops/ on activation
-  chatParticipant.js     ← @memwatchdog chat participant: /status, /logs, /tune, /act
+  chatParticipant.js     ← @memwatchdog chat participant: /status, /logs, /tune, /act, /optimize, /lowmem
   utils.js               ← readMeminfo(), sh(), checkServiceStatus() — shared helpers
   lifecycle.js           ← vscode:uninstall hook; stops + disables the service
   scripts/prepare.js     ← vscode:prepublish: copies daemon files → resources/
@@ -55,11 +55,11 @@ vscode-extension/
 | PSI `full avg10 > 25%` | `SIGTERM` Chrome/Playwright (deferred if Playwright active) |
 | VS Code RSS ≥ `VSCODE_RSS_EMERG_KB` (3.8 GB) | `SIGKILL` Chrome (always, even during Playwright); if no Chrome → `kill_vscode_main()` |
 | VS Code RSS ≥ `VSCODE_RSS_WARN_KB` (3.4 GB) | `SIGTERM` Chrome (deferred if Playwright active) + desktop alert; if no Chrome or deferred → `kill_top_vscode_helper()` (Shared Process, File Watcher, Network Service ≈300 MB); if no candidate → cgroup throttle/reclaim, defer to EMERGENCY |
-| RSS delta ≥ `RSS_ACCEL_KB` (300 MB/cycle) **AND** `vscode_rss ≥ eff_warn` | `kill_browsers(TERM)` (deferred if Playwright active) or `kill_top_vscode_helper()` |
+| RSS delta ≥ `RSS_ACCEL_KB` (300 MB/cycle) **AND** `vscode_rss ≥ eff_warn` | `kill_disposable_processes(TERM)` (deferred if automation active) or `kill_top_vscode_helper()` |
 | `RSS_RUNAWAY_STREAK=3` consecutive ACCEL cycles above `RSS_RUNAWAY_MIN_KB` (2.6 GB) | Circuit-breaker: `kill_vscode_main()` |
-| Chrome PIDs > `CHROME_COUNT_MAX` (3) | SIGKILL oldest excess (skipped when Playwright active) |
+| Disposable PIDs > `DISPOSABLE_COUNT_MAX` (3) | SIGKILL oldest excess (skipped when automation active) |
 
-**Playwright awareness** (Issue #109, v20260329.1): `playwright_is_active()` detects active sessions via `pgrep -f "$TIER_DISPOSABLE_PATTERN_AUX"` (`node.*playwright`). When active, `check_chrome_cap()` is skipped (Playwright legitimately spawns 5-10 Chrome PIDs) and `kill_browsers()` returns 1 at non-critical severity (WARN/ACCEL/Stage 2-3) — callers fall through to helper kills or cgroup throttle. EMERGENCY and Stage 4 always kill Chrome regardless (safety net).
+**Automation awareness** (Issue #109, v20260331.3): `automation_session_active()` detects active sessions via `pgrep -f "$TIER_DISPOSABLE_PATTERN_AUX"` (default `node.*(playwright|puppeteer|cypress|selenium-webdriver)`). When active, `check_disposable_cap()` is skipped and `kill_disposable_processes()` returns 1 at non-critical severity (WARN/ACCEL/Stage 2-3) — callers fall through to helper kills or cgroup throttle. EMERGENCY and Stage 4 always kill disposable targets regardless (safety net).
 
 **ACCEL gate (critical)**: The `vscode_rss >= eff_warn` guard on the RSS velocity check is non-negotiable. Without it, V8 JIT compilation during startup legitimately spikes 300–900 MB/cycle at 1–2 GB total RSS, causing the watchdog to kill the Extension Host in a restart loop. Confirmed 2026-03-16: "Extension host terminated unexpectedly 3 times."
 
@@ -84,7 +84,7 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
 bash tests/test-watchdog.sh                                                          # 18 bash tests, ~3s
 bash -n mem-watchdog.sh                                                        # syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh
-cd vscode-extension && npm test                                                # 146 JS unit tests, ~1s
+cd vscode-extension && npm test                                                # 180 JS unit tests, ~1s
 bash scripts/docs-integrity-check.sh                                           # docs drift check
 ```
 
@@ -97,7 +97,7 @@ bash scripts/docs-integrity-check.sh                                           #
 ```bash
 cd vscode-extension
 npm run build              # populate resources/ for dev (gitignored; required before vsce package)
-npm test                   # 146 unit tests via node:test (~1s)
+npm test                   # 180 unit tests via node:test (~1s)
 npm run test:coverage      # + c8 V8 lcov output
 npm run test:stress        # pileup guard + event-loop lag + heap scenarios
 npx vsce package           # → mem-watchdog-status-x.y.z.vsix

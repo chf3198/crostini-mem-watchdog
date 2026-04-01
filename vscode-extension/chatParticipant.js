@@ -4,7 +4,16 @@ const vscode = require('vscode');
 
 const commands = require('./commands');
 const optimizer = require('./optimizer');
-const { readMeminfo, readPsi, sh } = require('./utils');
+const lowMemProfile = require('./lowMemProfile');
+const {
+    readMeminfo,
+    readPsi,
+    sh,
+    readWatchdogMode,
+    readRssThresholds,
+    determineState,
+    stateDescription,
+} = require('./utils');
 
 // ── Chat API detection ────────────────────────────────────────────────────────
 // The Chat API (vscode.chat.createChatParticipant) requires VS Code ≥ 1.93.
@@ -47,15 +56,31 @@ async function renderStatus() {
     const mem = readMeminfo();
     const psi = readPsi();
     const svc = await sh('systemctl --user is-active mem-watchdog 2>/dev/null || echo unknown');
+    const serviceStatus = (svc.stdout || 'unknown').trim();
+    const uptime = await sh('systemctl --user show mem-watchdog -p ActiveEnterTimestamp --value 2>/dev/null || true');
+    const uptimeText = (uptime.stdout || '').trim() || 'unknown';
+    const mode = readWatchdogMode();
+    const { warnKB, emergKB } = readRssThresholds();
     const vsRssResult = await sh('ps -C code -o rss= 2>/dev/null');
     const vscodeRssKB = (vsRssResult.stdout || '')
         .split('\n')
         .filter(Boolean)
         .reduce((s, n) => s + (parseInt(n, 10) || 0), 0);
 
+    const state = determineState({
+        serviceStatus,
+        mode,
+        vscodeRssKB,
+        warnKB,
+        emergKB,
+    });
+    const stateDesc = stateDescription(state);
+
     if (!mem) {
         return `### Mem Watchdog Status\n\n` +
-            `- Service: **${(svc.stdout || 'unknown').trim()}**\n` +
+            `- Service: **${serviceStatus}**\n` +
+            `- Service uptime: **${uptimeText}**\n` +
+            `- State: **${state}** — ${stateDesc}\n` +
             `- /proc/meminfo: unreadable\n` +
             `- PSI full avg10: ${(psi / 100).toFixed(2)}%\n`;
     }
@@ -63,9 +88,12 @@ async function renderStatus() {
     return [
         '### Mem Watchdog Status',
         '',
-        `- Service: **${(svc.stdout || 'unknown').trim()}**`,
+        `- Service: **${serviceStatus}**`,
+        `- Service uptime: **${uptimeText}**`,
+        `- State: **${state}** — ${stateDesc}`,
         `- RAM free: **${mem.pct.toFixed(1)}%** (${Math.round(mem.availableKB / 1024)} MB available)`,
         `- VS Code RSS: **${Math.round(vscodeRssKB / 1024)} MB**`,
+        `- WARN / EMERG: **${Math.round(warnKB / 1024)} / ${Math.round(emergKB / 1024)} MB**`,
         `- PSI full avg10: **${(psi / 100).toFixed(2)}%**`,
         '',
         'Use `/memwatchdog logs` for recent journal actions, or `/memwatchdog tune <profile>`.',
@@ -98,8 +126,8 @@ async function requestHandler(request, _context, stream) {
     if (command === 'act') {
         const p = prompt.toLowerCase();
         if (p.includes('kill') || p.includes('chrome')) {
-            await commands.killChrome();
-            stream.markdown('Sent `SIGTERM` to Chrome/Playwright targets.');
+            await commands.killDisposable();
+            stream.markdown('Sent `SIGTERM` to disposable-process targets.');
         } else if (p.includes('restart') || p.includes('service')) {
             await commands.restartService();
             stream.markdown('Restarted `mem-watchdog` service (or attempted restart).');
@@ -140,7 +168,8 @@ async function requestHandler(request, _context, stream) {
         const cfg = vscode.workspace.getConfiguration();
         const settingsAudit = optimizer.auditSettings(cfg);
         const argvAudit     = optimizer.auditArgv();
-        const report        = optimizer.renderReport(settingsAudit, argvAudit);
+        const extensionAudit = lowMemProfile.analyzeInstalledExtensions(vscode.extensions?.all || []);
+        const report        = optimizer.renderReport(settingsAudit, argvAudit, extensionAudit);
 
         stream.markdown(report);
 
@@ -148,7 +177,24 @@ async function requestHandler(request, _context, stream) {
         if (totalMissing > 0) {
             stream.button({ command: 'memWatchdog.optimizeMemory', title: 'Apply Optimizations' });
         }
+        if (extensionAudit.recommendProfile) {
+            stream.button({ command: 'memWatchdog.createLowMemProfile', title: 'Guide LowMem Profile' });
+        }
         stream.button({ command: 'memWatchdog.showDashboard', title: 'Open Dashboard' });
+        return { metadata: { command } };
+    }
+
+    if (command === 'lowmem') {
+        const extensionAudit = lowMemProfile.analyzeInstalledExtensions(vscode.extensions?.all || []);
+        stream.markdown(lowMemProfile.renderLowMemReport(extensionAudit));
+        stream.button({ command: 'memWatchdog.createLowMemProfile', title: 'Guide LowMem Profile' });
+        stream.button({ command: 'memWatchdog.optimizeMemory', title: 'Optimize Settings' });
+        return { metadata: { command } };
+    }
+
+    if (command === 'rescue') {
+        await commands.chatRescue();
+        stream.markdown('Started the oversized chat rescue flow. Mem Watchdog will archive the active large session, generate a continuity pack, and reload the window if you confirm restart.');
         return { metadata: { command } };
     }
 
@@ -175,6 +221,8 @@ function registerChatParticipant(context) {
                     { prompt: '/memwatchdog logs', label: 'Show recent logs' },
                     { prompt: '/memwatchdog tune conservative', label: 'Apply conservative profile' },
                     { prompt: '/memwatchdog optimize', label: 'Audit VS Code memory settings' },
+                    { prompt: '/memwatchdog lowmem', label: 'Plan a LowMem profile' },
+                    { prompt: '/memwatchdog rescue', label: 'Rescue oversized chat history' },
                 ];
             }
             if (last === 'logs') {
@@ -187,11 +235,21 @@ function registerChatParticipant(context) {
                 return [
                     { prompt: '/memwatchdog status', label: 'Show status' },
                     { prompt: '/memwatchdog tune balanced', label: 'Apply balanced profile' },
+                    { prompt: '/memwatchdog lowmem', label: 'Plan a LowMem profile' },
+                ];
+            }
+            if (last === 'lowmem') {
+                return [
+                    { prompt: '/memwatchdog optimize', label: 'Optimize settings' },
+                    { prompt: '/memwatchdog status', label: 'Show status' },
+                    { prompt: '/memwatchdog rescue', label: 'Rescue oversized chat history' },
                 ];
             }
             return [
                 { prompt: '/memwatchdog status', label: 'Show status' },
                 { prompt: '/memwatchdog optimize', label: 'Audit VS Code memory settings' },
+                { prompt: '/memwatchdog lowmem', label: 'Plan a LowMem profile' },
+                { prompt: '/memwatchdog rescue', label: 'Rescue oversized chat history' },
             ];
         },
     };

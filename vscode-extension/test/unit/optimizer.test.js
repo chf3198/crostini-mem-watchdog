@@ -23,6 +23,7 @@ const {
     diffJsFlags,
     mergeJsFlags,
     settingMatches,
+    objectMissingKeys,
     auditSettings,
     auditArgv,
     applyArgv,
@@ -96,6 +97,19 @@ describe('settingMatches', () => {
     });
 });
 
+describe('objectMissingKeys', () => {
+    test('returns target keys when current is non-object', () => {
+        const target = { a: true, b: true };
+        assert.deepEqual(objectMissingKeys(null, target), ['a', 'b']);
+    });
+
+    test('returns only mismatched/missing keys', () => {
+        const target = { a: true, b: true, c: true };
+        const current = { a: true, b: false };
+        assert.deepEqual(objectMissingKeys(current, target), ['b', 'c']);
+    });
+});
+
 // ── auditSettings ─────────────────────────────────────────────────────────────
 
 describe('auditSettings', () => {
@@ -154,6 +168,19 @@ describe('auditSettings', () => {
         const result = auditSettings(makeCfg(values));
         const watcherEntry = result.applied.find(a => a.key === 'files.watcherExclude');
         assert.ok(watcherEntry, 'files.watcherExclude should be applied');
+    });
+
+    test('files.watcherExclude reports missing keys for incomplete object', () => {
+        const values = {
+            'files.watcherExclude': {
+                '**/.git/objects/**': true,
+            },
+        };
+        const result = auditSettings(makeCfg(values));
+        const watcherEntry = result.missing.find(m => m.key === 'files.watcherExclude');
+        assert.ok(watcherEntry, 'files.watcherExclude should be missing when incomplete');
+        assert.ok(Array.isArray(watcherEntry.missingKeys), 'missingKeys should be present');
+        assert.ok(watcherEntry.missingKeys.includes('**/node_modules/**'));
     });
 });
 
@@ -517,5 +544,26 @@ describe('profile completeness', () => {
     test('js-flags value contains exactly 5 flags', () => {
         const flags = ARGV_PROFILE['js-flags'].value.trim().split(/\s+/);
         assert.equal(flags.length, 5, `Expected 5 js-flags, got ${flags.length}`);
+    });
+
+    test('files.watcherExclude includes aggressive inotify reduction patterns', () => {
+        const watcher = SETTINGS_PROFILE['files.watcherExclude'].value;
+        const required = [
+            '**/dist/**',
+            '**/build/**',
+            '**/out/**',
+            '**/.next/**',
+            '**/.cache/**',
+            '**/.parcel-cache/**',
+            '**/coverage/**',
+            '**/.nyc_output/**',
+            '**/__pycache__/**',
+            '**/.pytest_cache/**',
+            '**/vendor/**',
+            '**/.vscode-test/**',
+        ];
+        for (const key of required) {
+            assert.equal(watcher[key], true, `missing watcher pattern: ${key}`);
+        }
     });
 });

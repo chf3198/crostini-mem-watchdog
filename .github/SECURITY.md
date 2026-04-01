@@ -113,7 +113,7 @@ The following GitHub-native security tooling is configured or available for this
 
 | Feature | Config file | What it does |
 |---|---|---|
-| **CI gate** | `.github/workflows/ci.yml` | Runs shellcheck, 18 bash tests, 105 JS unit tests, and docs-integrity check on every PR |
+| **CI gate** | `.github/workflows/ci.yml` | Runs shellcheck, 18 bash tests, 180 JS unit tests, and docs-integrity check on every PR |
 | **Dependency Review** | `.github/workflows/ci.yml` (job: `dependency-review`) | Blocks PRs that introduce deps with CVEs ≥ moderate severity |
 | **Dependabot version updates** | `.github/dependabot.yml` | Weekly PRs to keep `npm` devDeps and GitHub Actions current |
 | **Least-privilege Actions** | Both workflow files | `permissions: contents: read` globally; jobs override only what they need |

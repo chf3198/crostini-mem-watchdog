@@ -1,6 +1,6 @@
 // test/unit/commands.test.js
 // ─────────────────────────────────────────────────────────────────────────────
-// Unit tests for commands.js — killChrome(), restartService(), and the
+// Unit tests for commands.js — killDisposable(), restartService(), and the
 // pkill exit-code interpretation that was fixed by removing '|| true'.
 //
 // MOCKING STRATEGY (CJS require.cache injection):
@@ -20,7 +20,7 @@ const path   = require('path');
 
 // ── Step 1: mock 'vscode' ─────────────────────────────────────────────────────
 // Must happen before require('../../commands') below.
-const { setup: vsSetup, mockWindow, mockWorkspace } = require('../helpers/mockVscode');
+const { setup: vsSetup, mockWindow, mockWorkspace, mockVscode } = require('../helpers/mockVscode');
 vsSetup();
 
 // ── Step 2: mock './utils' ────────────────────────────────────────────────────
@@ -28,6 +28,7 @@ vsSetup();
 // We must populate require.cache at the resolved path before the first require.
 
 const utilsAbsPath = path.resolve(__dirname, '../../utils.js');
+const chatContinuityAbsPath = path.resolve(__dirname, '../../chatContinuity.js');
 
 // Mutable queue — push desired return values before each test
 const _shQueue   = [];
@@ -53,6 +54,32 @@ require.cache[utilsAbsPath] = {
     exports:  { readMeminfo: mockReadMeminfo, readPsi: mockReadPsi, sh: mockSh },
 };
 
+const _rescueInvocations = [];
+require.cache[chatContinuityAbsPath] = {
+    id: chatContinuityAbsPath,
+    filename: chatContinuityAbsPath,
+    loaded: true,
+    paths: [],
+    exports: {
+        DEFAULT_SESSION_THRESHOLD_MB: 120,
+        formatBytes: (bytes) => `${Math.round(bytes / 1024 / 1024)} MB`,
+        findRescueCandidate: () => ({
+            name: 'huge-session.json',
+            filePath: '/tmp/huge-session.json',
+            sizeBytes: 458 * 1024 * 1024,
+            mtimeMs: Date.now(),
+        }),
+        rescueSession: async (_vscode, options) => {
+            _rescueInvocations.push(options);
+            return {
+                ok: true,
+                resumePath: '/tmp/resume.prompt.md',
+                packPath: '/tmp/continuity-pack.md',
+            };
+        },
+    },
+};
+
 // ── Step 3: require the module under test ─────────────────────────────────────
 const commands = require('../../commands');
 
@@ -62,10 +89,13 @@ function reset() {
     _shCallLog.length = 0;
     mockWindow.reset();
     mockWorkspace.reset();
+    mockVscode.commands.reset();
+    mockVscode.extensions = { all: [] };
+    _rescueInvocations.length = 0;
     _mockMi = { totalKB: 6440000, availableKB: 2000000, pct: 31 };
 }
 
-// ── killChrome tests ──────────────────────────────────────────────────────────
+// ── killDisposable tests ─────────────────────────────────────────────────────
 // This is the most important test group: verifies the pkill exit-code logic
 // after the '|| true' bug was removed.
 //
@@ -79,14 +109,14 @@ function reset() {
 //   Playwright only → "SIGTERM sent to Playwright node"
 //   Both ok:false → "no Chrome or Playwright processes found"
 
-describe('killChrome — pkill exit-code interpretation', () => {
+describe('killDisposable — pkill exit-code interpretation', () => {
     beforeEach(() => reset());
 
     test('both pkill succeed: informationMessage lists both targets', async () => {
         _shQueue.push({ ok: true,  stdout: '', stderr: '' }); // chrome pkill
         _shQueue.push({ ok: true,  stdout: '', stderr: '' }); // playwright pkill
 
-        await commands.killChrome();
+        await commands.killDisposable();
 
         assert.equal(mockWindow._infoMessages.length, 1, 'exactly one info message');
         const msg = mockWindow._infoMessages[0];
@@ -99,7 +129,7 @@ describe('killChrome — pkill exit-code interpretation', () => {
         _shQueue.push({ ok: true,  stdout: '', stderr: '' }); // chrome found
         _shQueue.push({ ok: false, stdout: '', stderr: '' }); // playwright not found
 
-        await commands.killChrome();
+        await commands.killDisposable();
 
         const msg = mockWindow._infoMessages[0];
         assert.ok(msg.includes('Chrome/Chromium'), 'Chrome mentioned');
@@ -110,7 +140,7 @@ describe('killChrome — pkill exit-code interpretation', () => {
         _shQueue.push({ ok: false, stdout: '', stderr: '' }); // chrome not found
         _shQueue.push({ ok: true,  stdout: '', stderr: '' }); // playwright found
 
-        await commands.killChrome();
+        await commands.killDisposable();
 
         const msg = mockWindow._infoMessages[0];
         assert.ok(!msg.includes('Chrome/Chromium'), 'Chrome NOT mentioned');
@@ -123,12 +153,12 @@ describe('killChrome — pkill exit-code interpretation', () => {
         _shQueue.push({ ok: false, stdout: '', stderr: '' }); // chrome: exit 1
         _shQueue.push({ ok: false, stdout: '', stderr: '' }); // playwright: exit 1
 
-        await commands.killChrome();
+        await commands.killDisposable();
 
         assert.equal(mockWindow._infoMessages.length, 1);
         const msg = mockWindow._infoMessages[0];
         assert.ok(
-            msg.includes('no Chrome') || msg.includes('no chrome') || msg.includes('not found') || msg.includes('no processes'),
+            msg.includes('no disposable') || msg.includes('no Chrome') || msg.includes('no chrome') || msg.includes('not found') || msg.includes('no processes'),
             `expected "no processes" message, got: "${msg}"`
         );
         assert.equal(mockWindow._errorMessages.length, 0, 'must be info, not error');
@@ -138,7 +168,7 @@ describe('killChrome — pkill exit-code interpretation', () => {
         _shQueue.push({ ok: false, stdout: '', stderr: '' });
         _shQueue.push({ ok: false, stdout: '', stderr: '' });
 
-        await commands.killChrome();
+        await commands.killDisposable();
 
         assert.equal(mockWindow._errorMessages.length, 0,
             '"no processes found" must use showInformationMessage, not showErrorMessage');
@@ -171,5 +201,68 @@ describe('restartService', () => {
         const errMsg = mockWindow._errorMessages[0];
         assert.ok(errMsg.includes('Unit not found.'), `expected stderr in message: "${errMsg}"`);
         assert.equal(mockWindow._infoMessages.length, 0);
+    });
+});
+
+describe('createLowMemProfile', () => {
+    beforeEach(() => reset());
+
+    test('guides profile creation from current profile', async () => {
+        mockVscode.extensions = {
+            all: [
+                { id: 'eamodio.gitlens', packageJSON: { displayName: 'GitLens' } },
+                { id: 'github.copilot', packageJSON: { displayName: 'GitHub Copilot' } },
+            ],
+        };
+        mockWindow._infoChoices.push('Create From Current Profile');
+
+        await commands.createLowMemProfile();
+
+        assert.ok(mockVscode.commands._executedCommands.some(args => args[0] === 'workbench.profiles.actions.createFromCurrentProfile'));
+        assert.ok(mockWindow._infoMessages.some(msg => msg.includes('MemWatchdog LowMem')));
+    });
+
+    test('applies recommended disable set in current profile', async () => {
+        mockVscode.extensions = {
+            all: [
+                { id: 'eamodio.gitlens', packageJSON: { displayName: 'GitLens' } },
+                { id: 'ms-azuretools.vscode-docker', packageJSON: { displayName: 'Docker' } },
+            ],
+        };
+        mockWindow._infoChoices.push('Apply Recommended Set Here', 'Later');
+
+        await commands.createLowMemProfile();
+
+        assert.ok(mockVscode.commands._executedCommands.some(args => args[0] === 'extension.open' && args[1] === 'eamodio.gitlens'));
+        assert.ok(mockVscode.commands._executedCommands.some(args => args[0] === 'extensions.disableGlobally'));
+    });
+});
+
+describe('chatRescue', () => {
+    beforeEach(() => reset());
+
+    test('archives and reloads when user chooses Archive + Restart', async () => {
+        mockWorkspace._configValues = {
+            'chatGuard.sessionSizeMB': 120,
+            'chatGuard.preserveCount': 3,
+            'chatGuard.restartAfterRescue': true,
+        };
+        mockWindow._warnChoices.push('Archive + Restart');
+
+        const result = await commands.chatRescue();
+
+        assert.equal(result.ok, true);
+        assert.equal(_rescueInvocations.length, 1);
+        assert.ok(mockVscode.commands._executedCommands.some(args => args[0] === 'workbench.action.reloadWindow'));
+    });
+
+    test('archives without reload when user chooses Archive Only', async () => {
+        mockWindow._warnChoices.push('Archive Only');
+
+        const result = await commands.chatRescue();
+
+        assert.equal(result.ok, true);
+        assert.equal(_rescueInvocations.length, 1);
+        assert.ok(!mockVscode.commands._executedCommands.some(args => args[0] === 'workbench.action.reloadWindow'));
     });
 });

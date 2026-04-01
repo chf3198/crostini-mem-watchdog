@@ -37,6 +37,8 @@ function writeConfig(cfg) {
     let sigtermPct = cfg.get('sigtermThresholdPct');
     let sigkillPct = cfg.get('sigkillThresholdPct');
     const psiPct   = cfg.get('psiThresholdPct');
+    let rssWarnMB  = cfg.get('vscodeRssWarnMB', 3400);
+    let rssEmergMB = cfg.get('vscodeRssEmergencyMB', 3800);
 
     // ── Cross-field validation ─────────────────────────────────────────────
     // VS Code Settings UI enforces per-field min/max, but direct settings.json
@@ -52,6 +54,15 @@ function writeConfig(cfg) {
         sigkillPct = 15;
     }
 
+    if (rssWarnMB >= rssEmergMB) {
+        warnings.push(
+            `vscodeRssEmergencyMB (${rssEmergMB}) must be > vscodeRssWarnMB (${rssWarnMB}). ` +
+            `Reverting both to defaults (warn=3400, emergency=3800).`
+        );
+        rssWarnMB = 3400;
+        rssEmergMB = 3800;
+    }
+
     for (const w of warnings) {
         console.error('[memWatchdog] configWriter: ' + w);
     }
@@ -63,6 +74,8 @@ function writeConfig(cfg) {
         `SIGTERM_THRESHOLD=${sigtermPct}`,
         `SIGKILL_THRESHOLD=${sigkillPct}`,
         `PSI_THRESHOLD=${psiPct}`,
+        `VSCODE_RSS_WARN_KB=${rssWarnMB * 1024}`,
+        `VSCODE_RSS_EMERG_KB=${rssEmergMB * 1024}`,
     ];
 
     const newContent = lines.join('\n') + '\n';

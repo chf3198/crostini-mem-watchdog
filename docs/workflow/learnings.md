@@ -20,6 +20,17 @@
 
 ---
 
+### 2026-04-01 — Oversized Copilot chat rescue must preserve resumability, not just delete state
+
+**Context**: Implementing issue #148 after diagnosing a restart loop where VS Code repeatedly reloaded a hundreds-of-megabytes Copilot chat session JSON and hit extension-host OOM on startup.
+
+**Discovery**: The user-friendly fix is not "delete the big chat" — it is "move it out of active session storage, then generate a resumable handoff bundle." VS Code's public chat docs strongly support starting fresh sessions for context-window hygiene and archiving completed sessions, but the stable extension API does not expose direct session-archive control for Copilot-owned chats. The robust workaround is filesystem-level archival of the session JSON plus a continuity pack (`continuity-pack.md`, `resume.prompt.md`, metadata) that preserves objective, workspace context, and recoverable snippets without forcing the extension host to re-parse the full giant JSON on next launch.
+
+**Application**:
+- Mem Watchdog's Chat Continuity Guard archives oversized session JSON out of `workspaceStorage/*/chatSessions/` instead of deleting it.
+- The rescue flow should always open a resumable prompt before triggering a reload, so stability gains do not come at the cost of task continuity.
+- Future chat-stability features should prefer "archive + compact handoff" over destructive cleanup whenever the stable VS Code API lacks first-class chat-session lifecycle hooks.
+
 ### 2026-03-31 — Managed-window control must be repo-agnostic, not integration-specific
 
 **Context**: Stabilizing automation sessions after repeated crashes where one repository had a custom managed-window integration but other workflows did not.

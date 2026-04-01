@@ -4,20 +4,24 @@
 // `contributes.commands` entry in package.json.
 //
 // Commands:
-//   memWatchdog.showDashboard   — full memory snapshot in an output channel
-//   memWatchdog.preflightCheck  — RAM / Chrome / watchdog pass-fail summary
-//   memWatchdog.killChrome      — immediate SIGTERM to all Chrome/Playwright
-//   memWatchdog.restartService  — systemctl --user restart mem-watchdog
-//   memWatchdog.optimizeMemory  — audit+apply low-memory settings profile
+//   memWatchdog.showDashboard        — full memory snapshot in an output channel
+//   memWatchdog.preflightCheck       — RAM / Chrome / watchdog pass-fail summary
+//   memWatchdog.killDisposable       — immediate SIGTERM to disposable-process targets
+//   memWatchdog.restartService       — systemctl --user restart mem-watchdog
+//   memWatchdog.optimizeMemory       — audit+apply low-memory settings profile
+//   memWatchdog.createLowMemProfile  — guide VS Code profile creation for reduced extension load
 // ─────────────────────────────────────────────────────────────────────────────
 'use strict';
 
 const vscode = require('vscode');
 const { readMeminfo, readPsi, sh } = require('./utils');
 const optimizer = require('./optimizer');
+const lowMemProfile = require('./lowMemProfile');
+const chatContinuity = require('./chatContinuity');
 
 // ── Shared output channel (created lazily) ────────────────────────────────────
 let _channel = null;
+let _lastRescuePromptKey = '';
 function channel() {
     if (!_channel) {
         _channel = vscode.window.createOutputChannel('Mem Watchdog');
@@ -147,17 +151,17 @@ async function preflightCheck() {
     const choice = await vscode.window.showInformationMessage(
         `${icon} Pre-flight: ${summary}`,
         { detail, modal: true },
-        ...(chromeRunning ? ['Kill Chrome Now'] : []),
+        ...(chromeRunning ? ['Kill Disposable Processes Now'] : []),
         'Show Dashboard'
     );
 
-    if (choice === 'Kill Chrome Now') { await killChrome(); }
+    if (choice === 'Kill Disposable Processes Now') { await killDisposable(); }
     if (choice === 'Show Dashboard')  { await showDashboard(); }
 }
 
-// ── Command: Kill Chrome / Playwright Now ────────────────────────────────────
+// ── Command: Kill Disposable Processes Now ───────────────────────────────────
 
-async function killChrome() {
+async function killDisposable() {
     const results = await Promise.all([
         sh("pkill -SIGTERM -f '(chrome|chromium)' 2>/dev/null"),
         sh("pkill -SIGTERM -f 'node.*playwright' 2>/dev/null"),
@@ -171,13 +175,13 @@ async function killChrome() {
     const playKilled   = playSig.ok;
 
     if (!chromeKilled && !playKilled) {
-        vscode.window.showInformationMessage('Mem Watchdog: no Chrome or Playwright processes found.');
+        vscode.window.showInformationMessage('Mem Watchdog: no disposable processes found.');
     } else {
         const parts = [
             chromeKilled ? 'Chrome/Chromium' : null,
             playKilled   ? 'Playwright node' : null,
         ].filter(Boolean);
-        vscode.window.showInformationMessage(`Mem Watchdog: SIGTERM sent to ${parts.join(' + ')}.`);
+        vscode.window.showInformationMessage(`Mem Watchdog: SIGTERM sent to disposable targets (${parts.join(' + ')}).`);
     }
 }
 
@@ -192,6 +196,111 @@ async function restartService() {
     }
 }
 
+// ── Command: Create / Guide Low-Memory Profile ───────────────────────────────
+
+async function createLowMemProfile() {
+    return lowMemProfile.createLowMemProfile(vscode);
+}
+
+// ── Command: Rescue oversized chat session ──────────────────────────────────
+
+async function chatRescue(options = {}) {
+    const cfg = vscode.workspace.getConfiguration('memWatchdog');
+    const thresholdMB = cfg.get('chatGuard.sessionSizeMB', chatContinuity.DEFAULT_SESSION_THRESHOLD_MB);
+    const keepArchives = cfg.get('chatGuard.preserveCount', 3);
+    const restartAfterRescue = cfg.get('chatGuard.restartAfterRescue', true);
+    const candidate = options.session || chatContinuity.findRescueCandidate({ thresholdMB });
+
+    if (!candidate) {
+        vscode.window.showInformationMessage(`Mem Watchdog: no active chat session exceeds ${thresholdMB} MB.`);
+        return { ok: false, reason: 'no-candidate' };
+    }
+
+    const sizeText = chatContinuity.formatBytes(candidate.sizeBytes);
+    const detail = [
+        `Oversized session: ${candidate.name}`,
+        `Size: ${sizeText}`,
+        `Modified: ${new Date(candidate.mtimeMs).toLocaleString()}`,
+        'Mem Watchdog can move it out of the active chat store, generate a continuity pack, and optionally reload VS Code before the extension host re-parses it.',
+    ].join('\n');
+
+    if (!options.skipConfirmation) {
+        const choice = await vscode.window.showWarningMessage(
+            `Mem Watchdog: rescue oversized Copilot chat session (${sizeText})?`,
+            { modal: true, detail },
+            'Archive + Restart',
+            'Archive Only',
+            'Cancel'
+        );
+        if (choice === 'Cancel' || !choice) {
+            return { ok: false, reason: 'cancelled' };
+        }
+        options = {
+            ...options,
+            restart: choice === 'Archive + Restart',
+        };
+    }
+
+    const result = await chatContinuity.rescueSession(vscode, {
+        session: candidate,
+        thresholdMB,
+        keepArchives,
+        openResume: true,
+    });
+
+    if (!result.ok) {
+        vscode.window.showWarningMessage('Mem Watchdog: chat rescue did not find a session to archive.');
+        return result;
+    }
+
+    const shouldRestart = options.restart ?? restartAfterRescue;
+    vscode.window.showInformationMessage(
+        `Mem Watchdog: archived ${candidate.name} and opened ${result.resumePath}. ${shouldRestart ? 'Reloading VS Code to break the restart loop.' : 'Continue from the opened resume prompt when ready.'}`
+    );
+
+    if (shouldRestart) {
+        await vscode.commands.executeCommand('workbench.action.reloadWindow');
+    }
+    return { ok: true, ...result, restarted: shouldRestart };
+}
+
+async function maybePromptChatRescue() {
+    const cfg = vscode.workspace.getConfiguration('memWatchdog');
+    if (!cfg.get('chatGuard.enabled', true)) { return false; }
+
+    const thresholdMB = cfg.get('chatGuard.sessionSizeMB', chatContinuity.DEFAULT_SESSION_THRESHOLD_MB);
+    const rssWarnMB = cfg.get('vscodeRssWarnMB', 3400);
+    const autoRescue = cfg.get('chatGuard.autoRescue', 'prompt');
+    const candidate = chatContinuity.findRescueCandidate({ thresholdMB });
+    if (!candidate) { return false; }
+
+    const vscodeRssMB = Math.round(await totalRss('code') / 1024);
+    const oversized = candidate.sizeBytes >= (thresholdMB * 1024 * 1024 * 2);
+    if (vscodeRssMB < rssWarnMB && !oversized) { return false; }
+
+    const promptKey = `${candidate.filePath}:${candidate.sizeBytes}:${candidate.mtimeMs}`;
+    if (promptKey === _lastRescuePromptKey) { return false; }
+    _lastRescuePromptKey = promptKey;
+
+    if (autoRescue === 'auto') {
+        await chatRescue({ session: candidate, skipConfirmation: true, restart: true });
+        return true;
+    }
+    if (autoRescue !== 'prompt') { return false; }
+
+    const choice = await vscode.window.showWarningMessage(
+        `Mem Watchdog: Copilot chat session ${candidate.name} grew to ${chatContinuity.formatBytes(candidate.sizeBytes)} while VS Code is at ${vscodeRssMB} MB RSS.`,
+        { modal: false, detail: 'Rescue archives the session out of active chat storage, generates a continuity pack, and can reload the window before the extension host re-parses the oversized JSON.' },
+        'Rescue Now',
+        'Later'
+    );
+    if (choice === 'Rescue Now') {
+        await chatRescue({ session: candidate, skipConfirmation: true, restart: cfg.get('chatGuard.restartAfterRescue', true) });
+        return true;
+    }
+    return false;
+}
+
 // ── Dispose ────────────────────────────────────────────────────────────────────
 function dispose() {
     if (_channel) { _channel.dispose(); _channel = null; }
@@ -203,12 +312,26 @@ async function optimizeMemory() {
     const cfg = vscode.workspace.getConfiguration();
     const settingsAudit = optimizer.auditSettings(cfg);
     const argvAudit     = optimizer.auditArgv();
+    const extensionAudit = lowMemProfile.analyzeInstalledExtensions(vscode.extensions?.all || []);
 
     const totalMissing = settingsAudit.missing.length + argvAudit.missing.length;
     const totalApplied = settingsAudit.applied.length + argvAudit.applied.length;
     const totalChecked = totalApplied + totalMissing;
 
     if (totalMissing === 0) {
+        if (extensionAudit.recommendProfile) {
+            const choice = await vscode.window.showInformationMessage(
+                `Mem Watchdog: settings are fully optimized, but ${extensionAudit.totalUserExtensions} user extensions are still installed. ${lowMemProfile.summarizeAnalysis(extensionAudit)}`,
+                'Guide LowMem Profile',
+                'Show Recommendations'
+            );
+            if (choice === 'Guide LowMem Profile') {
+                await createLowMemProfile();
+            } else if (choice === 'Show Recommendations') {
+                await lowMemProfile.showRecommendedExtensions(vscode, extensionAudit);
+            }
+            return;
+        }
         vscode.window.showInformationMessage(
             `Mem Watchdog: VS Code is fully optimized — ${totalApplied}/${totalChecked} settings match the low-memory profile. ✓`
         );
@@ -225,12 +348,23 @@ async function optimizeMemory() {
         detailLines.push(`${m.key} → ${val} (${m.savings})`);
     }
 
+    if (extensionAudit.recommendProfile) {
+        detailLines.push('');
+        detailLines.push(`[extensions] ${lowMemProfile.summarizeAnalysis(extensionAudit)}`);
+    }
+
     const choice = await vscode.window.showInformationMessage(
         `Mem Watchdog: ${totalMissing} memory optimization(s) available (${totalApplied}/${totalChecked} already applied).`,
         { detail: detailLines.join('\n'), modal: true },
         'Apply All',
-        'Show Details'
+        'Show Details',
+        ...(extensionAudit.recommendProfile ? ['Guide LowMem Profile'] : [])
     );
+
+    if (choice === 'Guide LowMem Profile') {
+        await createLowMemProfile();
+        return;
+    }
 
     if (choice === 'Show Details') {
         const ch = channel();
@@ -270,6 +404,16 @@ async function optimizeMemory() {
             ch.appendLine(`    ✓ ${a.key} (${a.savings})`);
         }
         ch.appendLine('');
+
+        if (extensionAudit.recommendProfile) {
+            ch.appendLine('  ── LowMem profile recommendation ──');
+            ch.appendLine(`  ${lowMemProfile.summarizeAnalysis(extensionAudit)}`);
+            if (extensionAudit.recommendedDisableIds.length > 0) {
+                ch.appendLine(`  Heavy candidates: ${extensionAudit.recommendedDisableIds.join(', ')}`);
+            }
+            ch.appendLine('');
+        }
+
         ch.appendLine('══════════════════════════════════════════════════════════════');
         return;
     }
@@ -306,4 +450,4 @@ async function optimizeMemory() {
     }
 }
 
-module.exports = { showDashboard, preflightCheck, killChrome, restartService, optimizeMemory, dispose };
+module.exports = { showDashboard, preflightCheck, killDisposable, restartService, optimizeMemory, createLowMemProfile, chatRescue, maybePromptChatRescue, dispose };

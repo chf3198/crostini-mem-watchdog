@@ -2,7 +2,7 @@
 
 **Prevents VS Code from being OOM-killed on ChromeOS Crostini** by running an independent systemd daemon that monitors memory pressure and kills Chrome/Playwright processes before the Linux kernel decides to kill VS Code instead.
 
-> **Why this exists:** `earlyoom` crashes immediately on Crostini with exit code 104 — a `strtol()` overflow caused by a bogus `SwapFree` sentinel value in the kernel's `/proc/meminfo`. It has never provided protection on this platform. This extension installs a bash-based replacement that avoids the broken value entirely and adds VS Code-aware RSS thresholds that earlyoom cannot provide.
+> **Why this exists:** `earlyoom` crashes immediately on Crostini with exit code 104 — a `strtol()` overflow caused by a bogus `SwapFree` sentinel value in the kernel's `/proc/meminfo`. It has never provided protection on this platform. This extension installs a bash-based replacement that avoids the broken value entirely, adds VS Code-aware RSS thresholds, and now includes a Chat Continuity Guard for rescuing oversized Copilot sessions before they trigger extension-host restart loops.
 
 ---
 
@@ -15,13 +15,13 @@ The daemon acts on these conditions (checked every 2 seconds):
 | `MemAvailable ≤ 15%` (~945 MB on 6 GB) | `SIGKILL` Chrome / Playwright |
 | `MemAvailable ≤ 25%` (~1.6 GB on 6 GB) | `SIGTERM` Chrome / Playwright |
 | PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall) |
-| VS Code RSS > 3.4 GB | `SIGTERM` Chrome + desktop notification; if no Chrome → log and defer to EMERGENCY |
-| VS Code RSS > 3.8 GB | `SIGKILL` Chrome; if no Chrome → `SIGTERM` the highest-RSS extension host process to save the VS Code window |
+| VS Code RSS > 3.4 GB | RSS warn path: kill disposable targets or lowest-value VS Code helper if RSS is accelerating |
+| VS Code RSS > 3.8 GB | RSS emergency circuit-breaker: critical helper kill, then controlled VS Code main restart if needed |
 | RSS velocity spike | Kill lowest-value VS Code helper — **never** a language server or Extension Host at normal severity |
 
 **Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process (hosting Copilot, Playwright MCP, and all extensions) are excluded from the helper-kill candidate pool at normal severity. These small processes (80–120 MB) are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing one saves negligible memory while permanently disabling language intelligence or all extensions. They are only considered as last-resort targets at true emergency severity (RSS ≥ 3.8 GB).
 
-**Playwright awareness:** When a Playwright MCP session is active (detected via `node.*playwright`), the daemon automatically defers non-critical Chrome kills — Playwright legitimately spawns 5–10 Chrome PIDs. The Chrome process count cap (`CHROME_COUNT_MAX`) is also skipped during active sessions. At true emergency severity (≤ 15% free RAM), Chrome is always killed regardless.
+**Automation awareness:** When an automation session is active (detected via `TIER_DISPOSABLE_PATTERN_AUX`, default `node.*(playwright|puppeteer|cypress|selenium-webdriver)`), the daemon automatically defers non-critical disposable kills. The disposable process cap (`DISPOSABLE_COUNT_MAX`) is also skipped during active sessions. At true emergency severity (≤ 15% free RAM), disposable targets are always killed regardless.
 
 **Startup mode:** when new VS Code PIDs appear, the daemon switches to **0.5 s polling for 90 s** and raises the RSS emergency threshold to 4.0 GB — catching the extension-host spike that caused the crash this tool was built to prevent (0 → 4 GB RSS in under 2 seconds during startup).
 
@@ -33,10 +33,12 @@ A live memory indicator in the bottom bar updates every 2 seconds:
 
 | Appearance | Meaning |
 |---|---|
-| `✓ RAM 76% free` — green | Healthy — watchdog active, plenty of RAM |
-| `⚠ RAM 22% free` — amber | Pressure — Chrome termination may be coming |
-| `🔥 RAM 14% free` — red | Critical — SIGKILL threshold approaching |
-| `✗ watchdog: inactive` — red | Service not running |
+| `GUARDING` — green | Healthy patrol state |
+| `ALERT` — amber | Near warning pressure |
+| `RECOVERING` — amber | Warning threshold reached or post-action settling |
+| `ATTACKING` — red | Emergency pressure / active protective action |
+| `SLEEPING` — yellow | Managed-window mode (`mode=SLEEP`) |
+| `OFF` — red | Service not running |
 
 **Click the status bar item** to open the full Memory Dashboard.
 
@@ -49,8 +51,11 @@ Access all commands via `Ctrl+Shift+P` → **Mem Watchdog:**
 | Command | Description |
 |---|---|
 | **Show Memory Dashboard** | Full snapshot in an output channel: system RAM, PSI stall index, VS Code RSS by PID, Chrome RSS totals, service status, last 8 journal lines |
-| **Playwright Pre-flight Check** | Pass/fail modal: RAM%, VS Code RSS, Chrome presence, watchdog state. Offers "Kill Chrome Now" inline if Chrome is running. |
-| **Kill Chrome / Playwright Now** | Immediately sends `SIGTERM` to all `chrome`, `chromium`, and `node.*playwright` processes |
+| **Playwright Pre-flight Check** | Pass/fail modal: RAM%, VS Code RSS, disposable process presence, watchdog state. Offers "Kill Disposable Processes Now" inline if disposable targets are running. |
+| **Kill Disposable Processes Now** | Immediately sends `SIGTERM` to disposable targets matching browser + automation patterns |
+| **Optimize VS Code for Low Memory** | Audits `settings.json` and `argv.json` against the recommended low-memory profile and applies missing settings |
+| **Guide Low-Memory Profile Setup** | Audits installed extensions by estimated memory impact, opens the Profiles workflow, and recommends which heavy extensions to disable in a dedicated LowMem profile |
+| **Rescue Oversized Chat Session** | Archives a large Copilot chat session, generates a continuity pack + resume prompt, and optionally reloads VS Code before the extension host re-parses the giant JSON |
 | **Restart Service** | `systemctl --user restart mem-watchdog` with live status feedback |
 
 ---
@@ -61,10 +66,13 @@ Type `@memwatchdog` in Copilot Chat for AI-assisted memory operations:
 
 | Command | Description |
 |---|---|
-| `/memwatchdog status` | RAM%, VS Code RSS, PSI, service state snapshot |
+| `/memwatchdog status` | Thematic state + description, RAM%, VS Code RSS, WARN/EMERG thresholds, PSI |
 | `/memwatchdog logs` | Last 40 journal lines with action markers |
 | `/memwatchdog tune balanced` | Apply a tuning profile (balanced / conservative / playwright) |
-| `/memwatchdog act kill chrome` | Kill Chrome, restart service, or open dashboard |
+| `/memwatchdog optimize` | Audit VS Code settings and argv flags against the low-memory baseline |
+| `/memwatchdog lowmem` | Estimate extension memory load, recommend a LowMem profile, and suggest which heavy extensions to disable |
+| `/memwatchdog rescue` | Run the oversized-chat rescue flow and generate a resumable continuity pack |
+| `/memwatchdog act kill disposable` | Kill disposable processes, restart service, or open dashboard |
 
 The extension also installs a Copilot skill at `~/.copilot/skills/mem-watchdog-ops/` so the assistant carries watchdog context across all repositories.
 
@@ -83,6 +91,11 @@ Configure all thresholds via **VS Code Settings → Mem Watchdog**. Changes take
 | `psiThresholdPct` | `25` | `SIGTERM` on PSI `full avg10` above this % |
 | `vscodeRssWarnMB` | `3400` | Warn + `SIGTERM` Chrome when total VS Code RSS exceeds this many MB |
 | `vscodeRssEmergencyMB` | `3800` | `SIGKILL` Chrome (or `SIGTERM` extension host) above this MB |
+| `chatGuard.enabled` | `true` | Enable oversized-chat detection and rescue prompting |
+| `chatGuard.sessionSizeMB` | `120` | Session JSON size that triggers rescue eligibility |
+| `chatGuard.autoRescue` | `prompt` | `off`, `prompt`, or `auto` behavior when an oversized chat is detected |
+| `chatGuard.restartAfterRescue` | `true` | Reload the window after rescue so the extension host doesn't re-parse the giant archived session |
+| `chatGuard.preserveCount` | `3` | Number of rescue archives to keep under `~/.config/mem-watchdog/chat-archives/` |
 
 > All settings use `scope: "machine"` — they do **not** sync across machines via Settings Sync. A threshold tuned for 6 GB RAM would be dangerously wrong on a 16 GB machine.
 
@@ -108,12 +121,13 @@ VS Code Extension (this)            Systemd Daemon (independent process)
 ────────────────────────            ──────────────────────────────────────
 • Auto-installs daemon         →    ~/.local/bin/mem-watchdog.sh
 • Writes config on change      →    ~/.config/mem-watchdog/config.sh
-• Status bar + 4 commands           • Polls /proc/meminfo + PSI every 2 s
+• Status bar + 7 commands           • Polls /proc/meminfo + PSI every 2 s
 • @memwatchdog chat participant     • Kills Chrome on threshold breach
 • GitHub Releases update checker    • Survives VS Code freezing / crashing
 • Copilot skill installer           • oom_score_adj tuning every loop
 • Upgrade detection via hash        • Config sourcing (no script modification)
 • OOM-resilient service monitoring  • Language-server + ExtHost protection
+• Chat Continuity Guard             • RSS circuit-breaker before kernel OOM
 ```
 
 ---
@@ -174,9 +188,9 @@ Commercial use requires a paid license. See [COMMERCIAL-LICENSE.md](https://gith
 git clone https://github.com/chf3198/crostini-mem-watchdog.git
 cd crostini-mem-watchdog/vscode-extension
 npm run build          # populate resources/ from repo root
-npm test               # 106 JS unit tests via node:test (zero-install)
+npm test               # 172 JS unit tests via node:test (zero-install)
 npm run test:coverage  # same + c8 V8 coverage report
 npm run test:stress    # stress scenarios: pileup guard, EL lag, heap usage
 ```
 
-106 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()`, config validation, command handlers, installer decision logic, `activate()` singleton lifecycle, the `update()` state machine + pileup guard, update checker (version comparison, throttling, dismissal), installer MIN_SAFE_DAEMON_VERSION guard, installer downgrade protection (export-prefix version parsing), skill installer (install/update/skip), and `@memwatchdog` chat participant (all 4 commands, profile detection/application, followups, API availability guard).
+180 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()` plus thematic state helpers (`readWatchdogMode()`, `readRssThresholds()`, `determineState()`, `stateDescription()`), chat continuity archival/resume generation, low-memory profile classification/guidance, config validation, command handlers, installer decision logic, `activate()` singleton lifecycle, the `update()` state machine + pileup guard, update checker (version comparison, throttling, dismissal), installer MIN_SAFE_DAEMON_VERSION guard, installer downgrade protection (export-prefix version parsing), skill installer (install/update/skip), and `@memwatchdog` chat participant (status, logs, tune, optimize, lowmem, rescue, followups, API availability guard).

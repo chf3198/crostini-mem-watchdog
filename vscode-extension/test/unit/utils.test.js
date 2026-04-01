@@ -14,7 +14,15 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 
 // utils.js has no vscode dep — require directly
-const { readMeminfo, readPsi, sh } = require('../../utils');
+const {
+    readMeminfo,
+    readPsi,
+    sh,
+    readWatchdogMode,
+    readRssThresholds,
+    determineState,
+    stateDescription,
+} = require('../../utils');
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -196,5 +204,88 @@ describe('sh', () => {
         const r = await sh('true');
         assert.equal(r.ok, true);
         assert.equal(r.stdout, '');
+    });
+});
+
+describe('readWatchdogMode', () => {
+    test('returns SLEEP when mode file contains SLEEP', (t) => {
+        let now = 10_000;
+        t.mock.method(Date, 'now', () => now);
+        t.mock.method(fs, 'readFileSync', (p) => {
+            if (p.endsWith('/.config/mem-watchdog/mode')) { return 'SLEEP\n'; }
+            throw new Error(`unexpected readFileSync: ${p}`);
+        });
+        assert.equal(readWatchdogMode(), 'SLEEP');
+    });
+
+    test('uses 1s cache window', (t) => {
+        let now = 20_000;
+        let reads = 0;
+        t.mock.method(Date, 'now', () => now);
+        t.mock.method(fs, 'readFileSync', (p) => {
+            if (p.endsWith('/.config/mem-watchdog/mode')) { reads++; return 'SLEEP\n'; }
+            throw new Error(`unexpected readFileSync: ${p}`);
+        });
+
+        assert.equal(readWatchdogMode(), 'SLEEP');
+        now += 500;
+        assert.equal(readWatchdogMode(), 'SLEEP');
+        assert.equal(reads, 1, 'second call inside cache window should not re-read file');
+    });
+});
+
+describe('readRssThresholds', () => {
+    test('parses warn/emerg from config when present', (t) => {
+        t.mock.method(fs, 'readFileSync', (p) => {
+            if (p.endsWith('/.config/mem-watchdog/config.sh')) {
+                return 'VSCODE_RSS_WARN_KB=3500000\nVSCODE_RSS_EMERG_KB=4100000\n';
+            }
+            throw new Error(`unexpected readFileSync: ${p}`);
+        });
+        const r = readRssThresholds();
+        assert.equal(r.warnKB, 3500000);
+        assert.equal(r.emergKB, 4100000);
+    });
+
+    test('falls back to defaults when config unreadable', (t) => {
+        t.mock.method(fs, 'readFileSync', () => { throw new Error('ENOENT'); });
+        const r = readRssThresholds();
+        assert.equal(r.warnKB, 3400000);
+        assert.equal(r.emergKB, 3800000);
+    });
+});
+
+describe('determineState + stateDescription', () => {
+    test('OFF when service not active', () => {
+        assert.equal(determineState({ serviceStatus: 'inactive' }), 'OFF');
+    });
+
+    test('SLEEPING when mode is SLEEP', () => {
+        assert.equal(determineState({ serviceStatus: 'active', mode: 'SLEEP' }), 'SLEEPING');
+    });
+
+    test('ATTACKING when rss exceeds emerg threshold', () => {
+        assert.equal(determineState({ serviceStatus: 'active', vscodeRssKB: 3900000, emergKB: 3800000 }), 'ATTACKING');
+    });
+
+    test('RECOVERING when rss exceeds warn threshold', () => {
+        assert.equal(determineState({ serviceStatus: 'active', vscodeRssKB: 3450000, warnKB: 3400000, emergKB: 3800000 }), 'RECOVERING');
+    });
+
+    test('ALERT near warn threshold', () => {
+        assert.equal(determineState({ serviceStatus: 'active', vscodeRssKB: 2800000, warnKB: 3400000, emergKB: 3800000 }), 'ALERT');
+    });
+
+    test('GUARDING below alert threshold', () => {
+        assert.equal(determineState({ serviceStatus: 'active', vscodeRssKB: 1500000, warnKB: 3400000, emergKB: 3800000 }), 'GUARDING');
+    });
+
+    test('description exists for each state', () => {
+        const states = ['OFF', 'SLEEPING', 'ATTACKING', 'RECOVERING', 'ALERT', 'GUARDING'];
+        for (const state of states) {
+            const msg = stateDescription(state);
+            assert.equal(typeof msg, 'string');
+            assert.ok(msg.length > 0);
+        }
     });
 });

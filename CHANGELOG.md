@@ -10,12 +10,14 @@ Daemon versions use `YYYYMMDD.N` (datestamp + revision).
 
 ### Added
 - **Repo-agnostic managed-window helper** ([#146](https://github.com/chf3198/crostini-mem-watchdog/issues/146)) — added `scripts/mem-watchdog-mode.sh` with `status|sleep|normal|run -- <command>` so any repository/workflow can request watchdog `mode=SLEEP` without embedding custom integration code. Installer now deploys it to `~/.local/bin/mem-watchdog-mode.sh`.
+- **Truthful Stage 4 escalation + RSS circuit-breaker** ([#148](https://github.com/chf3198/crostini-mem-watchdog/issues/148)) — when no disposable target exists, Stage 4 now escalates to critical VS Code helper kills instead of claiming kernel OOM will protect VS Code. Added aggregate VS Code RSS warn/emergency thresholds and a controlled `kill_vscode_main()` circuit-breaker to restart the window before a kernel OOM loop hard-kills random `code` processes.
 
 ### Changed
 - **Stack-agnostic disposable naming refactor** ([#140](https://github.com/chf3198/crostini-mem-watchdog/issues/140)) — daemon internals now use `kill_disposable_processes()`, `check_disposable_cap()`, `automation_session_active()`, and `DISPOSABLE_COUNT_MAX` naming. Legacy `CHROME_COUNT_MAX` remains accepted as a one-release alias with startup deprecation warning.
 - **Journal token rename (breaking for log parsers)** — `CHROME-EXCESS` → `DISPOSABLE-EXCESS`.
 - **Default automation fallback pattern broadened** — `TIER_DISPOSABLE_PATTERN_AUX` default now includes common Node automation frameworks: `playwright|puppeteer|cypress|selenium-webdriver`.
 - **Managed-window stale-timeout guard** ([#138](https://github.com/chf3198/crostini-mem-watchdog/issues/138)) — `MEM_SLEEP_TIMEOUT_S` (default 300s) now auto-clears stale `mode=SLEEP` signals and logs a warning when the caller fails to clean up.
+- **Status snapshots now log RSS runway context** — `STATUS(...)` lines include `rss_delta_kb`, `rss_warn_kb`, `rss_emerg_kb`, RSS warn/emergency event counters, and controlled VS Code main restart counts for post-incident forensics.
 
 ## [20260331.1] — 2026-03-31
 

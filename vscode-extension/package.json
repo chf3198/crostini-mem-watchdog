@@ -73,8 +73,8 @@
         "category": "Mem Watchdog"
       },
       {
-        "command": "memWatchdog.killChrome",
-        "title": "Kill Chrome / Playwright Now",
+        "command": "memWatchdog.killDisposable",
+        "title": "Kill Disposable Processes Now",
         "category": "Mem Watchdog"
       },
       {
@@ -85,6 +85,16 @@
       {
         "command": "memWatchdog.optimizeMemory",
         "title": "Optimize VS Code for Low Memory",
+        "category": "Mem Watchdog"
+      },
+      {
+        "command": "memWatchdog.createLowMemProfile",
+        "title": "Guide Low-Memory Profile Setup",
+        "category": "Mem Watchdog"
+      },
+      {
+        "command": "memWatchdog.chatRescue",
+        "title": "Rescue Oversized Chat Session",
         "category": "Mem Watchdog"
       }
     ],
@@ -117,6 +127,64 @@
           "scope": "machine",
           "order": 3,
           "markdownDescription": "Send `SIGTERM` on sustained memory stall: PSI `full avg10` exceeds this %. Default: `25`."
+        },
+        "memWatchdog.vscodeRssWarnMB": {
+          "type": "number",
+          "default": 3400,
+          "minimum": 512,
+          "maximum": 6144,
+          "scope": "machine",
+          "order": 4,
+          "markdownDescription": "Warn threshold for aggregate VS Code RSS in MB. Used by the status UI, chat rescue guard, and daemon circuit-breaker config. Default: `3400`."
+        },
+        "memWatchdog.vscodeRssEmergencyMB": {
+          "type": "number",
+          "default": 3800,
+          "minimum": 768,
+          "maximum": 6500,
+          "scope": "machine",
+          "order": 5,
+          "markdownDescription": "Emergency threshold for aggregate VS Code RSS in MB. Must be greater than `#memWatchdog.vscodeRssWarnMB#`. Default: `3800`."
+        },
+        "memWatchdog.chatGuard.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "order": 6,
+          "markdownDescription": "Enable the Chat Continuity Guard, which detects oversized Copilot chat sessions, offers archival with a continuity pack, and can reload VS Code before the extension host re-parses the oversized session JSON."
+        },
+        "memWatchdog.chatGuard.sessionSizeMB": {
+          "type": "number",
+          "default": 120,
+          "minimum": 20,
+          "maximum": 1024,
+          "scope": "machine",
+          "order": 7,
+          "markdownDescription": "Prompt for rescue when a recent Copilot chat session JSON reaches this size in MB. Default: `120`."
+        },
+        "memWatchdog.chatGuard.autoRescue": {
+          "type": "string",
+          "enum": ["off", "prompt", "auto"],
+          "default": "prompt",
+          "scope": "machine",
+          "order": 8,
+          "markdownDescription": "Behavior when Chat Continuity Guard detects a dangerous oversized session. `off` disables prompting, `prompt` offers rescue, `auto` archives and reloads automatically. Default: `prompt`."
+        },
+        "memWatchdog.chatGuard.restartAfterRescue": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "order": 9,
+          "markdownDescription": "Reload VS Code automatically after a successful chat rescue so the extension host does not immediately re-parse the oversized archived session."
+        },
+        "memWatchdog.chatGuard.preserveCount": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 20,
+          "scope": "machine",
+          "order": 10,
+          "markdownDescription": "How many rescue archives to keep in `~/.config/mem-watchdog/chat-archives/`. Older rescue bundles are pruned after a new rescue."
         }
       }
     },
@@ -142,11 +210,19 @@
           },
           {
             "name": "act",
-            "description": "Run watchdog action: kill chrome, restart service, or open dashboard"
+            "description": "Run watchdog action: kill disposable processes, restart service, or open dashboard"
           },
           {
             "name": "optimize",
             "description": "Audit VS Code settings and argv.json against a low-memory profile"
+          },
+          {
+            "name": "lowmem",
+            "description": "Estimate extension memory load and guide LowMem profile setup"
+          },
+          {
+            "name": "rescue",
+            "description": "Archive an oversized Copilot chat session and generate a continuity pack"
           }
         ],
         "disambiguation": [

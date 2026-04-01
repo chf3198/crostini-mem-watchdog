@@ -53,9 +53,17 @@ const SETTINGS_PROFILE = {
             '**/node_modules/**': true,
             '**/.playwright-mcp/**': true,
             '**/dist/**': true,
+            '**/out/**': true,
             '**/.cache/**': true,
+            '**/.parcel-cache/**': true,
             '**/build/**': true,
             '**/.next/**': true,
+            '**/coverage/**': true,
+            '**/.nyc_output/**': true,
+            '**/__pycache__/**': true,
+            '**/.pytest_cache/**': true,
+            '**/vendor/**': true,
+            '**/.vscode-test/**': true,
             '**/.venv/**': true,
         },
         savings: '~50-540 MB (kernel)',
@@ -202,6 +210,30 @@ function settingMatches(current, target) {
 }
 
 /**
+ * Return missing keys for object-type settings (target keys absent/mismatched in current).
+ * For non-object targets, returns [] so callers can treat uniformly.
+ *
+ * @param {*} current
+ * @param {*} target
+ * @returns {string[]}
+ */
+function objectMissingKeys(current, target) {
+    if (target === null || typeof target !== 'object' || Array.isArray(target)) {
+        return [];
+    }
+    if (current === null || typeof current !== 'object') {
+        return Object.keys(target);
+    }
+    const missing = [];
+    for (const key of Object.keys(target)) {
+        if (current[key] !== target[key]) {
+            missing.push(key);
+        }
+    }
+    return missing;
+}
+
+/**
  * Audit current VS Code settings against the low-memory profile.
  *
  * @param {import('vscode').WorkspaceConfiguration|object} cfg
@@ -219,7 +251,14 @@ function auditSettings(cfg) {
         if (settingMatches(current, profile.value)) {
             applied.push({ key, savings: profile.savings });
         } else {
-            missing.push({ key, value: profile.value, currentValue: current, savings: profile.savings, reason: profile.reason });
+            missing.push({
+                key,
+                value: profile.value,
+                currentValue: current,
+                savings: profile.savings,
+                reason: profile.reason,
+                missingKeys: objectMissingKeys(current, profile.value),
+            });
         }
     }
     return { applied, missing };
@@ -350,9 +389,10 @@ function applyArgv(missingArgv, argvContent, argvPath) {
  *
  * @param {{ applied: Array, missing: Array }} settingsAudit
  * @param {{ applied: Array, missing: Array }} argvAudit
+ * @param {{ recommendProfile?: boolean, totalUserExtensions?: number, totals?: object, estimatedSavingsMB?: {min: number, max: number} }} [extensionAudit]
  * @returns {string} — markdown-formatted report
  */
-function renderReport(settingsAudit, argvAudit) {
+function renderReport(settingsAudit, argvAudit, extensionAudit) {
     const lines = ['### Memory Optimization Audit', ''];
 
     const totalApplied = settingsAudit.applied.length + argvAudit.applied.length;
@@ -401,7 +441,23 @@ function renderReport(settingsAudit, argvAudit) {
                 : JSON.stringify(m.value);
             lines.push(`- \`${m.key}\` → \`${val}\` — ${m.savings}`);
             lines.push(`  *${m.reason}*`);
+            if (m.missingKeys && m.missingKeys.length > 0) {
+                lines.push(`  Missing keys: ${m.missingKeys.join(', ')}`);
+            }
         }
+        lines.push('');
+    }
+
+    if (extensionAudit && extensionAudit.recommendProfile) {
+        lines.push('#### LowMem profile');
+        lines.push(
+            `- Installed user extensions: **${extensionAudit.totalUserExtensions}** ` +
+            `(${extensionAudit.totals.essential} essential / ${extensionAudit.totals.moderate} moderate / ${extensionAudit.totals.heavy} heavy)`
+        );
+        lines.push(
+            `- Heavy-extension savings estimate: **~${extensionAudit.estimatedSavingsMB.min}-${extensionAudit.estimatedSavingsMB.max} MB**`
+        );
+        lines.push('- Consider creating a dedicated LowMem profile and disabling heavy extensions there.');
         lines.push('');
     }
 
@@ -417,6 +473,7 @@ module.exports = {
     diffJsFlags,
     mergeJsFlags,
     settingMatches,
+    objectMissingKeys,
     auditSettings,
     auditArgv,
     applySettings,
