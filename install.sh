@@ -42,6 +42,22 @@ run()     {
     eval "$@"
   fi
 }
+  # ── Step 3d: inotify watch cap (optional, requires sudo) ─────────────────────
+  # Issue #127: reduce kernel memory pinned by excessive inotify watches.
+  # Conservative default for this host: 16384 watches.
+  INOTIFY_SYSCTL="/etc/sysctl.d/90-mem-watchdog.conf"
+  INOTIFY_VALUE="16384"
+  if ! $DRY_RUN && sudo -n true 2>/dev/null; then
+    echo "Step 3d — inotify watch cap (sudo available)"
+    sudo mkdir -p /etc/sysctl.d
+    printf 'fs.inotify.max_user_watches=%s\n' "$INOTIFY_VALUE" | sudo tee "$INOTIFY_SYSCTL" >/dev/null
+    sudo sysctl -q -w "fs.inotify.max_user_watches=${INOTIFY_VALUE}" >/dev/null 2>&1 || true
+    info "inotify cap configured → ${INOTIFY_SYSCTL} (max_user_watches=${INOTIFY_VALUE})"
+  else
+    warning "Skipping inotify cap config — sudo not available or dry-run"
+    warning "To apply manually: echo 'fs.inotify.max_user_watches=${INOTIFY_VALUE}' | sudo tee '${INOTIFY_SYSCTL}'"
+  fi
+
 
 echo ""
 echo "┌─────────────────────────────────────────────────────┐"
@@ -67,7 +83,10 @@ echo "Step 1/4 — Install daemon"
 run "mkdir -p '${INSTALL_BIN}'"
 run "cp '${SCRIPT_DIR}/mem-watchdog.sh' '${INSTALL_BIN}/mem-watchdog.sh'"
 run "chmod +x '${INSTALL_BIN}/mem-watchdog.sh'"
+run "cp '${SCRIPT_DIR}/scripts/mem-watchdog-mode.sh' '${INSTALL_BIN}/mem-watchdog-mode.sh'"
+run "chmod +x '${INSTALL_BIN}/mem-watchdog-mode.sh'"
 info "mem-watchdog.sh → ${INSTALL_BIN}/mem-watchdog.sh"
+info "mem-watchdog-mode.sh → ${INSTALL_BIN}/mem-watchdog-mode.sh"
 
 # ── Step 2: Install service unit ──────────────────────────────────────────────
 echo "Step 2/4 — Install systemd user service"

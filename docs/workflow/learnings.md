@@ -20,6 +20,72 @@
 
 ---
 
+### 2026-03-31 — Managed-window control must be repo-agnostic, not integration-specific
+
+**Context**: Stabilizing automation sessions after repeated crashes where one repository had a custom managed-window integration but other workflows did not.
+
+**Discovery**: The daemon-level `mode=SLEEP` protocol is globally useful, but relying on per-repository wrappers creates drift and gaps. The robust pattern is a repo-agnostic helper command that lives with mem-watchdog itself and wraps arbitrary commands in a guaranteed `SLEEP → command → NORMAL` lifecycle, including signal-safe cleanup.
+
+**Application**:
+- Added `scripts/mem-watchdog-mode.sh` with `status|sleep|normal|run -- <command>`.
+- Installer now deploys `~/.local/bin/mem-watchdog-mode.sh` so any repo can use the same control surface.
+- Documentation now points users to the helper as the default managed-window entry point.
+
+---
+
+### 2026-03-31 — VS Code low-memory profiles are feasible, but only as guided automation
+
+**Context**: Implementing issue #128 — low-memory profile support in the VS Code extension.
+
+**Discovery**: VS Code exposes stable built-in commands for profile creation/switching (`workbench.profiles.actions.createFromCurrentProfile`, `workbench.profiles.actions.switchProfile`) and extension listing (`workbench.extensions.action.showExtensionsWithIds`), but not a clean one-shot public API to clone a profile and disable a curated extension set programmatically. The workable path is guided automation: create/switch the profile with built-in profile commands, then disable recommended heavy extensions in the *current* profile via extension editor actions. The key enabling fact is that extension enablement is profile-scoped — global disablement storage lives in `StorageScope.PROFILE`, not one machine-wide toggle shared across all profiles.
+
+**Application**:
+- Low-memory profile UX should be implemented as a guided workflow, not a fake fully-automatic API abstraction.
+- It is safe to recommend disabling heavy extensions inside a dedicated profile because the enablement state stays isolated to that profile.
+- `/memwatchdog optimize` should recommend a LowMem profile when settings are already tuned but installed extension weight is still high; settings tuning alone does not solve extension-host baseline RSS.
+
+---
+
+### 2026-03-31 — Inotify pressure is currently low; install-time excludes matter more than runtime sysctl tuning
+
+**Context**: Completing issue #123 — measuring current inotify watch pressure and determining a safe watch-limit posture for this system.
+
+**Discovery**: A live probe on the active development session found only 34 inotify file descriptors and 389 total watches after the optimizer exclusions landed. The container reports `fs.inotify.max_user_watches=1048576`, but runtime attempts to lower the value via `sudo -n sysctl fs.inotify.max_user_watches=...` fail with `permission denied on key "fs.inotify.max_user_watches"` in this Crostini environment. That means the valuable control surface here is not runtime daemon tuning — it is install-time `sysctl.d` guidance plus aggressive `files.watcherExclude` patterns that prevent watch creation in the first place.
+
+**Application**:
+- Keep the optimizer's aggressive watcher excludes as the primary inotify memory reduction mechanism.
+- Keep the install-time `sysctl.d` write at the conservative floor of `16384`; it is far above the currently observed 389-watch workload while still much lower than the host default.
+- Do not add daemon-time `sysctl` mutation logic for inotify; this environment blocks it and the current optimized watch count is already small.
+
+---
+
+### 2026-03-31 — `prlimit --as` is the wrong containment primitive for Electron/VS Code
+
+**Context**: Completing issue #122 — evaluating `prlimit --as` as a proactive daemon control for VS Code.
+
+**Discovery**: Live `/proc/PID/status` baselines show Electron/VS Code processes reserving enormous virtual address spaces on this machine — multiple `code` PIDs report `VmSize` around 1.46 TB while RSS is only 100–630 MB. `prlimit --pid <code-pid> --as` confirms the current RLIMIT_AS is unlimited, and any practical cap in the 4–8 GB range would immediately sit far below the already-reserved virtual address space. That means `RLIMIT_AS` does not track the resource we actually care about (RSS); it would either do nothing useful if set in the terabyte range or break VS Code instantly if set in the gigabyte range.
+
+**Application**:
+- Reject `prlimit --as` as a daemon containment mechanism for this repo.
+- Close follow-on work that depends on dynamic RLIMIT_AS ceilings; it conflicts with the current outward-facing policy and is technically mismatched to Electron's address-space behavior.
+- Use MemAvailable/PSI, V8 heap tuning, extension-weight reduction, and targeted browser containment instead of process-tree RLIMIT_AS caps.
+
+---
+
+### 2026-03-31 — `memory.force_empty` can block for minutes; reclaim must be bounded
+
+**Context**: Returning to active work in frankspressurewashing caused a VS Code freeze during a Playwright-heavy window. The watchdog journal showed Stage 4 kill activity at 15:03 followed by a long period with no watchdog progress.
+
+**Discovery**: `cgroup_reclaim()` used synchronous `echo 0 | sudo -n tee memory.force_empty` with no timeout and no spacing between attempts. A second reclaim call at 15:03:22 stayed open until 15:16:37 (13m15s), creating a watchdog blind spot where the main loop could not evaluate new pressure conditions. This was not a kernel OOM event; it was control-path blocking in the daemon itself.
+
+**Application**:
+- Added bounded reclaim writes using `timeout ${RECLAIM_TIMEOUT_S}s` for both `memory.reclaim` (v2) and `memory.force_empty` (v1).
+- Added `RECLAIM_MIN_INTERVAL_S` guard + `_last_reclaim_action_time` to prevent reclaim storms and back-to-back reclaim calls.
+- Updated Stage 3 PSI-only logging to distinguish reclaim applied vs reclaim skipped/unavailable so post-incident forensics are accurate.
+- Bumped daemon `WATCHDOG_VERSION` to `20260331.2` and extension `MIN_SAFE_DAEMON_VERSION` to match.
+
+---
+
 ### 2026-03-31 — Release-governance drift needs machine checks, not checklist memory
 
 **Context**: Post-sprint governance audit after FPW v1.4 completion and extension version drift investigation.
