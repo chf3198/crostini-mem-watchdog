@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# mem-watchdog.sh — Crostini-safe memory watchdog for VS Code / Playwright
+# mem-watchdog.sh — Crostini-safe memory watchdog for VS Code / disposable processes
 #
 # WHY THIS EXISTS (do not replace with earlyoom):
 #   earlyoom v1.7 crashes immediately on this system with exit code 104.
@@ -60,15 +60,19 @@ STAGE2_SOFT_LIMIT_PCT=80       # soft_limit = 80% of MemTotal (creates reclaim p
 STAGE3_PSI_FULL_X100=200       # PSI full avg10 > 2.00%
 STAGE3_MEM_PCT=25              # OR MemAvailable < 25%
 #
-# Stage 4 — Critical: SIGKILL Chrome + non-essential apps; defer to kernel OOM
+# Stage 4 — Critical: SIGKILL disposable targets + critical helper escalation
 STAGE4_PSI_FULL_X100=500       # PSI full avg10 > 5.00%
 STAGE4_MEM_PCT=15              # OR MemAvailable < 15%
+VSCODE_RSS_WARN_KB=3481600     # 3.4 GB default warn threshold for aggregate VS Code RSS
+VSCODE_RSS_EMERG_KB=3891200    # 3.8 GB default emergency threshold for aggregate VS Code RSS
+RSS_ACCEL_KB=300000            # 300 MB/cycle RSS acceleration gate
+CODE_RECOVERY_COOLDOWN=30      # minimum seconds between controlled VS Code main restarts
 
 # Backward-compatible names — NOT used directly in the daemon.
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260331.1   # 2026-03-31 v1: Managed window signal file protocol (Issue #139) — SLEEP mode defers all kills
+export WATCHDOG_VERSION=20260331.3   # 2026-03-31 v3: Stack-agnostic disposable-process naming + CHROME_COUNT_MAX compatibility alias
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -81,7 +85,7 @@ OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 #   oom_score_adj: OOM_VSCODE_ADJ (0) — non-negative; no root needed
 #   Kill policy: NEVER killed by the watchdog; protected at all severity levels
 #
-# DISPOSABLE: browser and automation processes
+# DISPOSABLE: browser and automation-orchestrator processes
 #   Matched by: pgrep -f $TIER_DISPOSABLE_PATTERN / $TIER_DISPOSABLE_PATTERN_AUX
 #   oom_score_adj: OOM_CHROME_ADJ (1000) — maximum kernel OOM priority
 #   Kill policy: Stage 2+ (Throttle and above)
@@ -94,8 +98,16 @@ OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 #   Language servers: protected at WARN severity, killable at EMERG only
 #   Other helpers (renderer, IPC): killable at WARN as expendable candidates
 TIER_PROTECTED_PNAME='code'                       # ps -C process name for protected tier
-TIER_DISPOSABLE_PATTERN='(chrome|chromium)'        # pgrep -f ERE for disposable browsers
-TIER_DISPOSABLE_PATTERN_AUX='node.*playwright'     # pgrep -f ERE for disposable automation
+# Disposable process pattern (ERE for pgrep -f). Processes matching this
+# pattern are candidates for SIGTERM/SIGKILL under memory pressure.
+# Default covers common browser processes. Override in config.sh for your stack.
+TIER_DISPOSABLE_PATTERN='(chrome|chromium|firefox)'
+# Automation session orchestrator pattern. When a process matching this
+# pattern is running, automation_session_active() returns true and the
+# managed window protocol is applied automatically as a fallback for
+# callers that cannot signal explicitly.
+# Default covers common Node.js automation frameworks. Override in config.sh.
+TIER_DISPOSABLE_PATTERN_AUX='node.*(playwright|puppeteer|cypress|selenium-webdriver)'
 
 NOTIFY_INTERVAL=300           # seconds between desktop notifications per severity
 
@@ -139,11 +151,15 @@ HYSTERESIS_POLLS=3              # consecutive polls above threshold before non-c
 RECOVERY_POLLS=5                # consecutive clean polls to confirm recovery (10s at 2s)
 RECOVERY_PSI_X100=100           # PSI some avg10 < 1.00% to count as clean (below Stage 1)
 RECOVERY_MEM_PCT=40             # MemAvailable > 40% to count as clean (above Stage 1)
+RECLAIM_TIMEOUT_S=${RECLAIM_TIMEOUT_S:-3}          # max seconds to wait on a cgroup reclaim write before aborting
+RECLAIM_MIN_INTERVAL_S=${RECLAIM_MIN_INTERVAL_S:-10} # minimum seconds between reclaim attempts (prevents reclaim storms)
+MEM_SLEEP_TIMEOUT_S=${MEM_SLEEP_TIMEOUT_S:-300}      # stale SLEEP mode auto-clear timeout (seconds)
 
-# ── Chrome process count cap — accumulation guard (Issue #26) ─────────────
-# Discovered 2026-03-10: 12+ Chrome scopes accumulated over 3.5 hours.
-# SIGTERM-on-startup only clears Chrome at restart moments, not between them.
-CHROME_COUNT_MAX=3              # SIGKILL oldest Chrome/Chromium processes above this cap
+# ── Disposable process count cap — accumulation guard (Issue #26) ─────────
+# Discovered 2026-03-10: browser scopes accumulated over 3.5 hours.
+# SIGTERM-on-startup only clears disposable processes at restart moments,
+# not between them.
+DISPOSABLE_COUNT_MAX=3
 
 # ── User config override — written by the VS Code extension ────────────────────
 # If the Mem Watchdog VS Code extension is installed and has custom thresholds
@@ -155,6 +171,14 @@ _WATCHDOG_CFG="${XDG_CONFIG_HOME:-${HOME}/.config}/mem-watchdog/config.sh"
 # shellcheck source=/dev/null
 [[ -f "$_WATCHDOG_CFG" ]] && source "$_WATCHDOG_CFG"
 unset _WATCHDOG_CFG
+
+# Backward compatibility (Issue #140): accept legacy CHROME_COUNT_MAX for one
+# release cycle. If both are set, DISPOSABLE_COUNT_MAX wins.
+_legacy_chrome_cap_alias_used=false
+if [[ -v CHROME_COUNT_MAX && ! -v DISPOSABLE_COUNT_MAX ]]; then
+  DISPOSABLE_COUNT_MAX="$CHROME_COUNT_MAX"
+  _legacy_chrome_cap_alias_used=true
+fi
 
 # ── Managed window signal file path (Issue #139) ───────────────────────────────
 # External callers (e.g., publish scripts) write 'SLEEP' to this file to request
@@ -185,6 +209,8 @@ _last_killed_type_time=0      # epoch seconds of last kill of that type
 _last_status_log=0            # epoch seconds of last periodic status snapshot
 _restart_timestamps=""        # space-separated epoch seconds of recent VS Code restart events
 _restart_loop_cooldown_end=0  # epoch seconds until restart-loop cooldown expires
+_last_vscode_main_restart=0   # epoch seconds of last controlled VS Code main restart
+_last_vscode_rss_kb=0         # previous loop aggregate VS Code RSS for acceleration detection
 
 # ── Cooldown / hysteresis / recovery state (Issue #5) ────────────────────
 _last_kill_action_time=0        # epoch seconds of last successful kill of any type
@@ -201,6 +227,7 @@ _cgroup_mem_path=""             # populated at startup; empty = cgroup writes di
 _cgroup_version=""             # "v2" or "v1" — set by discover_cgroup_mem_path()
 _soft_limit_active=false        # true when we've lowered memory.high (v2) or memory.soft_limit_in_bytes (v1)
 _stage_transitions=0            # total stage transitions for observability
+_last_reclaim_action_time=0     # epoch seconds of last successful cgroup reclaim
 
 # ── Cgroup event counters (Issue #12) ────────────────────────────────────────
 # Read each poll cycle from memory.events.local (v2) or memory.oom_control +
@@ -226,6 +253,9 @@ _helper_restart_no_candidate=0
 _helper_restart_failures=0
 _low_mem_term_events=0
 _critical_kill_events=0
+_rss_warn_events=0
+_rss_emerg_events=0
+_vscode_main_restart_events=0
 _psi_events=0
 _restart_loop_events=0
 _chrome_excess_events=0
@@ -238,6 +268,7 @@ _action_taken=false
 _helper_no_candidate_suppressed=0  # consecutive no-candidate results suppressed from log
 _watchdog_mode=""         # current value read from mode file: "SLEEP" or "" (normal)
 _last_logged_mode=""      # last mode written to log — prevents per-poll log spam
+_mode_sleep_start=0        # epoch seconds when SLEEP mode was first observed
 
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
@@ -257,12 +288,16 @@ incr_counter() {
 
 log_status_snapshot() {
   local reason="$1"
-  local now avail total pct rss startup_left chrome_count
+  local now avail total pct rss startup_left chrome_count rss_delta
   now=$(date +%s)
   avail=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
   total=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
-  rss=$(ps -C "$TIER_PROTECTED_PNAME" -o rss= 2>/dev/null | awk '{s+=$1} END{print s+0}')
+  rss=$(sum_vscode_rss_kb)
   chrome_count=$(pgrep -f "$TIER_DISPOSABLE_PATTERN" 2>/dev/null | wc -l)
+  rss_delta=0
+  if (( _last_vscode_rss_kb > 0 && rss > _last_vscode_rss_kb )); then
+    rss_delta=$(( rss - _last_vscode_rss_kb ))
+  fi
   pct=0
   if [[ -n "$avail" && -n "$total" && "$total" -gt 0 ]]; then
     pct=$(( avail * 100 / total ))
@@ -271,8 +306,12 @@ log_status_snapshot() {
   if (( now < _startup_mode_end )); then
     startup_left=$(( _startup_mode_end - now ))
   fi
-  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} chrome_pids=${chrome_count} pressure_stage=${_pressure_stage} stage_transitions=${_stage_transitions} soft_limit_active=${_soft_limit_active} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} anti_respawn_type=${_last_killed_type} action_budget_used=${_action_budget_count} cooldown_skips=${_cooldown_skips} hyst_skips=${_hysteresis_skips} recovery_confirms=${_recovery_confirmations} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events} cg_failcnt=${_cg_failcnt} cg_oom_kill=${_cg_oom_kill} cg_high=${_cg_high_events} cg_under_oom=${_cg_under_oom} mode=${_watchdog_mode:-normal}"
+  log "STATUS(${reason}): loops=${_loops} mem_free_pct=${pct} vscode_rss_kb=${rss} rss_delta_kb=${rss_delta} rss_warn_kb=${VSCODE_RSS_WARN_KB} rss_emerg_kb=${VSCODE_RSS_EMERG_KB} chrome_pids=${chrome_count} pressure_stage=${_pressure_stage} stage_transitions=${_stage_transitions} soft_limit_active=${_soft_limit_active} startup_left_s=${startup_left} startup_triggers=${_startup_mode_triggers} startup_debounce_skips=${_startup_debounce_skips} restart_loop_events=${_restart_loop_events} restart_loop_cooldown_remaining=$(( _restart_loop_cooldown_end > $(date +%s) ? _restart_loop_cooldown_end - $(date +%s) : 0 )) chrome_excess_events=${_chrome_excess_events} browser_term=${_browser_term_actions} browser_kill=${_browser_kill_actions} browser_noop=${_browser_noop_actions} helper_attempts=${_helper_restart_attempts} helper_success=${_helper_restart_success} helper_cooldown_skips=${_helper_restart_cooldown_skips} helper_no_candidate=${_helper_restart_no_candidate} helper_failures=${_helper_restart_failures} vscode_main_restarts=${_vscode_main_restart_events} rss_warn_events=${_rss_warn_events} rss_emerg_events=${_rss_emerg_events} anti_respawn_type=${_last_killed_type} action_budget_used=${_action_budget_count} cooldown_skips=${_cooldown_skips} hyst_skips=${_hysteresis_skips} recovery_confirms=${_recovery_confirmations} low_mem=${_low_mem_term_events} critical_mem=${_critical_kill_events} psi_events=${_psi_events} cg_failcnt=${_cg_failcnt} cg_oom_kill=${_cg_oom_kill} cg_high=${_cg_high_events} cg_under_oom=${_cg_under_oom} mode=${_watchdog_mode:-normal}"
   _last_status_log=$now
+}
+
+sum_vscode_rss_kb() {
+  ps -C "$TIER_PROTECTED_PNAME" -o rss= 2>/dev/null | awk '{s+=$1} END{print s+0}'
 }
 
 action_budget_allows() {
@@ -336,18 +375,18 @@ notify_desktop() {
     notify-send --urgency="$urgency" --expire-time=10000 "$title" "$body" 2>/dev/null || true
 }
 
-# ── Kill Chrome and Playwright processes ─────────────────────────────────────
-kill_browsers() {
+# ── Kill disposable processes ───────────────────────────────────────────────
+kill_disposable_processes() {
   local signal="$1"   # TERM or KILL
   local reason="$2"
   local mode="${3:-normal}" # normal|critical
 
-  # Issue #109: When Playwright is active and the severity is non-critical,
-  # refuse to kill Chrome — the Copilot Agent needs it for automation.
+  # Issue #109: When automation is active and the severity is non-critical,
+  # refuse to kill disposable processes.
   # Callers at Stage 2-3 fall through to helper kills or cgroup.
   # Stage 4 passes mode="critical" and bypasses this guard.
-  if [[ "$mode" != "critical" ]] && playwright_is_active; then
-    log "  (Playwright session active — deferring Chrome kill; severity=${mode})"
+  if [[ "$mode" != "critical" ]] && automation_session_active; then
+    log "  (automation session active — deferring disposable kill; severity=${mode})"
     return 1
   fi
 
@@ -363,7 +402,7 @@ kill_browsers() {
 
   if $DRY_RUN; then
     record_action
-    log "  (dry-run: would kill chrome/playwright/chromium)"
+    log "  (dry-run: would kill disposable process patterns)"
     return 0
   fi
 
@@ -380,10 +419,10 @@ kill_browsers() {
 
   if ! $killed; then
     incr_counter _browser_noop_actions
-    log "  (no chrome/playwright processes found to kill)"
+    log "  (no disposable processes found to kill)"
     # Do NOT record_action — no-op kills must not consume the action budget
     # or block fallback interventions (kill_top_vscode_helper, kill_nonessential_apps).
-    # Crash 2026-03-25: action budget exhausted by 6 no-op kill_browsers calls in 3s,
+    # Crash 2026-03-25: action budget exhausted by 6 no-op kill_disposable_processes calls in 3s,
     # blocking all real interventions while RSS grew from 2.8→3.5 GB unimpeded.
     return 1
   fi
@@ -473,6 +512,7 @@ find_pty_host_pid() {
 # ── Restart heaviest VS Code helper (never main window process) ───────────────────
 kill_top_vscode_helper() {
   local reason="$1"
+  local mode="${2:-normal}"
   local cooldown=$HELPER_KILL_COOLDOWN
   # Language server protection: VS Code is SACRED — language servers are ALWAYS protected.
   # Crashes documented:
@@ -481,9 +521,14 @@ kill_top_vscode_helper() {
   #                        servers crashed 5x each in OOM cascade.
   local protect_tsserver=true
   local protect_langservers=true   # htmlServerMain, serverWorkerMain (markdown), cssServerMain, jsonServerMain, eslintServer
+  if [[ "$mode" == "critical" ]]; then
+    protect_tsserver=false
+    protect_langservers=false
+    cooldown=0
+  fi
   local now
   now=$(date +%s)
-  action_budget_allows "normal" || return 1
+  action_budget_allows "$mode" || return 1
   incr_counter _helper_restart_attempts
 
   if (( now - _last_helper_kill < cooldown )); then
@@ -529,7 +574,7 @@ kill_top_vscode_helper() {
 
   # Preferred: language servers / extension workers, excluding recently-killed type
   line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss=,args= 2>/dev/null \
-    | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" -v pty_host="$pty_host" '
+    | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" -v pty_host="$pty_host" -v md="$mode" '
       function classify(a) {
         if (a ~ /tsserver\.js/)        return "tsserver"
         if (a ~ /htmlServerMain/)       return "html-server"
@@ -548,7 +593,7 @@ kill_top_vscode_helper() {
         if (args ~ /--type=zygote/) next;
         if (args ~ /--type=gpu-process/) next;
         if (args ~ /--type=extensionHost/) next;
-        if (args ~ /--type=utility/ && args ~ /--inspect-port/) next;
+        if (md != "critical" && args ~ /--type=utility/ && args ~ /--inspect-port/) next;
         if (pid == pty_host) next;
         t=classify(args)
         if (skip != "" && t == skip) next;
@@ -566,7 +611,7 @@ kill_top_vscode_helper() {
   # are safe to kill — they auto-restart. (#80)
   if [[ -z "$line" ]]; then
     line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss=,args= 2>/dev/null \
-      | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" -v pty_host="$pty_host" '
+      | awk -v skip="$skip_type" -v prot="$protect_tsserver" -v ls="$protect_langservers" -v pty_host="$pty_host" -v md="$mode" '
         function classify(a) {
           if (a ~ /tsserver\.js/)      return "tsserver"
           if (a ~ /htmlServerMain/)     return "html-server"
@@ -585,7 +630,7 @@ kill_top_vscode_helper() {
           if (args ~ /--type=zygote/) next;
           if (args ~ /--type=gpu-process/) next;
           if (args ~ /--type=extensionHost/) next;
-          if (args ~ /--type=utility/ && args ~ /--inspect-port/) next;
+          if (md != "critical" && args ~ /--type=utility/ && args ~ /--inspect-port/) next;
           if (pid == pty_host) next;
           t=classify(args)
           if (skip != "" && t == skip) next;
@@ -599,14 +644,14 @@ kill_top_vscode_helper() {
   # Last-resort fallback: include recently-killed type if nothing else found
   if [[ -z "$line" ]]; then
     line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,rss=,args= 2>/dev/null \
-      | awk -v prot="$protect_tsserver" -v ls="$protect_langservers" -v pty_host="$pty_host" '{
+      | awk -v prot="$protect_tsserver" -v ls="$protect_langservers" -v pty_host="$pty_host" -v md="$mode" '{
           pid=$1; rss=$2;
           $1=""; $2=""; sub(/^[[:space:]]+/, "", $0); args=$0;
           if (args ~ /^\/usr\/share\/code\/code$/) next;
           if (args ~ /--type=zygote/) next;
           if (args ~ /--type=gpu-process/) next;
           if (args ~ /--type=extensionHost/) next;
-          if (args ~ /--type=utility/ && args ~ /--inspect-port/) next;
+          if (md != "critical" && args ~ /--type=utility/ && args ~ /--inspect-port/) next;
           if (pid == pty_host) next;
           if (prot == "true" && args ~ /tsserver\.js/) next;
           if (ls == "true" && (args ~ /htmlServerMain/ || args ~ /serverWorkerMain/ || args ~ /cssServerMain/ || args ~ /jsonServerMain/ || args ~ /eslintServer/)) next;
@@ -651,6 +696,44 @@ kill_top_vscode_helper() {
     return 0
   fi
   incr_counter _helper_restart_failures
+  return 1
+}
+
+kill_vscode_main() {
+  local reason="$1"
+  local now
+  now=$(date +%s)
+
+  action_budget_allows "critical" || return 1
+
+  if (( now - _last_vscode_main_restart < CODE_RECOVERY_COOLDOWN )); then
+    log "  VS Code main restart cooldown active (${CODE_RECOVERY_COOLDOWN}s) — skipping"
+    return 1
+  fi
+
+  local line pid args
+  line=$(ps -C "$TIER_PROTECTED_PNAME" -o pid=,args= 2>/dev/null \
+    | awk '{ pid=$1; $1=""; sub(/^[[:space:]]+/, "", $0); args=$0; if (args ~ /^\/usr\/share\/code\/code$/) { print pid " " args; exit } }')
+  if [[ -z "$line" ]]; then
+    log "  kill_vscode_main: no VS Code main process found"
+    return 1
+  fi
+
+  pid=$(echo "$line" | awk '{print $1}')
+  args=$(echo "$line" | cut -d' ' -f2-)
+
+  record_action
+  incr_counter _vscode_main_restart_events
+  log "ACTION(SIGTERM): ${reason} — restarting VS Code main PID ${pid}: ${args}"
+  if $DRY_RUN; then
+    _last_vscode_main_restart=$now
+    return 0
+  fi
+
+  if kill -TERM "$pid" 2>/dev/null; then
+    _last_vscode_main_restart=$now
+    return 0
+  fi
   return 1
 }
 
@@ -718,7 +801,7 @@ adjust_oom_scores() {
         # Pre-emptively SIGTERM Chrome to free memory before extensions load
         if pgrep -f "$TIER_DISPOSABLE_PATTERN" &>/dev/null; then
           log "  Startup mode: pre-emptively SIGTERMing Chrome to free memory"
-          kill_browsers "TERM" "VS Code startup: freeing memory before extension load"
+          kill_disposable_processes "TERM" "VS Code startup: freeing memory before extension load"
         fi
       else
         incr_counter _startup_debounce_skips
@@ -770,47 +853,45 @@ check_restart_loop() {
   if (( count >= RESTART_LOOP_THRESHOLD && now >= _restart_loop_cooldown_end )); then
     incr_counter _restart_loop_events
     _restart_loop_cooldown_end=$(( now + RESTART_LOOP_COOLDOWN_S ))
-    log "RESTART-LOOP: VS Code restarted ${count}x in ${RESTART_LOOP_WINDOW_S}s — SIGKILL Chrome + ${RESTART_LOOP_COOLDOWN_S}s cooldown"
-    notify_desktop "crit" "🔄 VS Code Restart Loop"       "VS Code restarted ${count}x in $((RESTART_LOOP_WINDOW_S/60)) min. Force-killing Chrome to break loop."
-    kill_browsers "KILL" "restart-loop: ${count} restarts/${RESTART_LOOP_WINDOW_S}s"
+    log "RESTART-LOOP: VS Code restarted ${count}x in ${RESTART_LOOP_WINDOW_S}s — SIGKILL disposable processes + ${RESTART_LOOP_COOLDOWN_S}s cooldown"
+    notify_desktop "crit" "🔄 VS Code Restart Loop"       "VS Code restarted ${count}x in $((RESTART_LOOP_WINDOW_S/60)) min. Force-killing disposable processes to break loop."
+    kill_disposable_processes "KILL" "restart-loop: ${count} restarts/${RESTART_LOOP_WINDOW_S}s"
   fi
 }
 
-# ── Playwright session detection (Issue #109) ────────────────────────────────
-# Returns 0 (true) if a Playwright automation process is running.
-# When active, Chrome processes are being used for Copilot Agent work —
-# the CHROME-EXCESS cap and non-critical kill_browsers calls must defer.
-# Stage 4 still kills Chrome regardless (safety net).
-playwright_is_active() {
+# ── Automation session detection (Issue #109/#140) ──────────────────────────
+# Returns 0 (true) if a configured automation orchestrator process is running.
+# When active, disposable processes are being used for automation work —
+# the DISPOSABLE-EXCESS cap and non-critical kill_disposable_processes calls
+# must defer. Stage 4 still kills disposable processes regardless (safety net).
+automation_session_active() {
   pgrep -f "$TIER_DISPOSABLE_PATTERN_AUX" &>/dev/null
 }
 
-# ── Chrome process count cap (Issue #26) ─────────────────────────────────────
-# Count Chrome/Chromium PIDs. SIGKILL oldest processes above CHROME_COUNT_MAX.
-# Skipped when Playwright is active — a single Playwright session legitimately
-# spawns 5-10 Chrome PIDs (main + GPU + renderer(s) + utility). The cap was
-# designed for idle Chrome accumulation between sessions, not active automation.
-check_chrome_cap() {
-  # Issue #109: Playwright needs all its Chrome processes for automation.
+# ── Disposable process count cap (Issue #26/#140) ───────────────────────────
+# Count disposable process PIDs. SIGKILL oldest processes above
+# DISPOSABLE_COUNT_MAX. Skipped when automation is active.
+check_disposable_cap() {
+  # Issue #109: active automation needs its disposable processes.
   # The RSS/pressure paths still protect against genuine memory emergencies.
-  if playwright_is_active; then
+  if automation_session_active; then
     return
   fi
-  local chrome_pids=()
-  mapfile -t chrome_pids < <(pgrep -f "$TIER_DISPOSABLE_PATTERN" 2>/dev/null | sort -n)
-  local count=${#chrome_pids[@]}
-  if (( count > CHROME_COUNT_MAX )); then
-    local excess=$(( count - CHROME_COUNT_MAX ))
+  local disposable_pids=()
+  mapfile -t disposable_pids < <(pgrep -f "$TIER_DISPOSABLE_PATTERN" 2>/dev/null | sort -n)
+  local count=${#disposable_pids[@]}
+  if (( count > DISPOSABLE_COUNT_MAX )); then
+    local excess=$(( count - DISPOSABLE_COUNT_MAX ))
     incr_counter _chrome_excess_events
-    log "CHROME-EXCESS: ${count} Chrome/Chromium PIDs (cap=${CHROME_COUNT_MAX}) — SIGKILL ${excess} oldest"
-    notify_desktop "warn" "⚠️ Chrome Accumulation: ${count}"       "Chrome process count (${count}) exceeds cap (${CHROME_COUNT_MAX}). Killing ${excess} oldest."
+    log "DISPOSABLE-EXCESS: ${count} disposable PIDs (cap=${DISPOSABLE_COUNT_MAX}) — SIGKILL ${excess} oldest"
+    notify_desktop "warn" "⚠️ Disposable Accumulation: ${count}"       "Disposable process count (${count}) exceeds cap (${DISPOSABLE_COUNT_MAX}). Killing ${excess} oldest."
     local i=0
-    for pid in "${chrome_pids[@]}"; do
+    for pid in "${disposable_pids[@]}"; do
       (( i >= excess )) && break
       if $DRY_RUN; then
-        log "  (dry-run: would SIGKILL Chrome PID ${pid})"
+        log "  (dry-run: would SIGKILL disposable PID ${pid})"
       else
-        kill -9 "$pid" 2>/dev/null && log "  → SIGKILL Chrome PID ${pid} (excess accumulation)"
+        kill -9 "$pid" 2>/dev/null && log "  → SIGKILL disposable PID ${pid} (excess accumulation)"
       fi
       (( i++ ))
     done
@@ -929,16 +1010,24 @@ cgroup_throttle() {
 RECLAIM_BYTES=${RECLAIM_BYTES:-$((256 * 1024 * 1024))}  # 256 MB default
 cgroup_reclaim() {
   [[ -z "$_cgroup_mem_path" ]] && return 1
+  local now
+  now=$(date +%s)
+  if (( now - _last_reclaim_action_time < RECLAIM_MIN_INTERVAL_S )); then
+    log "  cgroup: reclaim skipped — last reclaim $(( now - _last_reclaim_action_time ))s ago (<${RECLAIM_MIN_INTERVAL_S}s)"
+    return 1
+  fi
 
   if [[ "$_cgroup_version" == "v2" ]]; then
     if $DRY_RUN; then
       log "  (dry-run: would write ${RECLAIM_BYTES} to memory.reclaim)"
+      _last_reclaim_action_time=$now
       return 0
     fi
     if [[ -f "$_cgroup_mem_path/memory.reclaim" ]]; then
       local pre_avail
       pre_avail=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
-      if echo "$RECLAIM_BYTES" | sudo -n tee "$_cgroup_mem_path/memory.reclaim" > /dev/null 2>&1; then
+      if echo "$RECLAIM_BYTES" | timeout "${RECLAIM_TIMEOUT_S}s" sudo -n tee "$_cgroup_mem_path/memory.reclaim" > /dev/null 2>&1; then
+        _last_reclaim_action_time=$now
         # Allow kswapd to run before re-reading
         sleep 1 & _sleep_pid=$!; wait "$_sleep_pid" || true
         local post_avail
@@ -946,6 +1035,11 @@ cgroup_reclaim() {
         local delta_kb=$(( ${post_avail:-0} - ${pre_avail:-0} ))
         log "  cgroup: memory.reclaim ${RECLAIM_BYTES}B — freed ~${delta_kb} kB (${pre_avail}→${post_avail} kB)"
         return 0
+      fi
+      local rc=$?
+      if (( rc == 124 )); then
+        log "  cgroup: memory.reclaim timed out after ${RECLAIM_TIMEOUT_S}s — skipping to preserve watchdog loop"
+        return 1
       fi
       log "  cgroup: memory.reclaim write failed (kernel may not support it)"
     else
@@ -959,11 +1053,18 @@ cgroup_reclaim() {
   # v1 path (or v2 fallback)
   if $DRY_RUN; then
     log "  (dry-run: would write 0 to memory.force_empty)"
+    _last_reclaim_action_time=$now
     return 0
   fi
-  if echo 0 | sudo -n tee "$_cgroup_mem_path/memory.force_empty" > /dev/null 2>&1; then
+  if echo 0 | timeout "${RECLAIM_TIMEOUT_S}s" sudo -n tee "$_cgroup_mem_path/memory.force_empty" > /dev/null 2>&1; then
+    _last_reclaim_action_time=$now
     log "  cgroup: memory.force_empty triggered — kernel reclaiming pages"
     return 0
+  fi
+  local rc=$?
+  if (( rc == 124 )); then
+    log "  cgroup: memory.force_empty timed out after ${RECLAIM_TIMEOUT_S}s — reclaim skipped to keep watchdog responsive"
+    return 1
   fi
   log "  cgroup: failed to write memory.force_empty"
   return 1
@@ -1115,6 +1216,7 @@ discover_cgroup_mem_path
 
 log "Started (4-stage model: S1≤${STAGE1_MEM_PCT}%/PSIsome>${STAGE1_PSI_SOME_X100}, S2≤${STAGE2_MEM_PCT}%/PSIsome>${STAGE2_PSI_SOME_X100}, S3≤${STAGE3_MEM_PCT}%/PSIfull>${STAGE3_PSI_FULL_X100}, S4≤${STAGE4_MEM_PCT}%/PSIfull>${STAGE4_PSI_FULL_X100}, oom_adj code=${OOM_VSCODE_ADJ} chrome=+${OOM_CHROME_ADJ}, cgroup=${_cgroup_version:-disabled})"
 $DRY_RUN && log "DRY-RUN mode — no processes will be killed"
+$_legacy_chrome_cap_alias_used && log "CONFIG: CHROME_COUNT_MAX is deprecated; use DISPOSABLE_COUNT_MAX (legacy alias accepted for this release)"
 
 # Apply OOM scores immediately at startup before the first loop iteration
 adjust_oom_scores
@@ -1155,9 +1257,24 @@ while true; do
 
   # ── Read managed window signal file (Issue #139) ──────────────────────────
   # Zero-fork: bash `read` builtin reads the mode file directly — no subprocess.
+  now=$(date +%s)
   _watchdog_mode=""
   if [[ -f "$_MODE_FILE" ]]; then
     read -r _watchdog_mode < "$_MODE_FILE" 2>/dev/null || _watchdog_mode=""
+  fi
+  if [[ "$_watchdog_mode" == "SLEEP" ]]; then
+    if (( _mode_sleep_start == 0 )); then
+      _mode_sleep_start=$now
+    elif (( now - _mode_sleep_start >= MEM_SLEEP_TIMEOUT_S )); then
+      log "MODE: SLEEP stale for $(( now - _mode_sleep_start ))s (timeout=${MEM_SLEEP_TIMEOUT_S}s) — auto-clearing mode file"
+      if ! $DRY_RUN; then
+        rm -f "$_MODE_FILE" 2>/dev/null || true
+      fi
+      _watchdog_mode=""
+      _mode_sleep_start=0
+    fi
+  else
+    _mode_sleep_start=0
   fi
   if [[ "$_watchdog_mode" == "SLEEP" && "$_last_logged_mode" != "SLEEP" ]]; then
     log "MODE: SLEEP — managed protection window active; all kill/reclaim actions deferred"
@@ -1171,7 +1288,7 @@ while true; do
   check_restart_loop
   # Chrome-cap check skipped in SLEEP mode — during managed windows (e.g., a
   # Playwright automation run), Chrome PID counts are legitimately elevated.
-  [[ "${_watchdog_mode}" != "SLEEP" ]] && check_chrome_cap
+  [[ "${_watchdog_mode}" != "SLEEP" ]] && check_disposable_cap
 
   # Read MemAvailable and MemTotal.
   # IMPORTANT: Never use SwapFree — Crostini kernel has historically reported
@@ -1215,7 +1332,12 @@ while true; do
   read_cgroup_events
 
   # ── Chrome detection (needed for stage actions) ─────────────────────────
-  chrome_running=$(pgrep -f "$TIER_DISPOSABLE_PATTERN" 2>/dev/null | head -1)
+  disposable_running=$(pgrep -f "$TIER_DISPOSABLE_PATTERN" 2>/dev/null | head -1)
+  vscode_rss_kb=$(sum_vscode_rss_kb)
+  rss_delta_kb=0
+  if (( _last_vscode_rss_kb > 0 && vscode_rss_kb > _last_vscode_rss_kb )); then
+    rss_delta_kb=$(( vscode_rss_kb - _last_vscode_rss_kb ))
+  fi
 
   # ── 4-stage pressure evaluation (Issue #4) ──────────────────────────────
   # Graduated response based on MemAvailable % and PSI pressure.
@@ -1272,13 +1394,13 @@ while true; do
         # Killing Chrome at 70% free wastes browser state for zero benefit.
         if (( pct > STAGE2_MEM_PCT )); then
           log "  Stage 2 PSI-only trigger (pct=${pct}% > ${STAGE2_MEM_PCT}%) — cgroup throttle applied, kills skipped"
-        elif [[ -n "$chrome_running" ]]; then
+        elif [[ -n "$disposable_running" ]]; then
           incr_counter _low_mem_term_events
           notify_desktop "warn" "⚠️ Memory Pressure Stage 2: ${pct}% free" \
             "Throttling memory + terminating Chrome. PSI some=$(( psi_some_x100 / 100 )).$(( psi_some_x100 % 100 ))%"
-          # Issue #109: if kill_browsers defers (Playwright active), cgroup throttle
+          # Issue #109: if kill_disposable_processes defers (automation active), cgroup throttle
           # above is already applied — no further action needed at Stage 2.
-          kill_browsers "TERM" "Stage 2 throttle: pct=${pct}% psi_some=${psi_some_x100}"
+          kill_disposable_processes "TERM" "Stage 2 throttle: pct=${pct}% psi_some=${psi_some_x100}"
         fi
       fi
       ;;
@@ -1287,21 +1409,28 @@ while true; do
       _recovery_clean_count=0
       _pressure_active=true
       if kill_cooldown_allows "normal"; then
-        cgroup_reclaim
+        reclaim_applied=false
+        if cgroup_reclaim; then
+          reclaim_applied=true
+        fi
         # Kill gate: PSI-only triggers (pct above stage threshold) get cgroup
         # reclaim above but NO process kills.  After an OOM recovery, PSI avg10
         # stays elevated for ~10 s while memory has already recovered to 70-80%+.
         # Killing NetworkService (10 MB) at 83% free is harmful and pointless.
         if (( pct > STAGE3_MEM_PCT )); then
-          log "  Stage 3 PSI-only trigger (pct=${pct}% > ${STAGE3_MEM_PCT}%) — cgroup reclaim applied, kills skipped"
+          if $reclaim_applied; then
+            log "  Stage 3 PSI-only trigger (pct=${pct}% > ${STAGE3_MEM_PCT}%) — cgroup reclaim applied, kills skipped"
+          else
+            log "  Stage 3 PSI-only trigger (pct=${pct}% > ${STAGE3_MEM_PCT}%) — cgroup reclaim unavailable/skipped, kills skipped"
+          fi
         else
           incr_counter _low_mem_term_events
           notify_desktop "warn" "⚠️ Memory Pressure Stage 3: ${pct}% free" \
             "Reclaiming pages + terminating Chrome. PSI full=$(( psi_x100 / 100 )).$(( psi_x100 % 100 ))%"
-          if [[ -n "$chrome_running" ]]; then
-            # Issue #109: if kill_browsers defers (Playwright active), fall through
+          if [[ -n "$disposable_running" ]]; then
+            # Issue #109: if kill_disposable_processes defers (automation active), fall through
             # to helper kill just like the no-Chrome path.
-            if ! kill_browsers "TERM" "Stage 3 reclaim: pct=${pct}% psi_full=${psi_x100}"; then
+            if ! kill_disposable_processes "TERM" "Stage 3 reclaim: pct=${pct}% psi_full=${psi_x100}"; then
               if ! kill_top_vscode_helper "Stage 3: Chrome deferred (pct=${pct}%, psi_full=${psi_x100})"; then
                 kill_nonessential_apps "Stage 3: no candidate (pct=${pct}%, psi_full=${psi_x100})"
               fi
@@ -1315,25 +1444,47 @@ while true; do
       fi
       ;;
     4)
-      # Stage 4 — Terminate: SIGKILL Chrome; if no Chrome → defer to kernel OOM
-      # The watchdog NEVER kills VS Code. oom_score_adj ensures Chrome (1000)
-      # dies before VS Code (0) when the kernel OOM killer fires.
+      # Stage 4 — Terminate: SIGKILL disposable targets; if none remain,
+      # escalate to critical helper kills instead of lying about kernel OOM protection.
       _recovery_clean_count=0
       _pressure_active=true
       incr_counter _critical_kill_events
       notify_desktop "crit" "🚨 Critical Memory Stage 4: ${pct}% free" \
         "Force-killing Chrome/Playwright.\nClose ChromeOS tabs if crash persists."
-      if [[ -n "$chrome_running" ]]; then
-        kill_browsers "KILL" "Stage 4 terminate: pct=${pct}% psi_full=${psi_x100}" "critical"
+      if [[ -n "$disposable_running" ]]; then
+        kill_disposable_processes "KILL" "Stage 4 terminate: pct=${pct}% psi_full=${psi_x100}" "critical"
       else
-        # No disposable target — kernel will OOM-kill based on oom_score_adj.
-        # VS Code=0, Chrome=1000 ensures Chrome dies first when present.
-        log "Stage 4: no disposable target — deferring to kernel OOM killer (oom_score_adj protects VS Code)"
-        kill_nonessential_apps "Stage 4: pct=${pct}% psi_full=${psi_x100}"
+        log "Stage 4: no disposable target — escalating to critical VS Code helper kill path"
+        if ! kill_top_vscode_helper "Stage 4: no disposable target (pct=${pct}%, psi_full=${psi_x100})" "critical"; then
+          log "Stage 4: no critical helper candidate found — awaiting RSS circuit breaker or recovery"
+        fi
       fi
       ;;
   esac
   fi # end SLEEP mode gate (Issue #139)
+
+  # ── RSS circuit breaker — catch VS Code self-ballooning before kernel OOM ──
+  if [[ "${_watchdog_mode}" != "SLEEP" ]]; then
+    if (( vscode_rss_kb >= VSCODE_RSS_EMERG_KB )); then
+      incr_counter _rss_emerg_events
+      log "RSS-EMERG: vscode_rss_kb=${vscode_rss_kb} (threshold=${VSCODE_RSS_EMERG_KB}) pct=${pct}% psi_full=${psi_x100}"
+      if [[ -z "$disposable_running" ]]; then
+        if ! kill_top_vscode_helper "RSS emergency: rss=${vscode_rss_kb}kB pct=${pct}% psi_full=${psi_x100}" "critical"; then
+          kill_vscode_main "RSS emergency circuit-breaker: rss=${vscode_rss_kb}kB pct=${pct}% psi_full=${psi_x100}"
+        fi
+      fi
+    elif (( vscode_rss_kb >= VSCODE_RSS_WARN_KB && rss_delta_kb >= RSS_ACCEL_KB )); then
+      incr_counter _rss_warn_events
+      if kill_cooldown_allows "normal"; then
+        log "RSS-WARN: vscode_rss_kb=${vscode_rss_kb} delta_kb=${rss_delta_kb} (warn=${VSCODE_RSS_WARN_KB}, accel=${RSS_ACCEL_KB})"
+        if [[ -n "$disposable_running" ]]; then
+          kill_disposable_processes "TERM" "RSS warn: rss=${vscode_rss_kb}kB delta=${rss_delta_kb}kB"
+        else
+          kill_top_vscode_helper "RSS warn: rss=${vscode_rss_kb}kB delta=${rss_delta_kb}kB"
+        fi
+      fi
+    fi
+  fi
 
   # ── Recovery confirmation (Issues #4, #5) ─────────────────────────────────
   # When ALL conditions are clear: stage 0 (below all stage thresholds)
@@ -1370,6 +1521,7 @@ while true; do
     _startup_just_triggered=false
     # No sleep — re-check immediately after detecting new VS Code PIDs
   else
+    _last_vscode_rss_kb=$vscode_rss_kb
     sleep "$eff_interval" & _sleep_pid=$!
     wait "$_sleep_pid" || true
   fi

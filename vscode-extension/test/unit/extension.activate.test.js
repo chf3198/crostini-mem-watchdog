@@ -61,8 +61,12 @@ require.cache[commandsPath] = {
     exports: {
         showDashboard() {},
         preflightCheck() {},
-        killChrome() {},
+        killDisposable() {},
         restartService() {},
+        optimizeMemory() {},
+        createLowMemProfile() {},
+        chatRescue() {},
+        maybePromptChatRescue() { return Promise.resolve(false); },
         dispose() {},
     },
 };
@@ -73,6 +77,10 @@ require.cache[utilsPath] = {
         readMeminfo: () => ({ totalKB: 6440000, availableKB: 4000000, pct: 62 }),
         sh: async () => ({ ok: true, stdout: '', stderr: '' }),
         checkServiceStatus: async () => 'active',
+        readWatchdogMode: () => '',
+        readRssThresholds: () => ({ warnKB: 3400000, emergKB: 3800000 }),
+        determineState: () => 'GUARDING',
+        stateDescription: () => 'Watchdog is on patrol. All systems normal.',
     },
 };
 

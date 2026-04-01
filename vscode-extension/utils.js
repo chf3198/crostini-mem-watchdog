@@ -8,7 +8,18 @@
 'use strict';
 
 const fs   = require('fs');
+const os   = require('os');
+const path = require('path');
 const { exec } = require('child_process');
+
+const XDG_CONFIG = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+const MODE_FILE  = path.join(XDG_CONFIG, 'mem-watchdog', 'mode');
+const CFG_FILE   = path.join(XDG_CONFIG, 'mem-watchdog', 'config.sh');
+
+const DEFAULT_WARN_KB  = 3400000;
+const DEFAULT_EMERG_KB = 3800000;
+
+let _modeCache = { ts: 0, value: '' };
 
 // ── cgroup.procs path — derived once at module load ───────────────────────────
 // Used by checkServiceStatus() to check service liveness without fork/exec.
@@ -141,4 +152,92 @@ async function checkServiceStatus() {
     return stdout || 'unknown';
 }
 
-module.exports = { readMeminfo, readPsi, sh, checkServiceStatus };
+/**
+ * Read watchdog mode from ~/.config/mem-watchdog/mode with a 1s cache.
+ * Returns 'SLEEP' when the file contains SLEEP, else ''.
+ *
+ * @returns {string}
+ */
+function readWatchdogMode() {
+    const now = Date.now();
+    if (now - _modeCache.ts < 1000) {
+        return _modeCache.value;
+    }
+    let mode = '';
+    try {
+        mode = (fs.readFileSync(MODE_FILE, 'utf8') || '').trim();
+    } catch {
+        mode = '';
+    }
+    _modeCache = { ts: now, value: mode };
+    return mode;
+}
+
+/**
+ * Parse optional RSS warn/emergency thresholds from config.sh.
+ * Falls back to extension-safe defaults when unset.
+ *
+ * @returns {{ warnKB: number, emergKB: number }}
+ */
+function readRssThresholds() {
+    let warnKB = DEFAULT_WARN_KB;
+    let emergKB = DEFAULT_EMERG_KB;
+    try {
+        const raw = fs.readFileSync(CFG_FILE, 'utf8');
+        const warn = raw.match(/^VSCODE_RSS_WARN_KB=(\d+)/m);
+        const emerg = raw.match(/^VSCODE_RSS_EMERG_KB=(\d+)/m);
+        if (warn) { warnKB = parseInt(warn[1], 10) || warnKB; }
+        if (emerg) { emergKB = parseInt(emerg[1], 10) || emergKB; }
+    } catch {
+        // keep defaults
+    }
+    return { warnKB, emergKB };
+}
+
+/**
+ * Determine thematic state from runtime signals.
+ * Precedence: OFF > SLEEPING > ATTACKING > RECOVERING > ALERT > GUARDING
+ *
+ * @param {{ serviceStatus: string, mode?: string, vscodeRssKB?: number, warnKB?: number, emergKB?: number, lastActionAgeSec?: number }} input
+ * @returns {'OFF'|'SLEEPING'|'ATTACKING'|'RECOVERING'|'ALERT'|'GUARDING'}
+ */
+function determineState(input) {
+    const serviceStatus = input.serviceStatus || 'unknown';
+    const mode = input.mode || '';
+    const vscodeRssKB = input.vscodeRssKB || 0;
+    const warnKB = input.warnKB || DEFAULT_WARN_KB;
+    const emergKB = input.emergKB || DEFAULT_EMERG_KB;
+    const lastActionAgeSec = Number.isFinite(input.lastActionAgeSec) ? input.lastActionAgeSec : Number.POSITIVE_INFINITY;
+
+    if (serviceStatus !== 'active') { return 'OFF'; }
+    if (mode === 'SLEEP') { return 'SLEEPING'; }
+    if (lastActionAgeSec <= 10) { return 'ATTACKING'; }
+    if (vscodeRssKB >= emergKB) { return 'ATTACKING'; }
+    if (lastActionAgeSec <= 45) { return 'RECOVERING'; }
+    if (vscodeRssKB >= warnKB) { return 'RECOVERING'; }
+    if (vscodeRssKB >= Math.floor(warnKB * 0.8)) { return 'ALERT'; }
+    return 'GUARDING';
+}
+
+/** @param {'OFF'|'SLEEPING'|'ATTACKING'|'RECOVERING'|'ALERT'|'GUARDING'} state */
+function stateDescription(state) {
+    switch (state) {
+        case 'OFF': return 'Watchdog service is not running.';
+        case 'SLEEPING': return 'Managed session active. Emergency protection remains active.';
+        case 'ATTACKING': return 'Watchdog is actively reclaiming safety by terminating disposable targets.';
+        case 'RECOVERING': return 'Recent intervention detected. Monitoring for recovery.';
+        case 'ALERT': return 'Memory pressure is approaching warning levels.';
+        default: return 'Watchdog is on patrol. All systems normal.';
+    }
+}
+
+module.exports = {
+    readMeminfo,
+    readPsi,
+    sh,
+    checkServiceStatus,
+    readWatchdogMode,
+    readRssThresholds,
+    determineState,
+    stateDescription,
+};

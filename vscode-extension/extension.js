@@ -7,7 +7,7 @@
 //      If the config changed and the daemon was already current (no hash-based
 //      restart), forces a daemon restart to pick up the new config.
 //   2b. Install / refresh user-level Copilot skill (skillInstaller.js)
-//   3. Registers 4 commands (commands.js)
+//   3. Registers 7 commands (commands.js)
 //   4. Watches for settings changes → rewrites config + restarts daemon
 //   5. Runs the status bar status poller every 2 s (original logic preserved)
 //   6. Deferred self-update check via GitHub Releases API (updateChecker.js)
@@ -23,7 +23,15 @@ const commands     = require('./commands');
 const updateChecker = require('./updateChecker');
 const { installGlobalSkill } = require('./skillInstaller');
 const { registerChatParticipant } = require('./chatParticipant');
-const { readMeminfo, sh, checkServiceStatus } = require('./utils');
+const {
+    readMeminfo,
+    sh,
+    checkServiceStatus,
+    readWatchdogMode,
+    readRssThresholds,
+    determineState,
+    stateDescription,
+} = require('./utils');
 
 // ── Status bar poll interval ──────────────────────────────────────────────────
 // Single source of truth — referenced by setInterval and the tooltip text.
@@ -36,6 +44,7 @@ const POLL_INTERVAL_MS = 2000;
 let _activated = false;
 let _statusItem = null;
 let _statusTimer = null;
+let _chatGuardTimer = null;
 
 // ── Full status bar state cache ──────────────────────────────────────────────
 // Key encodes all visible output (svcStatus + rounded pct% + availMB).
@@ -63,6 +72,10 @@ function disposeRuntimeUi() {
         clearInterval(_statusTimer);
         _statusTimer = null;
     }
+    if (_chatGuardTimer) {
+        clearInterval(_chatGuardTimer);
+        _chatGuardTimer = null;
+    }
     if (_statusItem) {
         try { _statusItem.dispose(); } catch {}
         _statusItem = null;
@@ -75,15 +88,26 @@ async function update(item) {
     try {
         const mem        = readMeminfo();
         const svcStatus  = await checkServiceStatus();
-        const isRunning  = svcStatus === 'active';
+        const mode       = readWatchdogMode();
+        const { warnKB, emergKB } = readRssThresholds();
+
+        const vscodeRssKB = mem ? (mem.totalKB - mem.availableKB) : 0;
+        const state = determineState({
+            serviceStatus: svcStatus,
+            mode,
+            vscodeRssKB,
+            warnKB,
+            emergKB,
+        });
+        const desc = stateDescription(state);
 
         // ── Full state cache — skip all IPC when nothing has changed ──────
         // Covers text, color, backgroundColor, and tooltip in one guard.
         // Same-tick assignments are coalesced by VS Code into one $setEntry
         // call; this cache prevents that call entirely during stable periods.
         const stateKey = mem
-            ? `${svcStatus}|${mem.pct.toFixed(0)}|${Math.round(mem.availableKB / 1024)}`
-            : `${svcStatus}|null`;
+            ? `${state}|${svcStatus}|${mode}|${mem.pct.toFixed(0)}|${Math.round(mem.availableKB / 1024)}`
+            : `${state}|${svcStatus}|${mode}|null`;
 
         if (stateKey !== _lastStateKey) {
             _stats.cacheMisses++;
@@ -97,47 +121,59 @@ async function update(item) {
             // For the healthy/"green" state, set backgroundColor = undefined
             // and tint the foreground text/icon with item.color instead.
 
-            if (!isRunning) {
-                // ─ RED: service is not running — most urgent ─
-                item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-                item.color = undefined;
-                item.text = `$(error) watchdog: ${svcStatus}`;
-
-            } else if (!mem || mem.pct < 20) {
-                // ─ RED: RAM critically low (< 20% free) ─
-                item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-                item.color = undefined;
-                item.text = mem
-                    ? `$(flame) RAM ${mem.pct.toFixed(0)}% free`
-                    : `$(error) meminfo err`;
-
-            } else if (mem.pct < 35) {
-                // ─ YELLOW: RAM under pressure (20–35% free) ─
-                item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-                item.color = undefined;
-                item.text = `$(warning) RAM ${mem.pct.toFixed(0)}% free`;
-
-            } else {
-                // ─ GREEN (foreground tint): healthy (> 35% free) ─
-                item.backgroundColor = undefined; // clear any previous red/yellow
-                item.color = new vscode.ThemeColor('testing.iconPassed'); // green in all built-in themes
-                item.text = `$(check) RAM ${mem.pct.toFixed(0)}% free`;
+            switch (state) {
+                case 'OFF':
+                    item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+                    item.color = undefined;
+                    item.text = '$(error) OFF';
+                    break;
+                case 'SLEEPING':
+                    item.backgroundColor = undefined;
+                    item.color = new vscode.ThemeColor('charts.yellow');
+                    item.text = '$(clock) SLEEPING';
+                    break;
+                case 'ATTACKING':
+                    item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+                    item.color = undefined;
+                    item.text = '$(flame) ATTACKING';
+                    break;
+                case 'RECOVERING':
+                    item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+                    item.color = undefined;
+                    item.text = '$(pulse) RECOVERING';
+                    break;
+                case 'ALERT':
+                    item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+                    item.color = undefined;
+                    item.text = '$(warning) ALERT';
+                    break;
+                default:
+                    item.backgroundColor = undefined;
+                    item.color = new vscode.ThemeColor('testing.iconPassed');
+                    item.text = '$(shield) GUARDING';
+                    break;
             }
 
             // ── Tooltip with detail table ─────────────────────────────────
             if (mem) {
                 const availMB = Math.round(mem.availableKB / 1024);
                 const totalGB = (mem.totalKB / 1024 / 1024).toFixed(1);
+                const usedMB = Math.round(vscodeRssKB / 1024);
+                const warnMB = Math.round(warnKB / 1024);
+                const emergMB = Math.round(emergKB / 1024);
                 item.tooltip = new vscode.MarkdownString(
                     `**mem-watchdog** \`${svcStatus}\`\n\n` +
+                    `**State:** \`${state}\` — ${desc}\n\n` +
                     `| | |\n|:---|---:|\n` +
                     `| Available | ${availMB} MB |\n` +
+                    `| VS Code RSS (est.) | ${usedMB} MB |\n` +
+                    `| WARN / EMERG | ${warnMB} / ${emergMB} MB |\n` +
                     `| Total     | ${totalGB} GB |\n` +
                     `| Free %    | ${mem.pct.toFixed(1)}% |\n\n` +
                     `_Polls every ${POLL_INTERVAL_MS / 1000} s_`
                 );
             } else {
-                item.tooltip = `mem-watchdog: ${svcStatus} — /proc/meminfo unreadable`;
+                item.tooltip = `mem-watchdog: ${svcStatus} — ${state} — /proc/meminfo unreadable`;
             }
         } else {
             _stats.cacheHits++;
@@ -211,9 +247,11 @@ async function activate(context) {
     context.subscriptions.push(
         vscode.commands.registerCommand('memWatchdog.showDashboard',  commands.showDashboard),
         vscode.commands.registerCommand('memWatchdog.preflightCheck', commands.preflightCheck),
-        vscode.commands.registerCommand('memWatchdog.killChrome',     commands.killChrome),
+        vscode.commands.registerCommand('memWatchdog.killDisposable', commands.killDisposable),
         vscode.commands.registerCommand('memWatchdog.restartService', commands.restartService),
         vscode.commands.registerCommand('memWatchdog.optimizeMemory', commands.optimizeMemory),
+        vscode.commands.registerCommand('memWatchdog.createLowMemProfile', commands.createLowMemProfile),
+        vscode.commands.registerCommand('memWatchdog.chatRescue', commands.chatRescue),
         { dispose: commands.dispose },
     );
 
@@ -259,9 +297,16 @@ async function activate(context) {
     update(item);
     const timer = setInterval(() => update(item), POLL_INTERVAL_MS);
     _statusTimer = timer;
+    const chatGuardTimer = setInterval(() => {
+        commands.maybePromptChatRescue().catch((err) => {
+            console.error('[memWatchdog] chat guard error:', err.message);
+        });
+    }, 60_000);
+    _chatGuardTimer = chatGuardTimer;
 
     context.subscriptions.push(item);
     context.subscriptions.push({ dispose: () => clearInterval(timer) });
+    context.subscriptions.push({ dispose: () => clearInterval(chatGuardTimer) });
     context.subscriptions.push({ dispose: () => { disposeRuntimeUi(); _activated = false; } });
 
     // ── 6. Deferred self-update check ─────────────────────────────────────────

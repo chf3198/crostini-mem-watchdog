@@ -5,7 +5,7 @@
 // MOCKING STRATEGY:
 //   chatParticipant.js imports 'vscode', './commands', './utils'.
 //   - 'vscode'    → mockVscode with chat API stubs added
-//   - './commands' → cache-injected mock with killChrome/restartService/showDashboard
+//   - './commands' → cache-injected mock with killDisposable/restartService/showDashboard
 //   - './utils'    → cache-injected mock with readMeminfo/readPsi/sh
 // ─────────────────────────────────────────────────────────────────────────────
 'use strict';
@@ -30,6 +30,13 @@ mockVscode.chat = {
     },
 };
 mockVscode.ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 };
+mockVscode.extensions = {
+    all: [
+        { id: 'github.copilot', packageJSON: { displayName: 'GitHub Copilot' } },
+        { id: 'eamodio.gitlens', packageJSON: { displayName: 'GitLens' } },
+        { id: 'ms-azuretools.vscode-docker', packageJSON: { displayName: 'Docker' } },
+    ],
+};
 
 // Enhance mock workspace.getConfiguration to track updates
 const _configUpdates = [];
@@ -49,10 +56,12 @@ const _commandsCalled = [];
 require.cache[commandsAbsPath] = {
     id: commandsAbsPath, filename: commandsAbsPath, loaded: true, paths: [],
     exports: {
-        killChrome()     { _commandsCalled.push('killChrome'); return Promise.resolve(); },
+        killDisposable() { _commandsCalled.push('killDisposable'); return Promise.resolve(); },
         restartService() { _commandsCalled.push('restartService'); return Promise.resolve(); },
         showDashboard()  { _commandsCalled.push('showDashboard'); return Promise.resolve(); },
         preflightCheck() { _commandsCalled.push('preflightCheck'); return Promise.resolve(); },
+        createLowMemProfile() { _commandsCalled.push('createLowMemProfile'); return Promise.resolve(); },
+        chatRescue() { _commandsCalled.push('chatRescue'); return Promise.resolve(); },
         dispose()        {},
     },
 };
@@ -63,15 +72,21 @@ const utilsAbsPath = path.resolve(__dirname, '../../utils.js');
 let _mockMeminfo = { totalKB: 6300 * 1024, availableKB: 4600 * 1024, pct: 73.0 };
 let _mockPsi = 0;
 let _mockShResults = {};
+let _mockState = 'GUARDING';
 
 require.cache[utilsAbsPath] = {
     id: utilsAbsPath, filename: utilsAbsPath, loaded: true, paths: [],
     exports: {
         readMeminfo() { return _mockMeminfo; },
         readPsi()     { return _mockPsi; },
+        readWatchdogMode() { return ''; },
+        readRssThresholds() { return { warnKB: 3400000, emergKB: 3800000 }; },
+        determineState() { return _mockState; },
+        stateDescription(state) { return `desc:${state}`; },
         async sh(cmd) {
             if (_mockShResults[cmd]) { return _mockShResults[cmd]; }
             if (cmd.includes('is-active')) { return { ok: true, stdout: 'active\n', stderr: '' }; }
+            if (cmd.includes('ActiveEnterTimestamp')) { return { ok: true, stdout: 'Mon 2026-03-31 17:00:00 CDT\n', stderr: '' }; }
             if (cmd.includes('ps -C code')) { return { ok: true, stdout: '2867200\n', stderr: '' }; }
             return { ok: true, stdout: '', stderr: '' };
         },
@@ -157,6 +172,7 @@ describe('chatParticipant — requestHandler()', () => {
         _commandsCalled.length = 0;
         _mockMeminfo = { totalKB: 6300 * 1024, availableKB: 4600 * 1024, pct: 73.0 };
         _mockPsi = 0;
+        _mockState = 'GUARDING';
     });
 
     test('/status renders status markdown with buttons', async () => {
@@ -167,7 +183,21 @@ describe('chatParticipant — requestHandler()', () => {
         assert.equal(result.metadata.command, 'status');
         assert.ok(stream._out.markdowns.some(m => m.includes('Mem Watchdog Status')));
         assert.ok(stream._out.markdowns.some(m => m.includes('RAM free')));
+        assert.ok(stream._out.markdowns.some(m => m.includes('State:')));
+        assert.ok(stream._out.markdowns.some(m => m.includes('Service uptime')));
         assert.equal(stream._out.buttons.length, 2);
+    });
+
+    test('/status includes thematic state variants', async () => {
+        const states = ['GUARDING', 'ALERT', 'SLEEPING', 'ATTACKING', 'OFF'];
+        for (const state of states) {
+            _mockState = state;
+            const stream = createMockStream();
+            await _test.requestHandler({ command: 'status', prompt: '' }, {}, stream);
+            const joined = stream._out.markdowns.join('\n');
+            assert.ok(joined.includes(`State: **${state}**`), `expected state ${state} in status output`);
+            assert.ok(joined.includes(`desc:${state}`), `expected description for ${state} in status output`);
+        }
     });
 
     test('/status handles null meminfo gracefully', async () => {
@@ -189,12 +219,12 @@ describe('chatParticipant — requestHandler()', () => {
         assert.ok(stream._out.markdowns.some(m => m.includes('journal')));
     });
 
-    test('/act kill dispatches killChrome', async () => {
+    test('/act kill dispatches killDisposable', async () => {
         const stream = createMockStream();
         await _test.requestHandler(
             { command: 'act', prompt: 'kill chrome now' }, {}, stream
         );
-        assert.ok(_commandsCalled.includes('killChrome'));
+        assert.ok(_commandsCalled.includes('killDisposable'));
     });
 
     test('/act restart dispatches restartService', async () => {
@@ -231,6 +261,27 @@ describe('chatParticipant — requestHandler()', () => {
         assert.equal(result.metadata.command, 'tune');
         assert.ok(stream._out.markdowns.some(m => m.includes('conservative')));
         assert.equal(_configUpdates.length, 2);
+    });
+
+    test('/lowmem renders extension guidance and button', async () => {
+        const stream = createMockStream();
+        const result = await _test.requestHandler(
+            { command: 'lowmem', prompt: '' }, {}, stream
+        );
+        assert.equal(result.metadata.command, 'lowmem');
+        const joined = stream._out.markdowns.join('\n');
+        assert.ok(joined.includes('Low-Memory Profile Audit'));
+        assert.ok(joined.includes('GitLens'));
+        assert.ok(stream._out.buttons.some(b => b.command === 'memWatchdog.createLowMemProfile'));
+    });
+
+    test('/rescue dispatches chatRescue', async () => {
+        const stream = createMockStream();
+        const result = await _test.requestHandler(
+            { command: 'rescue', prompt: '' }, {}, stream
+        );
+        assert.equal(result.metadata.command, 'rescue');
+        assert.ok(_commandsCalled.includes('chatRescue'));
     });
 
     test('unknown command defaults to status', async () => {
@@ -304,6 +355,16 @@ describe('chatParticipant — registerChatParticipant()', () => {
         );
         assert.ok(followups.some(f => f.prompt.includes('status')));
         assert.ok(followups.some(f => f.prompt.includes('restart')));
+    });
+
+    test('followups after lowmem suggest optimize and status', () => {
+        const ctx = { subscriptions: [] };
+        registerChatParticipant(ctx);
+        const followups = _createdParticipants[0].followupProvider.provideFollowups(
+            { metadata: { command: 'lowmem' } }
+        );
+        assert.ok(followups.some(f => f.prompt.includes('optimize')));
+        assert.ok(followups.some(f => f.prompt.includes('status')));
     });
 
     test('skips registration when chat API is unavailable', () => {

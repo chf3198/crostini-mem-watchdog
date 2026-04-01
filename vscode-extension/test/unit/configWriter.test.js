@@ -21,6 +21,8 @@ const DEFAULTS = {
     sigtermThresholdPct:   25,
     sigkillThresholdPct:   15,
     psiThresholdPct:       25,
+    vscodeRssWarnMB:       3400,
+    vscodeRssEmergencyMB:  3800,
 };
 
 function makeCfg(overrides = {}) {
@@ -52,6 +54,8 @@ describe('writeConfig — kill-threshold cross-field validation', () => {
         const content = out.get();
         assert.ok(content.includes('SIGTERM_THRESHOLD=25'), 'sigterm default written');
         assert.ok(content.includes('SIGKILL_THRESHOLD=15'), 'sigkill default written');
+        assert.ok(content.includes('VSCODE_RSS_WARN_KB=3481600'), 'rss warn written');
+        assert.ok(content.includes('VSCODE_RSS_EMERG_KB=3891200'), 'rss emergency written');
     });
 
     test('sigkillPct > sigtermPct: both reverted to defaults + 1 warning', (t) => {
@@ -76,6 +80,13 @@ describe('writeConfig — kill-threshold cross-field validation', () => {
         captureWrite(t);
         const { warnings } = writeConfig(makeCfg({ sigkillThresholdPct: 20, sigtermThresholdPct: 20 }));
         assert.equal(warnings.length, 1);
+    });
+
+    test('rss emergency <= warn: reverted + warning', (t) => {
+        captureWrite(t);
+        const { warnings } = writeConfig(makeCfg({ vscodeRssWarnMB: 3900, vscodeRssEmergencyMB: 3600 }));
+        assert.equal(warnings.length, 1);
+        assert.ok(warnings[0].includes('vscodeRssEmergencyMB'));
     });
 });
 
@@ -105,6 +116,8 @@ describe('writeConfig — output file format', () => {
         writeConfig(makeCfg());
         const content = out.get();
         for (const v of ['SIGTERM_THRESHOLD', 'SIGKILL_THRESHOLD', 'PSI_THRESHOLD']) {
+            assert.ok(content.includes('VSCODE_RSS_WARN_KB'), 'missing VSCODE_RSS_WARN_KB');
+            assert.ok(content.includes('VSCODE_RSS_EMERG_KB'), 'missing VSCODE_RSS_EMERG_KB');
             assert.ok(content.includes(v), `missing variable: ${v}`);
         }
     });
@@ -126,7 +139,9 @@ describe('writeConfig — output file format', () => {
             '# To adjust thresholds, use VS Code Settings > Mem Watchdog.\n' +
             'SIGTERM_THRESHOLD=25\n' +
             'SIGKILL_THRESHOLD=15\n' +
-            'PSI_THRESHOLD=25\n';
+            'PSI_THRESHOLD=25\n' +
+            'VSCODE_RSS_WARN_KB=3481600\n' +
+            'VSCODE_RSS_EMERG_KB=3891200\n';
 
         t.mock.method(fs, 'mkdirSync', () => {});
         t.mock.method(fs, 'readFileSync', () => expected);

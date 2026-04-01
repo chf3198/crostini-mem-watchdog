@@ -8,8 +8,8 @@
 [![Installs](https://img.shields.io/visual-studio-marketplace/i/CurtisFranks.mem-watchdog-status?color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=CurtisFranks.mem-watchdog-status)
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ChromeOS%20Crostini-4285f4)](https://chromeos.dev/en/linux)
-[![Tests](https://img.shields.io/badge/bash-18%2F18-brightgreen)](tests/test-watchdog.sh)
-[![Tests](https://img.shields.io/badge/js-146%2F146-brightgreen)](vscode-extension/package.json)
+[![Tests](https://img.shields.io/badge/bash-19%2F19-brightgreen)](tests/test-watchdog.sh)
+[![Tests](https://img.shields.io/badge/js-180%2F180-brightgreen)](vscode-extension/package.json)
 
 _`earlyoom` hard-crashes on Crostini (exit 104, every 3 seconds, zero protection). This replaces it with a VS Code-aware watchdog that kills Chrome before the kernel OOM-kills VS Code._
 
@@ -79,8 +79,8 @@ This watchdog reads only `MemAvailable` and `MemTotal` — both correct on this 
 | `MemAvailable ≤ 15%`   | `SIGKILL` Chrome / Playwright                                                                    |
 | `MemAvailable ≤ 25%`   | `SIGTERM` Chrome / Playwright                                                                    |
 | PSI `full avg10 > 25%` | `SIGTERM` Chrome (sustained memory stall)                                                        |
-| VS Code RSS > 3.4 GB   | `SIGTERM` Chrome + desktop notification; if no Chrome → log and defer to EMERGENCY               |
-| VS Code RSS > 3.8 GB   | `SIGKILL` Chrome; if no Chrome → `SIGTERM` highest-RSS extension host to save the VS Code window |
+| VS Code RSS > 3.4 GB   | RSS warn path: kill disposable targets or lowest-value VS Code helper if RSS is accelerating |
+| VS Code RSS > 3.8 GB   | RSS emergency circuit-breaker: critical helper kill, then controlled VS Code main restart if needed |
 | RSS velocity spike     | Kill lowest-value VS Code helper — **never** a language server or Extension Host at normal severity |
 | Every loop             | Set `oom_score_adj=0` on VS Code PIDs (counters Electron's 200–300 default)                      |
 | Every loop             | Set `oom_score_adj=1000` on Chrome PIDs (kernel kills it first)                                  |
@@ -94,6 +94,7 @@ This watchdog reads only `MemAvailable` and `MemTotal` — both correct on this 
 - Reads only `MemAvailable`, `MemTotal`, and `/proc/pressure/memory` (PSI) — all safe on Crostini
 - Logs via `logger -t mem-watchdog` → journald (no `/tmp` writes)
 - Desktop notifications via `notify-send`, throttled to 1 per 5 minutes per severity level
+- **Chat Continuity Guard** in the VS Code extension can archive oversized Copilot chat sessions, generate a continuity pack, open a resumable prompt, and reload VS Code before the extension host re-parses a multi-hundred-MB chat JSON.
 
 ---
 
@@ -105,7 +106,7 @@ crostini-mem-watchdog/
 ├── mem-watchdog.service         ← systemd user service unit
 ├── install.sh                   ← shell-only installer (no VS Code required)
 ├── tests/
-│   ├── test-watchdog.sh         ← 18-test validation suite
+│   ├── test-watchdog.sh         ← 19-test validation suite
 │   ├── test-pressure.sh         ← live memory pressure tests
 │   ├── stress-harness.sh        ← Playwright stress test harness
 │   └── stress-playwright.js     ← Playwright automation driver
@@ -119,7 +120,8 @@ crostini-mem-watchdog/
     ├── extension.js             ← activate(): install → skill → config → commands → status bar → update check → chat
     ├── installer.js             ← SHA-256 hash-based auto-install/upgrade + downgrade protection + MIN_SAFE guard
     ├── configWriter.js          ← VS Code Settings → ~/.config/mem-watchdog/config.sh
-    ├── commands.js              ← dashboard, preflight, killDisposable, restartService, optimizeMemory, createLowMemProfile
+    ├── commands.js              ← dashboard, preflight, killDisposable, restartService, optimizeMemory, createLowMemProfile, chatRescue
+    ├── chatContinuity.js        ← oversized chat archival + continuity pack + resumable prompt generation
     ├── updateChecker.js         ← GitHub Releases API self-update check (24h throttled)
     ├── skillInstaller.js        ← installs/updates ~/.copilot/skills/mem-watchdog-ops/
     ├── chatParticipant.js       ← @memwatchdog chat participant: /status, /logs, /tune, /act, /optimize, /lowmem
@@ -151,6 +153,18 @@ crostini-mem-watchdog/
 | `VSCODE_RSS_WARN_KB`  | `3400000` | ~3.4 GB — VS Code RSS warning level                    |
 | `VSCODE_RSS_EMERG_KB` | `3800000` | ~3.8 GB — VS Code RSS emergency level                  |
 | `NOTIFY_INTERVAL`     | `300`     | Seconds between desktop notifications per severity     |
+
+### Chat Continuity Guard
+
+When Copilot chat history becomes dangerously large, use the extension command **Mem Watchdog: Rescue Oversized Chat Session**. It:
+
+1. Moves the active giant session JSON out of VS Code's live `chatSessions/` store.
+2. Writes a continuity bundle to `~/.config/mem-watchdog/chat-archives/<timestamp>-<workspaceId>/`.
+3. Generates:
+  - `session-original.json` — the full archived session
+  - `continuity-pack.md` — compact forensic summary
+  - `resume.prompt.md` — paste-ready fresh-chat prompt
+4. Optionally reloads VS Code immediately so the extension host does not re-parse the oversized chat on restart.
 
 ### Managed Protection Window (Repo-Agnostic)
 
@@ -184,8 +198,8 @@ Other commands:
 All 4 gates must pass before any change is published:
 
 ```bash
-bash tests/test-watchdog.sh              # 18 bash tests (~3 s) — service, OOM scores, PSI, SwapFree safety, SIGTERM
-cd vscode-extension && npm test    # 146 JS unit tests (~1 s) — extension state machine, activation singleton, low-memory profile guidance, utils
+bash tests/test-watchdog.sh              # 19 bash tests (~3 s) — service, OOM scores, PSI, RSS circuit-breaker policy, SwapFree safety, SIGTERM
+cd vscode-extension && npm test    # 180 JS unit tests (~1 s) — continuity rescue flow, extension state machine, activation singleton, low-memory profile guidance, utils
 bash -n mem-watchdog.sh            # bash syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh
 ```

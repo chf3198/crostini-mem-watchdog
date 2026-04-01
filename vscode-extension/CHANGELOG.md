@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Chat Continuity Guard** ([#148](https://github.com/chf3198/crostini-mem-watchdog/issues/148)) — new `memWatchdog.chatRescue` command plus `/memwatchdog rescue` chat command archive oversized Copilot chat sessions out of VS Code's live `chatSessions/` store, generate a continuity pack under `~/.config/mem-watchdog/chat-archives/`, open `resume.prompt.md`, and optionally reload the window.
+
+### Changed
+- **Command rename for stack-agnostic semantics** ([#140](https://github.com/chf3198/crostini-mem-watchdog/issues/140)) — `memWatchdog.killChrome` is now `memWatchdog.killDisposable` with updated labels/descriptions.
+- **Daemon compatibility floor raised** — `MIN_SAFE_DAEMON_VERSION` updated to `20260331.3`.
+- **Thematic status-bar states** ([#136](https://github.com/chf3198/crostini-mem-watchdog/issues/136)) — status bar now renders `OFF`, `SLEEPING`, `ATTACKING`, `RECOVERING`, `ALERT`, `GUARDING` with state-aware tooltip descriptions.
+- **Chat status state context** ([#137](https://github.com/chf3198/crostini-mem-watchdog/issues/137)) — `/memwatchdog status` now includes thematic state + description and WARN/EMERG threshold context.
+- **LowMem profile guidance** ([#128](https://github.com/chf3198/crostini-mem-watchdog/issues/128)) — new `memWatchdog.createLowMemProfile` command audits installed extensions by estimated memory impact, opens the VS Code Profiles workflow, and can disable recommended heavy extensions inside the current profile. `/memwatchdog lowmem` exposes the same guidance in chat, and `/memwatchdog optimize` now recommends the profile flow when settings are already tuned but extension load is still high.
+- **RSS settings restored** — `vscodeRssWarnMB` and `vscodeRssEmergencyMB` are back in Settings and `configWriter.js` now writes `VSCODE_RSS_WARN_KB` / `VSCODE_RSS_EMERG_KB` again so the daemon and extension share the same circuit-breaker thresholds.
+
+### Tests
+- JS unit tests: 172 → **180 passing** (+8 tests for chat continuity archival/resume flow, rescue command wiring, and RSS config validation)
+
 ## [0.3.17] — 2026-03-31
 
 ### Added

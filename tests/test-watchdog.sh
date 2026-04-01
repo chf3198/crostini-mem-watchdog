@@ -241,30 +241,34 @@ else
   FAIL "Language-server exclusion regex missing expected protections"
 fi
 
-# ── TEST 15: Outward-facing kill policy — never kills VS Code ────────────────
+# ── TEST 15: Controlled VS Code recovery policy is present ───────────────────
 tee_log ""
-tee_log "── Test 15: Outward-facing kill policy (no kill_vscode_main or kill_extension_host)"
+tee_log "── Test 15: Controlled VS Code recovery policy"
 policy_ok=true
-if grep -q 'kill_vscode_main' "$WATCHDOG"; then
-  tee_log "    DANGER: kill_vscode_main function still exists in daemon"
+if ! grep -q 'kill_vscode_main()' "$WATCHDOG"; then
+  tee_log "    Missing kill_vscode_main() circuit-breaker function"
   policy_ok=false
 fi
 if grep -q 'kill_extension_host' "$WATCHDOG"; then
   tee_log "    DANGER: kill_extension_host function still exists in daemon"
   policy_ok=false
 fi
-if ! grep -q 'kill_nonessential_apps' "$WATCHDOG"; then
-  tee_log "    Missing kill_nonessential_apps function"
+if ! grep -q 'VSCODE_RSS_WARN_KB=' "$WATCHDOG"; then
+  tee_log "    Missing VSCODE_RSS_WARN_KB threshold"
   policy_ok=false
 fi
-if ! grep -q 'deferring to kernel OOM' "$WATCHDOG"; then
-  tee_log "    Missing kernel OOM deferral in Stage 4"
+if ! grep -q 'VSCODE_RSS_EMERG_KB=' "$WATCHDOG"; then
+  tee_log "    Missing VSCODE_RSS_EMERG_KB threshold"
+  policy_ok=false
+fi
+if ! grep -q 'Stage 4: no disposable target — escalating to critical VS Code helper kill path' "$WATCHDOG"; then
+  tee_log "    Missing truthful Stage 4 no-disposable escalation log"
   policy_ok=false
 fi
 if $policy_ok; then
-  PASS "Outward-facing kill policy: no VS Code kills, kernel OOM deferral present"
+  PASS "Controlled VS Code recovery policy present (RSS thresholds + Stage 4 escalation + main restart circuit-breaker)"
 else
-  FAIL "Kill policy still contains VS Code self-destruction paths"
+  FAIL "Controlled VS Code recovery policy incomplete"
 fi
 
 # ── TEST 16: Process classification tier constants and logging (Issue #6) ────
@@ -428,16 +432,24 @@ else
   sleep_ok=false
 fi
 
-# Verify check_chrome_cap is gated by SLEEP mode
-if grep -q '"\${_watchdog_mode}" != "SLEEP".*check_chrome_cap\|check_chrome_cap' "$WATCHDOG" && \
-   grep -q '_watchdog_mode.*SLEEP.*check_chrome_cap\|check_chrome_cap' "$WATCHDOG"; then
-  tee_log "    check_chrome_cap gated by SLEEP mode"
+# Verify stale SLEEP timeout guard is defined and logged
+if grep -q 'MEM_SLEEP_TIMEOUT_S=' "$WATCHDOG" && grep -q 'MODE: SLEEP stale' "$WATCHDOG"; then
+  tee_log "    Stale SLEEP timeout guard present (MEM_SLEEP_TIMEOUT_S + stale log)"
+else
+  tee_log "    MISSING: stale SLEEP timeout guard not found"
+  sleep_ok=false
+fi
+
+# Verify check_disposable_cap is gated by SLEEP mode
+if grep -q '"\${_watchdog_mode}" != "SLEEP".*check_disposable_cap\|check_disposable_cap' "$WATCHDOG" && \
+   grep -q '_watchdog_mode.*SLEEP.*check_disposable_cap\|check_disposable_cap' "$WATCHDOG"; then
+  tee_log "    check_disposable_cap gated by SLEEP mode"
 else
   # More relaxed check — just look for the guard pattern
-  if grep -q '"SLEEP".*check_chrome_cap' "$WATCHDOG"; then
-    tee_log "    check_chrome_cap gated by SLEEP mode"
+  if grep -q '"SLEEP".*check_disposable_cap' "$WATCHDOG"; then
+    tee_log "    check_disposable_cap gated by SLEEP mode"
   else
-    tee_log "    MISSING: check_chrome_cap SLEEP gate not found"
+    tee_log "    MISSING: check_disposable_cap SLEEP gate not found"
     sleep_ok=false
   fi
 fi
@@ -474,7 +486,7 @@ else
 fi
 
 if $sleep_ok; then
-  PASS "Managed window SLEEP mode: _MODE_FILE, zero-fork read, transition log, stage gate, live dry-run"
+  PASS "Managed window SLEEP mode: _MODE_FILE, zero-fork read, transition log, stale-timeout guard, stage gate, live dry-run"
 else
   FAIL "Managed window SLEEP mode implementation incomplete"
 fi
