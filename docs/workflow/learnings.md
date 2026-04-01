@@ -20,6 +20,25 @@
 
 ---
 
+### 2026-04-01 — Chat Continuity Guard scope is single-workspace; cross-workspace OOM still possible
+
+**Context**: User opened the frankspressurewashing VS Code workspace. VS Code immediately loaded two oversized Copilot chat sessions (458 MB + 357 MB = 815 MB) from that workspace's `chatSessions/` directory. RSS spiked from 1.3 GB to 4.4 GB within ~38 seconds. Daemon reached Stage 4 twice (pct=11%, pct=8%) with no disposable target, kernel OOM-killed a process both times. Both sessions archived manually post-crash.
+
+**Discovery**: The Chat Continuity Guard (shipped in v0.3.18) runs in the extension host and calls `maybePromptChatRescue()` every 60 seconds. It scans `workspaceStorage/<current-workspace-hash>/chatSessions/`. However:
+1. **It only scans the currently open workspace.** Sessions in other workspaces grow unobserved.
+2. **VS Code loads ALL chatSessions for a workspace on open** — even old, never-reopened sessions from weeks ago.
+3. **Session growth happens in the source workspace.** When you're doing long work in workspace A, the 60s guard runs in workspace A's extension context and never sees workspace B's sessions growing.
+4. **The spike on workspace switch is faster than any guard interval.** Loading 815 MB from disk into the Extension Host heap takes ~30 seconds — faster than the 60s poll and much faster than the 2s daemon poll. By the time either guard could react, the OOM was already in progress.
+
+**Application**:
+- The guard must scan **all** `workspaceStorage/*/chatSessions/` directories in a background pass, not just the current workspace. This way sessions growing in inactive workspaces are caught before the user switches to them.
+- The guard should write a "session is oversized, archive before opening" flag file in the workspace storage that VS Code could theoretically read — but since VS Code doesn't honor such flags, the reliable fix is pre-emptive archive before the workspace is opened.
+- A daemon-side complement: at startup, scan all workspaceStorage directories and emit a WARNING to the journal if any single workspace has more than `CHAT_WARN_MB` (default 200 MB) of chat JSON. This gives advance notice before the crash.
+- For now: manual rescue procedure is to `find ~/.config/Code/User/workspaceStorage -name '*.json' -path '*/chatSessions/*' -size +50M` to identify all oversized sessions, then move them to the archive before opening the workspace.
+- Issue #153 tracks the guard scope expansion.
+
+---
+
 ### 2026-04-01 — Oversized Copilot chat rescue must preserve resumability, not just delete state
 
 **Context**: Implementing issue #148 after diagnosing a restart loop where VS Code repeatedly reloaded a hundreds-of-megabytes Copilot chat session JSON and hit extension-host OOM on startup.
