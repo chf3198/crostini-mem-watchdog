@@ -87,7 +87,7 @@ This watchdog reads only `MemAvailable` and `MemTotal` — both correct on this 
 
 **Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process are excluded from the helper-kill candidate pool at normal severity. These 80–120 MB processes are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing them saves <2% of memory for 2 seconds (they respawn immediately) while permanently disabling language intelligence until a full VS Code restart. Only at true emergency severity (RSS ≥ 3.8 GB) are they considered as last-resort targets.
 
-**Playwright awareness:** When a Playwright MCP session is active (detected via `node.*playwright`), the daemon defers non-critical Chrome kills and skips the `CHROME_COUNT_MAX` cap — Playwright legitimately spawns 5–10 Chrome PIDs. At true emergency severity (≤ 15% free), Chrome is always killed regardless (safety net).
+**Automation awareness:** When an automation session is active (detected via `TIER_DISPOSABLE_PATTERN_AUX`, default `node.*(playwright|puppeteer|cypress|selenium-webdriver)`), the daemon defers non-critical disposable kills and skips the `DISPOSABLE_COUNT_MAX` cap. At true emergency severity (≤ 15% free), disposable processes are always killed regardless (safety net).
 
 - Checks every **2 seconds** (4s was confirmed too slow — missed a 4 GB spike in < 4s on 2026-03-05)
 - **Startup mode**: 0.5 s polling for 90 s after new VS Code PIDs detected — catches extension-host spikes during startup
@@ -110,6 +110,7 @@ crostini-mem-watchdog/
 │   ├── stress-harness.sh        ← Playwright stress test harness
 │   └── stress-playwright.js     ← Playwright automation driver
 ├── scripts/
+│   ├── mem-watchdog-mode.sh   ← repo-agnostic SLEEP/NORMAL mode helper
 │   ├── watchdog-tray.sh         ← optional: yad system tray icon
 │   ├── docs-integrity-check.sh  ← documentation drift check
 │   ├── extension-footprint-advisor.sh ← extension RAM advisor (prototype)
@@ -118,10 +119,10 @@ crostini-mem-watchdog/
     ├── extension.js             ← activate(): install → skill → config → commands → status bar → update check → chat
     ├── installer.js             ← SHA-256 hash-based auto-install/upgrade + downgrade protection + MIN_SAFE guard
     ├── configWriter.js          ← VS Code Settings → ~/.config/mem-watchdog/config.sh
-    ├── commands.js              ← dashboard, preflight, killChrome, restartService
+    ├── commands.js              ← dashboard, preflight, killDisposable, restartService, optimizeMemory, createLowMemProfile
     ├── updateChecker.js         ← GitHub Releases API self-update check (24h throttled)
     ├── skillInstaller.js        ← installs/updates ~/.copilot/skills/mem-watchdog-ops/
-    ├── chatParticipant.js       ← @memwatchdog chat participant: /status, /logs, /tune, /act
+    ├── chatParticipant.js       ← @memwatchdog chat participant: /status, /logs, /tune, /act, /optimize, /lowmem
     ├── utils.js                 ← readMeminfo(), readPsi(), sh(), checkServiceStatus() — shared helpers
     ├── lifecycle.js             ← vscode:uninstall: stop + disable service
     └── scripts/prepare.js       ← vscode:prepublish: bundles daemon files into resources/
@@ -151,6 +152,22 @@ crostini-mem-watchdog/
 | `VSCODE_RSS_EMERG_KB` | `3800000` | ~3.8 GB — VS Code RSS emergency level                  |
 | `NOTIFY_INTERVAL`     | `300`     | Seconds between desktop notifications per severity     |
 
+### Managed Protection Window (Repo-Agnostic)
+
+Use the installed helper script to safely run any automation command in a watchdog-managed SLEEP window (no repo-specific integration required):
+
+```bash
+~/.local/bin/mem-watchdog-mode.sh run -- node scripts/mcp/local_capture_test.js
+```
+
+Other commands:
+
+```bash
+~/.local/bin/mem-watchdog-mode.sh status
+~/.local/bin/mem-watchdog-mode.sh sleep
+~/.local/bin/mem-watchdog-mode.sh normal
+```
+
 ### Tuning for Your RAM
 
 | Total RAM        | `VSCODE_RSS_WARN_KB` | `VSCODE_RSS_EMERG_KB` |
@@ -168,7 +185,7 @@ All 4 gates must pass before any change is published:
 
 ```bash
 bash tests/test-watchdog.sh              # 18 bash tests (~3 s) — service, OOM scores, PSI, SwapFree safety, SIGTERM
-cd vscode-extension && npm test    # 146 JS unit tests (~1 s) — extension state machine, activation singleton, pileup guard, utils
+cd vscode-extension && npm test    # 146 JS unit tests (~1 s) — extension state machine, activation singleton, low-memory profile guidance, utils
 bash -n mem-watchdog.sh            # bash syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh
 ```

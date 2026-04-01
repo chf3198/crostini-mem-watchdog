@@ -8,6 +8,15 @@ Daemon versions use `YYYYMMDD.N` (datestamp + revision).
 
 ## [Unreleased]
 
+### Added
+- **Repo-agnostic managed-window helper** ([#146](https://github.com/chf3198/crostini-mem-watchdog/issues/146)) — added `scripts/mem-watchdog-mode.sh` with `status|sleep|normal|run -- <command>` so any repository/workflow can request watchdog `mode=SLEEP` without embedding custom integration code. Installer now deploys it to `~/.local/bin/mem-watchdog-mode.sh`.
+
+### Changed
+- **Stack-agnostic disposable naming refactor** ([#140](https://github.com/chf3198/crostini-mem-watchdog/issues/140)) — daemon internals now use `kill_disposable_processes()`, `check_disposable_cap()`, `automation_session_active()`, and `DISPOSABLE_COUNT_MAX` naming. Legacy `CHROME_COUNT_MAX` remains accepted as a one-release alias with startup deprecation warning.
+- **Journal token rename (breaking for log parsers)** — `CHROME-EXCESS` → `DISPOSABLE-EXCESS`.
+- **Default automation fallback pattern broadened** — `TIER_DISPOSABLE_PATTERN_AUX` default now includes common Node automation frameworks: `playwright|puppeteer|cypress|selenium-webdriver`.
+- **Managed-window stale-timeout guard** ([#138](https://github.com/chf3198/crostini-mem-watchdog/issues/138)) — `MEM_SLEEP_TIMEOUT_S` (default 300s) now auto-clears stale `mode=SLEEP` signals and logs a warning when the caller fails to clean up.
+
 ## [20260331.1] — 2026-03-31
 
 ### Added
