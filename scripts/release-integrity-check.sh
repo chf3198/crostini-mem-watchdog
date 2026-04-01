@@ -58,16 +58,28 @@ if [[ $POST_PUBLISH -eq 1 ]]; then
     fi
 
     market_ver=""
+    market_ver_npx=""
+    market_ver_web=""
     if command -v npx >/dev/null 2>&1; then
-        market_ver="$(
+        market_ver_npx="$(
             (
                 cd vscode-extension || exit 1
                 npx vsce show CurtisFranks.mem-watchdog-status --json 2>/dev/null
             ) | grep -m1 -o '"version": "[^"]*"' | cut -d'"' -f4 || true
         )"
     fi
-    if [[ -z "$market_ver" ]]; then
-        market_ver="$(curl -s "https://marketplace.visualstudio.com/items?itemName=CurtisFranks.mem-watchdog-status" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
+    market_ver_web="$(curl -s "https://marketplace.visualstudio.com/items?itemName=CurtisFranks.mem-watchdog-status" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
+
+    # Prefer a source that confirms the target version. `vsce show` can lag
+    # behind the marketplace page immediately after publish.
+    if [[ "$market_ver_npx" == "$pkg_version" ]]; then
+        market_ver="$market_ver_npx"
+    elif [[ "$market_ver_web" == "$pkg_version" ]]; then
+        market_ver="$market_ver_web"
+    elif [[ -n "$market_ver_npx" ]]; then
+        market_ver="$market_ver_npx"
+    else
+        market_ver="$market_ver_web"
     fi
     if [[ -n "$market_ver" && "$market_ver" == "$pkg_version" ]]; then
         PASS "Marketplace version matches package.json ($market_ver)"
