@@ -245,7 +245,7 @@ async function chatRescue(options = {}) {
         session: candidate,
         thresholdMB,
         keepArchives,
-        openResume: true,
+        openResume: options.openResume ?? true,
     });
 
     if (!result.ok) {
@@ -254,9 +254,14 @@ async function chatRescue(options = {}) {
     }
 
     const shouldRestart = options.restart ?? restartAfterRescue;
-    vscode.window.showInformationMessage(
-        `Mem Watchdog: archived ${candidate.name} and opened ${result.resumePath}. ${shouldRestart ? 'Reloading VS Code to break the restart loop.' : 'Continue from the opened resume prompt when ready.'}`
-    );
+    if (!options.silent) {
+        const openMsg = (options.openResume ?? true)
+            ? `opened ${result.resumePath}`
+            : 'kept resume artifacts in the archive';
+        vscode.window.showInformationMessage(
+            `Mem Watchdog: archived ${candidate.name} and ${openMsg}. ${shouldRestart ? 'Reloading VS Code to break the restart loop.' : 'Continue from the continuity pack when ready.'}`
+        );
+    }
 
     if (shouldRestart) {
         await vscode.commands.executeCommand('workbench.action.reloadWindow');
@@ -264,7 +269,7 @@ async function chatRescue(options = {}) {
     return { ok: true, ...result, restarted: shouldRestart };
 }
 
-async function maybePromptChatRescue() {
+async function maybePromptChatRescue(options = {}) {
     const cfg = vscode.workspace.getConfiguration('memWatchdog');
     if (!cfg.get('chatGuard.enabled', true)) { return false; }
 
@@ -274,9 +279,24 @@ async function maybePromptChatRescue() {
     const candidate = chatContinuity.findRescueCandidate({ thresholdMB });
     if (!candidate) { return false; }
 
+    const inActiveWorkspace = chatContinuity.sessionInActiveWorkspace(vscode, candidate);
+    if (!inActiveWorkspace) {
+        await chatRescue({
+            session: candidate,
+            skipConfirmation: true,
+            restart: false,
+            openResume: false,
+            silent: true,
+        });
+        vscode.window.showInformationMessage(
+            `Mem Watchdog: preemptively archived oversized chat session ${candidate.name} from an inactive workspace (${chatContinuity.formatBytes(candidate.sizeBytes)}).`
+        );
+        return true;
+    }
+
     const vscodeRssMB = Math.round(await totalRss('code') / 1024);
     const oversized = candidate.sizeBytes >= (thresholdMB * 1024 * 1024 * 2);
-    if (vscodeRssMB < rssWarnMB && !oversized) { return false; }
+    if (!options.preemptive && vscodeRssMB < rssWarnMB && !oversized) { return false; }
 
     const promptKey = `${candidate.filePath}:${candidate.sizeBytes}:${candidate.mtimeMs}`;
     if (promptKey === _lastRescuePromptKey) { return false; }

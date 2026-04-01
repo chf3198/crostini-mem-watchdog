@@ -55,6 +55,14 @@ require.cache[utilsAbsPath] = {
 };
 
 const _rescueInvocations = [];
+let _mockCandidate = {
+    name: 'huge-session.json',
+    filePath: '/tmp/huge-session.json',
+    sizeBytes: 458 * 1024 * 1024,
+    mtimeMs: Date.now(),
+    workspaceId: 'inactive-workspace',
+};
+let _sessionIsActive = true;
 require.cache[chatContinuityAbsPath] = {
     id: chatContinuityAbsPath,
     filename: chatContinuityAbsPath,
@@ -63,12 +71,8 @@ require.cache[chatContinuityAbsPath] = {
     exports: {
         DEFAULT_SESSION_THRESHOLD_MB: 120,
         formatBytes: (bytes) => `${Math.round(bytes / 1024 / 1024)} MB`,
-        findRescueCandidate: () => ({
-            name: 'huge-session.json',
-            filePath: '/tmp/huge-session.json',
-            sizeBytes: 458 * 1024 * 1024,
-            mtimeMs: Date.now(),
-        }),
+        findRescueCandidate: () => _mockCandidate,
+        sessionInActiveWorkspace: () => _sessionIsActive,
         rescueSession: async (_vscode, options) => {
             _rescueInvocations.push(options);
             return {
@@ -92,6 +96,14 @@ function reset() {
     mockVscode.commands.reset();
     mockVscode.extensions = { all: [] };
     _rescueInvocations.length = 0;
+    _mockCandidate = {
+        name: 'huge-session.json',
+        filePath: '/tmp/huge-session.json',
+        sizeBytes: 458 * 1024 * 1024,
+        mtimeMs: Date.now(),
+        workspaceId: 'inactive-workspace',
+    };
+    _sessionIsActive = true;
     _mockMi = { totalKB: 6440000, availableKB: 2000000, pct: 31 };
 }
 
@@ -264,5 +276,29 @@ describe('chatRescue', () => {
         assert.equal(result.ok, true);
         assert.equal(_rescueInvocations.length, 1);
         assert.ok(!mockVscode.commands._executedCommands.some(args => args[0] === 'workbench.action.reloadWindow'));
+    });
+
+    test('maybePromptChatRescue preemptively archives inactive workspace sessions', async () => {
+        _sessionIsActive = false;
+        mockWorkspace._configValues = {
+            'chatGuard.enabled': true,
+            'chatGuard.sessionSizeMB': 120,
+            'chatGuard.autoRescue': 'prompt',
+        };
+
+        const acted = await commands.maybePromptChatRescue({ preemptive: true });
+
+        assert.equal(acted, true);
+        assert.equal(_rescueInvocations.length, 1);
+        assert.equal(_rescueInvocations[0].openResume, false);
+        assert.equal(_rescueInvocations[0].session.workspaceId, 'inactive-workspace');
+        assert.ok(!mockVscode.commands._executedCommands.some(args => args[0] === 'workbench.action.reloadWindow'));
+    });
+
+    test('maybePromptChatRescue skips when no candidate', async () => {
+        _mockCandidate = null;
+        const acted = await commands.maybePromptChatRescue({ preemptive: true });
+        assert.equal(acted, false);
+        assert.equal(_rescueInvocations.length, 0);
     });
 });

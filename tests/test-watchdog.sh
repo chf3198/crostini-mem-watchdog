@@ -491,6 +491,38 @@ else
   FAIL "Managed window SLEEP mode implementation incomplete"
 fi
 
+# ── Test 20: Startup chat footprint warning scan (Issue #153) ────────────────
+tee_log ""
+tee_log "── Test 20: Startup oversized chat footprint warning scan"
+chat_scan_ok=true
+
+if grep -q 'CHAT_WARN_MB=' "$WATCHDOG"; then
+  tee_log "    CHAT_WARN_MB threshold is defined"
+else
+  tee_log "    MISSING: CHAT_WARN_MB threshold"
+  chat_scan_ok=false
+fi
+
+if grep -q 'scan_workspace_chat_footprint()' "$WATCHDOG"; then
+  tee_log "    scan_workspace_chat_footprint() function is present"
+else
+  tee_log "    MISSING: scan_workspace_chat_footprint() function"
+  chat_scan_ok=false
+fi
+
+if grep -q 'scan_workspace_chat_footprint' "$WATCHDOG"; then
+  tee_log "    startup call to scan_workspace_chat_footprint found"
+else
+  tee_log "    MISSING: startup call to scan_workspace_chat_footprint"
+  chat_scan_ok=false
+fi
+
+if $chat_scan_ok; then
+  PASS "Startup chat footprint warning scan present"
+else
+  FAIL "Startup chat footprint warning scan incomplete"
+fi
+
 # ── SUMMARY ──────────────────────────────────────────────────────────────────
 tee_log ""
 tee_log "════════════════════════════════════════════════════════════════"

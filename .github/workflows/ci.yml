@@ -16,7 +16,7 @@
 #
 #   bash tests/test-watchdog.sh   # on your Crostini machine
 #
-# The CI gate covers: daemon syntax, shellcheck, all 180 JS unit tests, and docs integrity.
+# The CI gate covers: daemon syntax, shellcheck, all 184 JS unit tests, and docs integrity.
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: CI
@@ -74,7 +74,7 @@ jobs:
         run: npm ci
         working-directory: vscode-extension
 
-      - name: npm test (180 unit tests)
+      - name: npm test (184 unit tests)
         run: npm test
         working-directory: vscode-extension
 
