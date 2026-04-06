@@ -20,6 +20,25 @@
 
 ---
 
+### 2026-04-06 — `createQuickPick()` is the correct VS Code API for action-confirmation prompts, not `showWarningMessage({ modal: true })`
+
+**Context**: The kill-approval prompt used `showWarningMessage({ modal: true })` with raw newline-joined text. Users reported it was visually ugly, inconsistent with VS Code styling, and that `MessageItem.tooltip` (requested for context) was silently ignored by VS Code.
+
+**Discovery**:
+1. **`MessageItem.tooltip` is not rendered by VS Code** — it is accepted in the type signature but silently dropped in all implementations of `showWarningMessage`. There is no public VS Code API that surfaces per-item tooltip text inside a notification/modal.
+2. **`createQuickPick()` is the right primitive** for operator confirmation UIs that need per-item detail text. It renders natively in VS Code's command-palette style (theme-aware, dark/light), supports `.title`, `.placeholder`, per-item `.label`/`.description`/`.detail`, and `.alwaysShow`. The `.detail` line is the functional equivalent of a tooltip — it renders directly under the item label.
+3. **Double-resolution guard is required in QuickPick Promise wrappers.** `onDidAccept` fires, calls `qp.hide()`, which immediately fires `onDidHide`. If both callbacks call `resolve()`, the second call is silently dropped by the Promise runtime — but only in a non-deterministic way in tests. A `_resolved` boolean flag must be set in `onDidAccept` before calling `qp.hide()`, and `onDidHide` must check it before resolving.
+4. **The mock for `createQuickPick` must simulate the show→accept→hide lifecycle faithfully.** Specifically: `show()` pops a queued choice, finds the matching item by `.value`, sets `selectedItems`, calls `onDidAccept`, then calls `onDidHide`. An empty queue (Escape simulation) calls `onDidHide` directly without setting `selectedItems`. Without this, tests that resolve from `onDidHide` never fire.
+5. **Dismiss/Escape → allow is the correct safety posture.** If the operator closes the prompt without choosing, the daemon must not be left waiting for a decision indefinitely. Defaulting to allow on dismiss is consistent with the previous modal behavior (modal dismiss = no response = allow).
+
+**Application**:
+- Use `createQuickPick()` for any extension UX that requires per-option explanatory text. Never use `showWarningMessage` when tooltip/detail text is part of the design.
+- Always add a `_resolved` guard to Promise wrappers around QuickPick, regardless of whether the test suite catches the double-resolution case — the runtime behavior under rapid user input is non-deterministic.
+- When mocking `createQuickPick` in `mockVscode.js`, maintain a `_quickPickChoices` queue (not a single value) so multiple sequential prompts in the same test can be simulated without test isolation failures.
+- New QuickPick tests should assert: (1) the picker was shown (`_lastQuickPick != null`), (2) the title includes the prompt name, (3) items length ≥ expected, (4) the allow/defer item has non-empty `.detail`, (5) the correct decision was written.
+
+---
+
 ### 2026-04-05 — Automation detection patterns must include MCP/Claude wrappers to avoid disposable cap false positives
 
 **Context**: While working in `frankspressurewashing`, the watchdog repeatedly killed Chromium immediately after launch. Journal showed repeated `DISPOSABLE-EXCESS` events (10-13 disposable PIDs with cap=3) during active Playwright MCP + Claude visualization activity.
