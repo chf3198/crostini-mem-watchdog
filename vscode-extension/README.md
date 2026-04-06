@@ -21,7 +21,7 @@ The daemon acts on these conditions (checked every 2 seconds):
 
 **Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process (hosting Copilot, Playwright MCP, and all extensions) are excluded from the helper-kill candidate pool at normal severity. These small processes (80–120 MB) are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing one saves negligible memory while permanently disabling language intelligence or all extensions. They are only considered as last-resort targets at true emergency severity (RSS ≥ 3.8 GB).
 
-**Automation awareness:** When an automation session is active (detected via `TIER_DISPOSABLE_PATTERN_AUX`, default `node.*(playwright|puppeteer|cypress|selenium-webdriver)`), the daemon automatically defers non-critical disposable kills. The disposable process cap (`DISPOSABLE_COUNT_MAX`) is also skipped during active sessions. At true emergency severity (≤ 15% free RAM), disposable targets are always killed regardless.
+**Automation awareness:** When an automation session is active (detected via `TIER_DISPOSABLE_PATTERN_AUX`, default `(node|python|claude).*(playwright|puppeteer|cypress|selenium-webdriver|mcp|vision|visualization)`), the daemon automatically defers non-critical disposable kills. The disposable process cap (`DISPOSABLE_COUNT_MAX`) is also skipped during active sessions. At true emergency severity (≤ 15% free RAM), disposable targets are always killed regardless.
 
 **Startup mode:** when new VS Code PIDs appear, the daemon switches to **0.5 s polling for 90 s** and raises the RSS emergency threshold to 4.0 GB — catching the extension-host spike that caused the crash this tool was built to prevent (0 → 4 GB RSS in under 2 seconds during startup).
 
@@ -96,6 +96,8 @@ Configure all thresholds via **VS Code Settings → Mem Watchdog**. Changes take
 | `chatGuard.autoRescue` | `prompt` | `off`, `prompt`, or `auto` behavior when an oversized chat is detected |
 | `chatGuard.restartAfterRescue` | `true` | Reload the window after rescue so the extension host doesn't re-parse the giant archived session |
 | `chatGuard.preserveCount` | `3` | Number of rescue archives to keep under `~/.config/mem-watchdog/chat-archives/` |
+| `interactiveKillApproval.enabled` | `true` | Show a modal approval prompt before non-critical disposable-process kills |
+| `interactiveKillApproval.deferSeconds` | `120` | Cooldown applied when you choose **Hold fire** in the kill-approval modal |
 
 > All settings use `scope: "machine"` — they do **not** sync across machines via Settings Sync. A threshold tuned for 6 GB RAM would be dangerously wrong on a 16 GB machine.
 
@@ -188,9 +190,9 @@ Commercial use requires a paid license. See [COMMERCIAL-LICENSE.md](https://gith
 git clone https://github.com/chf3198/crostini-mem-watchdog.git
 cd crostini-mem-watchdog/vscode-extension
 npm run build          # populate resources/ from repo root
-npm test               # 184 JS unit tests via node:test (zero-install)
+npm test               # 189 JS unit tests via node:test (zero-install)
 npm run test:coverage  # same + c8 V8 coverage report
 npm run test:stress    # stress scenarios: pileup guard, EL lag, heap usage
 ```
 
-184 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()` plus thematic state helpers (`readWatchdogMode()`, `readRssThresholds()`, `determineState()`, `stateDescription()`), chat continuity archival/resume generation (including preemptive inactive-workspace rescue), low-memory profile classification/guidance, config validation, command handlers, installer decision logic, `activate()` singleton lifecycle, the `update()` state machine + pileup guard, update checker (version comparison, throttling, dismissal), installer MIN_SAFE_DAEMON_VERSION guard, installer downgrade protection (export-prefix version parsing), skill installer (install/update/skip), and `@memwatchdog` chat participant (status, logs, tune, optimize, lowmem, rescue, followups, API availability guard).
+189 unit tests covering `readMeminfo`/`readPsi`/`sh()`/`checkServiceStatus()` plus thematic state helpers (`readWatchdogMode()`, `readRssThresholds()`, `determineState()`, `stateDescription()`), chat continuity archival/resume generation (including preemptive inactive-workspace rescue), low-memory profile classification/guidance, config validation, command handlers, installer decision logic, `activate()` singleton lifecycle, the `update()` state machine + pileup guard, update checker (version comparison, throttling, dismissal), installer MIN_SAFE_DAEMON_VERSION guard, installer downgrade protection (export-prefix version parsing), skill installer (install/update/skip), and `@memwatchdog` chat participant (status, logs, tune, optimize, lowmem, rescue, followups, API availability guard).

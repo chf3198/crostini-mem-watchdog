@@ -39,6 +39,8 @@ function writeConfig(cfg) {
     const psiPct   = cfg.get('psiThresholdPct');
     let rssWarnMB  = cfg.get('vscodeRssWarnMB', 3400);
     let rssEmergMB = cfg.get('vscodeRssEmergencyMB', 3800);
+    const interactiveKillEnabled = cfg.get('interactiveKillApproval.enabled', true);
+    const interactiveKillDeferSeconds = cfg.get('interactiveKillApproval.deferSeconds', 120);
 
     // ── Cross-field validation ─────────────────────────────────────────────
     // VS Code Settings UI enforces per-field min/max, but direct settings.json
@@ -76,6 +78,8 @@ function writeConfig(cfg) {
         `PSI_THRESHOLD=${psiPct}`,
         `VSCODE_RSS_WARN_KB=${rssWarnMB * 1024}`,
         `VSCODE_RSS_EMERG_KB=${rssEmergMB * 1024}`,
+        `INTERACTIVE_KILL_PROMPT_ENABLED=${interactiveKillEnabled ? 1 : 0}`,
+        `INTERACTIVE_KILL_DEFER_DEFAULT_S=${Math.max(30, Math.min(900, Math.floor(interactiveKillDeferSeconds)))}`,
     ];
 
     const newContent = lines.join('\n') + '\n';

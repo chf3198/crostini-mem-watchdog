@@ -15,6 +15,8 @@ const { exec } = require('child_process');
 const XDG_CONFIG = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
 const MODE_FILE  = path.join(XDG_CONFIG, 'mem-watchdog', 'mode');
 const CFG_FILE   = path.join(XDG_CONFIG, 'mem-watchdog', 'config.sh');
+const KILL_APPROVAL_REQ_FILE = path.join(XDG_CONFIG, 'mem-watchdog', 'kill-approval-request');
+const KILL_APPROVAL_RESP_FILE = path.join(XDG_CONFIG, 'mem-watchdog', 'kill-approval-response');
 
 const DEFAULT_WARN_KB  = 3400000;
 const DEFAULT_EMERG_KB = 3800000;
@@ -195,6 +197,82 @@ function readRssThresholds() {
 }
 
 /**
+ * Read pending daemon kill-approval request from disk.
+ * Request file format: key=value per line.
+ * Returns null when file does not exist or is malformed.
+ *
+ * @returns {null | {
+ *   id: string,
+ *   ts: number,
+ *   signal: string,
+ *   mode: string,
+ *   reason: string,
+ *   pct?: number,
+ *   mem_available_kb?: number,
+ *   mem_total_kb?: number,
+ *   psi_full_x100?: number,
+ *   vscode_rss_kb?: number,
+ * }}
+ */
+function readKillApprovalRequest() {
+    try {
+        const raw = fs.readFileSync(KILL_APPROVAL_REQ_FILE, 'utf8');
+        const map = {};
+        for (const line of raw.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) { continue; }
+            const i = trimmed.indexOf('=');
+            if (i <= 0) { continue; }
+            const k = trimmed.slice(0, i);
+            const v = trimmed.slice(i + 1);
+            map[k] = v;
+        }
+        if (!map.id || !map.ts || !map.signal) {
+            return null;
+        }
+        const req = {
+            id: String(map.id),
+            ts: Number.parseInt(map.ts, 10) || 0,
+            signal: String(map.signal),
+            mode: String(map.mode || 'normal'),
+            reason: String(map.reason || ''),
+        };
+        for (const numericKey of ['pct', 'mem_available_kb', 'mem_total_kb', 'psi_full_x100', 'vscode_rss_kb']) {
+            if (Object.prototype.hasOwnProperty.call(map, numericKey)) {
+                const n = Number.parseInt(map[numericKey], 10);
+                if (Number.isFinite(n)) {
+                    req[numericKey] = n;
+                }
+            }
+        }
+        return req;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Persist operator decision for a pending kill-approval request.
+ *
+ * @param {string} requestId
+ * @param {'allow'|'defer'} decision
+ * @param {number} [deferSeconds]
+ */
+function writeKillApprovalDecision(requestId, decision, deferSeconds = 0) {
+    const now = Math.floor(Date.now() / 1000);
+    const lines = [
+        `id=${requestId}`,
+        `ts=${now}`,
+        `decision=${decision}`,
+    ];
+    if (decision === 'defer') {
+        lines.push(`defer_seconds=${Math.max(0, Math.floor(deferSeconds || 0))}`);
+    }
+    fs.mkdirSync(path.dirname(KILL_APPROVAL_RESP_FILE), { recursive: true });
+    fs.writeFileSync(KILL_APPROVAL_RESP_FILE, lines.join('\n') + '\n', { encoding: 'utf8', mode: 0o644 });
+}
+
+/**
  * Determine thematic state from runtime signals.
  * Precedence: OFF > SLEEPING > ATTACKING > RECOVERING > ALERT > GUARDING
  *
@@ -238,6 +316,8 @@ module.exports = {
     checkServiceStatus,
     readWatchdogMode,
     readRssThresholds,
+    readKillApprovalRequest,
+    writeKillApprovalDecision,
     determineState,
     stateDescription,
 };

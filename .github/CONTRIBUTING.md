@@ -11,7 +11,7 @@ the non-negotiable invariants, and how to run the gate suite before opening a PR
 git clone https://github.com/chf3198/crostini-mem-watchdog.git
 cd crostini-mem-watchdog/vscode-extension
 npm ci           # install devDependencies (no prod deps)
-npm test         # 105 unit tests — must exit 0
+npm test         # 189 unit tests — must exit 0
 ```
 
 > **Important:** `npm test` must be run from inside `vscode-extension/`, not from
@@ -44,7 +44,7 @@ EXPLORE → PLAN → IMPLEMENT → GATE → REFLECT → COMMIT
 Run all five checks before every commit. All must exit 0.
 
 ```bash
-# 1. Bash unit tests (18 tests, ~3 s) — run from repo root
+# 1. Bash unit tests (20 tests, ~3 s) — run from repo root
 bash tests/test-watchdog.sh
 
 # 2. Bash syntax check
@@ -53,7 +53,7 @@ bash -n mem-watchdog.sh
 # 3. ShellCheck — SC1091 (source) and SC2317 (unreachable) are intentionally suppressed
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh
 
-# 4. JS unit tests (180 tests, ~1 s) — must run from vscode-extension/
+# 4. JS unit tests (189 tests, ~1 s) — must run from vscode-extension/
 cd vscode-extension && npm test
 
 # 5. Documentation drift check
@@ -147,7 +147,7 @@ mem-watchdog.sh          ← core daemon; single infinite loop, no deps beyond c
 mem-watchdog.service     ← systemd user unit (systemctl --user, NOT system)
 install.sh               ← shell-only installer (no VS Code required)
 tests/
-  test-watchdog.sh       ← 18-test suite; exits 0/1; logs to scratch/
+   test-watchdog.sh       ← 20-test suite; exits 0/1; logs to scratch/
   test-pressure.sh       ← live memory pressure tests
 scripts/
   watchdog-tray.sh       ← optional yad system tray icon
@@ -156,7 +156,7 @@ vscode-extension/
   extension.js           ← activate(): install → skill → config → commands → status bar (2s poll) → update check → chat
   installer.js           ← SHA-256 hash-based daemon auto-install/upgrade + MIN_SAFE guard
   configWriter.js        ← VS Code Settings → ~/.config/mem-watchdog/config.sh
-   commands.js            ← 6 commands: dashboard, preflight, killDisposable, restartService, optimizeMemory, createLowMemProfile
+   commands.js            ← 7 commands: dashboard, preflight, killDisposable, restartService, optimizeMemory, createLowMemProfile, chatRescue
   updateChecker.js       ← GitHub Releases API self-update check (24h throttled, non-blocking)
   skillInstaller.js      ← installs/updates ~/.copilot/skills/mem-watchdog-ops/ on activation
   chatParticipant.js     ← @memwatchdog chat participant: /status, /logs, /tune, /act, /optimize, /lowmem
@@ -194,7 +194,7 @@ journalctl --user -u mem-watchdog -f
 # Build and publish VS Code extension
 cd vscode-extension
 npm run build                     # populate resources/ for local dev/testing
-npm test                          # 180 JS unit tests
+npm test                          # 189 JS unit tests
 npm run test:coverage             # + c8 V8 coverage report
 npm run test:stress               # stress scenarios
 npx vsce package                  # → mem-watchdog-status-x.y.z.vsix

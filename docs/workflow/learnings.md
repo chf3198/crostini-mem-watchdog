@@ -20,6 +20,32 @@
 
 ---
 
+### 2026-04-05 — Automation detection patterns must include MCP/Claude wrappers to avoid disposable cap false positives
+
+**Context**: While working in `frankspressurewashing`, the watchdog repeatedly killed Chromium immediately after launch. Journal showed repeated `DISPOSABLE-EXCESS` events (10-13 disposable PIDs with cap=3) during active Playwright MCP + Claude visualization activity.
+
+**Discovery**: The disposable-cap safety path (`check_disposable_cap`) only skips when `automation_session_active()` returns true, which depends entirely on `TIER_DISPOSABLE_PATTERN_AUX`. The default pattern (`node.*(playwright|puppeteer|cypress|selenium-webdriver)`) was too narrow for wrappers where automation command lines include `mcp`, `vision`, `visualization`, or non-node launchers (e.g., python/claude wrappers). Result: legitimate automation looked like idle disposable accumulation, so the cap killed active Chromium workers before the MCP toolchain could use them.
+
+**Application**:
+- Broaden default `TIER_DISPOSABLE_PATTERN_AUX` to `(node|python|claude).*(playwright|puppeteer|cypress|selenium-webdriver|mcp|vision|visualization)`.
+- Keep emergency paths ungated, but ensure non-critical cap/kill deferral recognizes modern orchestrator wrappers.
+- Use `DISPOSABLE-EXCESS` burst logs as the primary forensic signal of automation-detection mismatch.
+
+---
+
+### 2026-04-03 — Operator approval for non-critical kills should be non-blocking, file-handshake based
+
+**Context**: Adding an operator-facing modal decision (`Sic 'em now` / `Hold fire`) for non-critical disposable-process interventions during headed browser workflows.
+
+**Discovery**: Blocking the daemon loop while waiting on UI input is unsafe under pressure. The robust pattern is a **non-blocking request/response handshake**: daemon writes a request file, extension presents UI and writes a response file, daemon polls and applies allow/defer with TTL and cooldown. This preserves loop responsiveness and avoids creating intervention blind spots.
+
+**Application**:
+- Non-critical kill paths can be operator-gated without adding synchronous waits.
+- Request TTL prevents stale prompts from lingering indefinitely.
+- Defer decisions should set a bounded cooldown to prevent modal spam while preserving emergency safety paths.
+
+---
+
 ### 2026-04-01 — Cross-workspace guard fix requires immediate activation scan, not just periodic polling
 
 **Context**: Shipping issue #153 after a cross-workspace OOM where two oversized FPW sessions (458 MB + 357 MB) were loaded on workspace open before the 60-second Chat Continuity Guard interval could run.

@@ -25,6 +25,8 @@
 #     Stage 3 (Reclaim):   PSI full > 2% OR MemAvail < 25% → cgroup force_empty + SIGTERM Chrome + helpers
 #     Stage 4 (Critical):  PSI full > 5% OR MemAvail < 15% → SIGKILL Chrome + non-essential apps; defer to kernel OOM
 #   - Kills disposable processes (Chrome, Playwright, non-essential apps) and reclaimable helpers only.
+#   - Optional operator approval prompt for non-critical disposable kills
+#     (extension modal handshake via ~/.config/mem-watchdog/kill-approval-* files).
 #   - Stage 4: defers to kernel OOM killer instead of killing VS Code (oom_score_adj: code=0, chrome=1000).
 #   - Sets oom_score_adj=0 on VS Code (lowers Electron's default 200-300).
 #   - Sets oom_score_adj=+1000 on Chrome (kernel kills it first).
@@ -72,7 +74,7 @@ CODE_RECOVERY_COOLDOWN=30      # minimum seconds between controlled VS Code main
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260401.1   # 2026-04-01 v1: Startup warning scan for oversized workspace chat session storage (cross-workspace OOM early warning)
+export WATCHDOG_VERSION=20260405.1   # 2026-04-05 v1: broaden automation session detection for Playwright MCP / Claude visualization flows
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -106,8 +108,9 @@ TIER_DISPOSABLE_PATTERN='(chrome|chromium|firefox)'
 # pattern is running, automation_session_active() returns true and the
 # managed window protocol is applied automatically as a fallback for
 # callers that cannot signal explicitly.
-# Default covers common Node.js automation frameworks. Override in config.sh.
-TIER_DISPOSABLE_PATTERN_AUX='node.*(playwright|puppeteer|cypress|selenium-webdriver)'
+# Default covers common automation orchestrators (Node/Python/Claude wrappers)
+# used by Playwright MCP and visualization workflows. Override in config.sh.
+TIER_DISPOSABLE_PATTERN_AUX='(node|python|claude).*(playwright|puppeteer|cypress|selenium-webdriver|mcp|vision|visualization)'
 
 NOTIFY_INTERVAL=300           # seconds between desktop notifications per severity
 
@@ -155,6 +158,9 @@ RECLAIM_TIMEOUT_S=${RECLAIM_TIMEOUT_S:-3}          # max seconds to wait on a cg
 RECLAIM_MIN_INTERVAL_S=${RECLAIM_MIN_INTERVAL_S:-10} # minimum seconds between reclaim attempts (prevents reclaim storms)
 MEM_SLEEP_TIMEOUT_S=${MEM_SLEEP_TIMEOUT_S:-300}      # stale SLEEP mode auto-clear timeout (seconds)
 CHAT_WARN_MB=${CHAT_WARN_MB:-200}                    # startup warning threshold per workspace chatSessions footprint
+INTERACTIVE_KILL_PROMPT_ENABLED=${INTERACTIVE_KILL_PROMPT_ENABLED:-1}
+INTERACTIVE_KILL_PROMPT_TTL_S=${INTERACTIVE_KILL_PROMPT_TTL_S:-20}
+INTERACTIVE_KILL_DEFER_DEFAULT_S=${INTERACTIVE_KILL_DEFER_DEFAULT_S:-120}
 
 # ── Disposable process count cap — accumulation guard (Issue #26) ─────────
 # Discovered 2026-03-10: browser scopes accumulated over 3.5 hours.
@@ -187,6 +193,8 @@ fi
 # The daemon continues monitoring memory; only interventions are gated.
 # Removing the file or writing any other content restores normal operation.
 _MODE_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/mem-watchdog/mode"
+_KILL_APPROVAL_REQ_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/mem-watchdog/kill-approval-request"
+_KILL_APPROVAL_RESP_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/mem-watchdog/kill-approval-response"
 
 # ── Backward-compatible config mapping (Issue #4 transition) ─────────────
 # configWriter.js (v0.3.x) writes SIGTERM_THRESHOLD, SIGKILL_THRESHOLD,
@@ -258,6 +266,10 @@ _rss_warn_events=0
 _rss_emerg_events=0
 _vscode_main_restart_events=0
 _psi_events=0
+_interactive_kill_defer_until=0
+_interactive_kill_waits=0
+_interactive_kill_allows=0
+_interactive_kill_defers=0
 _restart_loop_events=0
 _chrome_excess_events=0
 _cooldown_skips=0
@@ -376,6 +388,88 @@ notify_desktop() {
     notify-send --urgency="$urgency" --expire-time=10000 "$title" "$body" 2>/dev/null || true
 }
 
+read_kill_approval_field() {
+  local file="$1"
+  local key="$2"
+  local line
+  [[ -f "$file" ]] || return 1
+  while IFS= read -r line; do
+    [[ "$line" == "$key="* ]] && { printf '%s' "${line#*=}"; return 0; }
+  done < "$file"
+  return 1
+}
+
+request_operator_kill_approval() {
+  local signal="$1"
+  local reason="$2"
+  local mode="$3"
+
+  (( INTERACTIVE_KILL_PROMPT_ENABLED == 1 )) || return 0
+  [[ "$mode" == "critical" ]] && return 0
+
+  local now request_id existing_id req_ts resp_id decision defer_s remain
+  now=$(date +%s)
+
+  if (( now < _interactive_kill_defer_until )); then
+    remain=$(( _interactive_kill_defer_until - now ))
+    log "  interactive-kill: operator defer cooldown active (${remain}s remaining)"
+    return 1
+  fi
+
+  existing_id=""
+  req_ts=0
+  read_kill_approval_field "$_KILL_APPROVAL_REQ_FILE" "id" >/dev/null 2>&1 && existing_id=$(read_kill_approval_field "$_KILL_APPROVAL_REQ_FILE" "id")
+  read_kill_approval_field "$_KILL_APPROVAL_REQ_FILE" "ts" >/dev/null 2>&1 && req_ts=$(read_kill_approval_field "$_KILL_APPROVAL_REQ_FILE" "ts")
+
+  if [[ -n "$existing_id" && "$req_ts" =~ ^[0-9]+$ ]]; then
+    resp_id=""
+    decision=""
+    defer_s=""
+    read_kill_approval_field "$_KILL_APPROVAL_RESP_FILE" "id" >/dev/null 2>&1 && resp_id=$(read_kill_approval_field "$_KILL_APPROVAL_RESP_FILE" "id")
+    read_kill_approval_field "$_KILL_APPROVAL_RESP_FILE" "decision" >/dev/null 2>&1 && decision=$(read_kill_approval_field "$_KILL_APPROVAL_RESP_FILE" "decision")
+    read_kill_approval_field "$_KILL_APPROVAL_RESP_FILE" "defer_seconds" >/dev/null 2>&1 && defer_s=$(read_kill_approval_field "$_KILL_APPROVAL_RESP_FILE" "defer_seconds")
+
+    if [[ "$resp_id" == "$existing_id" && "$decision" == "allow" ]]; then
+      incr_counter _interactive_kill_allows
+      rm -f "$_KILL_APPROVAL_REQ_FILE" "$_KILL_APPROVAL_RESP_FILE" 2>/dev/null || true
+      log "  interactive-kill: operator approved non-critical disposable kill"
+      return 0
+    fi
+    if [[ "$resp_id" == "$existing_id" && "$decision" == "defer" ]]; then
+      [[ "$defer_s" =~ ^[0-9]+$ ]] || defer_s="$INTERACTIVE_KILL_DEFER_DEFAULT_S"
+      _interactive_kill_defer_until=$(( now + defer_s ))
+      incr_counter _interactive_kill_defers
+      rm -f "$_KILL_APPROVAL_REQ_FILE" "$_KILL_APPROVAL_RESP_FILE" 2>/dev/null || true
+      log "  interactive-kill: operator deferred disposable kill for ${defer_s}s"
+      return 1
+    fi
+
+    if (( now - req_ts <= INTERACTIVE_KILL_PROMPT_TTL_S )); then
+      incr_counter _interactive_kill_waits
+      log "  interactive-kill: awaiting operator decision (request_age=$(( now - req_ts ))s/${INTERACTIVE_KILL_PROMPT_TTL_S}s)"
+      return 1
+    fi
+  fi
+
+  request_id="${now}-$RANDOM"
+  mkdir -p "$(dirname "$_KILL_APPROVAL_REQ_FILE")" 2>/dev/null || true
+  {
+    echo "id=$request_id"
+    echo "ts=$now"
+    echo "signal=$signal"
+    echo "mode=$mode"
+    echo "reason=${reason//$'\n'/ }"
+    echo "pct=$pct"
+    echo "mem_available_kb=$avail"
+    echo "mem_total_kb=$total"
+    echo "psi_full_x100=$psi_x100"
+    echo "vscode_rss_kb=$vscode_rss_kb"
+  } > "$_KILL_APPROVAL_REQ_FILE"
+  rm -f "$_KILL_APPROVAL_RESP_FILE" 2>/dev/null || true
+  log "  interactive-kill: requested operator approval for non-critical disposable kill (ttl=${INTERACTIVE_KILL_PROMPT_TTL_S}s)"
+  return 1
+}
+
 # ── Kill disposable processes ───────────────────────────────────────────────
 kill_disposable_processes() {
   local signal="$1"   # TERM or KILL
@@ -390,6 +484,8 @@ kill_disposable_processes() {
     log "  (automation session active — deferring disposable kill; severity=${mode})"
     return 1
   fi
+
+  request_operator_kill_approval "$signal" "$reason" "$mode" || return 1
 
   action_budget_allows "$mode" || return 1
 

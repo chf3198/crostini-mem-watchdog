@@ -29,6 +29,8 @@ const {
     checkServiceStatus,
     readWatchdogMode,
     readRssThresholds,
+    readKillApprovalRequest,
+    writeKillApprovalDecision,
     determineState,
     stateDescription,
 } = require('./utils');
@@ -45,6 +47,9 @@ let _activated = false;
 let _statusItem = null;
 let _statusTimer = null;
 let _chatGuardTimer = null;
+let _killApprovalInFlight = false;
+let _lastKillApprovalId = '';
+let _memTrend = [];
 
 // ── Full status bar state cache ──────────────────────────────────────────────
 // Key encodes all visible output (svcStatus + rounded pct% + availMB).
@@ -82,6 +87,101 @@ function disposeRuntimeUi() {
     }
 }
 
+function recordMemTrend(mem, vscodeRssKB) {
+    if (!mem) { return; }
+    const now = Date.now();
+    _memTrend.push({
+        ts: now,
+        availMB: Math.round(mem.availableKB / 1024),
+        usedMB: Math.round(vscodeRssKB / 1024),
+        pct: mem.pct,
+    });
+    const cutoff = now - 120_000;
+    _memTrend = _memTrend.filter((p) => p.ts >= cutoff);
+    if (_memTrend.length > 24) {
+        _memTrend = _memTrend.slice(_memTrend.length - 24);
+    }
+}
+
+function buildSparkline(points) {
+    if (!points || points.length < 2) {
+        return '▁';
+    }
+    const bars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    const vals = points.map((p) => p.usedMB);
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const span = Math.max(1, max - min);
+    return vals.map((v) => {
+        const idx = Math.min(bars.length - 1, Math.max(0, Math.round(((v - min) / span) * (bars.length - 1))));
+        return bars[idx];
+    }).join('');
+}
+
+async function maybeHandleKillApprovalPrompt() {
+    if (_killApprovalInFlight) { return; }
+    const req = readKillApprovalRequest();
+    if (!req || !req.id) { return; }
+    if (req.id === _lastKillApprovalId) { return; }
+
+    _killApprovalInFlight = true;
+    try {
+        const deferSecondsCfg = vscode.workspace
+            .getConfiguration('memWatchdog')
+            .get('interactiveKillApproval.deferSeconds', 120);
+        const deferSeconds = Math.max(30, Math.min(900, Math.floor(Number(deferSecondsCfg) || 120)));
+        const deferLabel = deferSeconds >= 60
+            ? `Hold fire (${Math.round(deferSeconds / 60)} min)`
+            : `Hold fire (${deferSeconds}s)`;
+
+        const trend = buildSparkline(_memTrend);
+        const pct = Number.isFinite(req.pct) ? req.pct : null;
+        const availMB = Number.isFinite(req.mem_available_kb) ? Math.round(req.mem_available_kb / 1024) : null;
+        const rssMB = Number.isFinite(req.vscode_rss_kb) ? Math.round(req.vscode_rss_kb / 1024) : null;
+        const psi = Number.isFinite(req.psi_full_x100)
+            ? `${Math.floor(req.psi_full_x100 / 100)}.${String(req.psi_full_x100 % 100).padStart(2, '0')}`
+            : null;
+
+        const detail = [
+            pct === null ? null : `free=${pct}%`,
+            availMB === null ? null : `avail=${availMB}MB`,
+            rssMB === null ? null : `rss=${rssMB}MB`,
+            psi === null ? null : `psi_full=${psi}%`,
+        ].filter(Boolean).join(' · ');
+
+        const msg = [
+            'Mem Watchdog requests approval for a non-critical disposable-process intervention.',
+            req.reason ? `Reason: ${req.reason}` : null,
+            detail || null,
+            `Memory trend (recent VS Code RSS): ${trend}`,
+            'Sic \'em now: allow one immediate non-critical cleanup action.',
+            `Hold fire: defer non-critical cleanup for ${deferSeconds >= 60 ? `${Math.round(deferSeconds / 60)} minute(s)` : `${deferSeconds} second(s)`}.`,
+            'Allow now, or defer this action for a short cooldown window.',
+        ].filter(Boolean).join('\n');
+
+        const allowBtn = {
+            title: 'Sic \'em now',
+            tooltip: 'Allow this one non-critical intervention now. Emergency actions are always allowed regardless.',
+        };
+        const deferBtn = {
+            title: deferLabel,
+            tooltip: `Defer non-critical interventions for ${deferSeconds} seconds. Emergency safeguards remain active.`,
+        };
+        const choice = await vscode.window.showWarningMessage(msg, { modal: true }, allowBtn, deferBtn);
+        if (choice === deferBtn || choice?.title === deferBtn.title) {
+            writeKillApprovalDecision(req.id, 'defer', deferSeconds);
+        } else {
+            // Default to allow when dismissed to preserve safety posture.
+            writeKillApprovalDecision(req.id, 'allow');
+        }
+        _lastKillApprovalId = req.id;
+    } catch (err) {
+        console.error('[memWatchdog] kill approval prompt error:', err.message);
+    } finally {
+        _killApprovalInFlight = false;
+    }
+}
+
 async function update(item) {
     if (_updating) { _stats.dropped++; return; }
     _updating = true;
@@ -92,6 +192,7 @@ async function update(item) {
         const { warnKB, emergKB } = readRssThresholds();
 
         const vscodeRssKB = mem ? (mem.totalKB - mem.availableKB) : 0;
+        recordMemTrend(mem, vscodeRssKB);
         const state = determineState({
             serviceStatus: svcStatus,
             mode,
@@ -178,6 +279,8 @@ async function update(item) {
         } else {
             _stats.cacheHits++;
         }
+
+        await maybeHandleKillApprovalPrompt();
     } finally {
         _updating = false;
     }
@@ -344,7 +447,7 @@ if (process.env.MEM_WATCHDOG_TEST) {
     module.exports._test = {
         update,
         POLL_INTERVAL_MS,
-        resetStateCache: () => { _lastStateKey = ''; },
+        resetStateCache: () => { _lastStateKey = ''; _lastKillApprovalId = ''; _memTrend = []; _killApprovalInFlight = false; },
         resetStats:      () => { _stats.dropped = 0; _stats.cacheHits = 0; _stats.cacheMisses = 0; },
         getStats:        () => ({ dropped: _stats.dropped, cacheHits: _stats.cacheHits, cacheMisses: _stats.cacheMisses }),
     };

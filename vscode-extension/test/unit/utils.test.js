@@ -20,6 +20,8 @@ const {
     sh,
     readWatchdogMode,
     readRssThresholds,
+    readKillApprovalRequest,
+    writeKillApprovalDecision,
     determineState,
     stateDescription,
 } = require('../../utils');
@@ -252,6 +254,53 @@ describe('readRssThresholds', () => {
         const r = readRssThresholds();
         assert.equal(r.warnKB, 3400000);
         assert.equal(r.emergKB, 3800000);
+    });
+});
+
+describe('kill approval handshake helpers', () => {
+    test('readKillApprovalRequest parses key/value request file', (t) => {
+        t.mock.method(fs, 'readFileSync', (p) => {
+            if (p.endsWith('/.config/mem-watchdog/kill-approval-request')) {
+                return [
+                    'id=req-123',
+                    'ts=1710000000',
+                    'signal=TERM',
+                    'mode=normal',
+                    'reason=RSS warn path',
+                    'pct=23',
+                    'mem_available_kb=1500000',
+                    'psi_full_x100=345',
+                    'vscode_rss_kb=3600000',
+                ].join('\n') + '\n';
+            }
+            throw new Error(`unexpected readFileSync: ${p}`);
+        });
+
+        const req = readKillApprovalRequest();
+        assert.ok(req);
+        assert.equal(req.id, 'req-123');
+        assert.equal(req.signal, 'TERM');
+        assert.equal(req.mode, 'normal');
+        assert.equal(req.pct, 23);
+        assert.equal(req.vscode_rss_kb, 3600000);
+    });
+
+    test('writeKillApprovalDecision writes allow decision', (t) => {
+        let content = '';
+        t.mock.method(fs, 'mkdirSync', () => {});
+        t.mock.method(fs, 'writeFileSync', (_p, c) => { content = c; });
+        writeKillApprovalDecision('req-allow', 'allow');
+        assert.ok(content.includes('id=req-allow'));
+        assert.ok(content.includes('decision=allow'));
+    });
+
+    test('writeKillApprovalDecision writes defer seconds for defer decision', (t) => {
+        let content = '';
+        t.mock.method(fs, 'mkdirSync', () => {});
+        t.mock.method(fs, 'writeFileSync', (_p, c) => { content = c; });
+        writeKillApprovalDecision('req-defer', 'defer', 120);
+        assert.ok(content.includes('decision=defer'));
+        assert.ok(content.includes('defer_seconds=120'));
     });
 });
 

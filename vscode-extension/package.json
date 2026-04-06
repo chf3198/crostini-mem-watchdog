@@ -2,7 +2,7 @@
   "name": "mem-watchdog-status",
   "displayName": "Mem Watchdog",
   "description": "Prevents VS Code from being OOM-killed on ChromeOS Crostini — auto-installs a systemd memory watchdog daemon that kills Chrome/Playwright before the kernel kills VS Code.",
-  "version": "0.3.19",
+  "version": "0.3.20",
   "publisher": "CurtisFranks",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
@@ -185,6 +185,22 @@
           "scope": "machine",
           "order": 10,
           "markdownDescription": "How many rescue archives to keep in `~/.config/mem-watchdog/chat-archives/`. Older rescue bundles are pruned after a new rescue."
+        },
+        "memWatchdog.interactiveKillApproval.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "order": 11,
+          "markdownDescription": "When true, non-critical disposable-process kills request operator approval through a VS Code modal before Mem Watchdog intervenes. Critical emergency paths are never blocked."
+        },
+        "memWatchdog.interactiveKillApproval.deferSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 30,
+          "maximum": 900,
+          "scope": "machine",
+          "order": 12,
+          "markdownDescription": "How long to hold fire after choosing defer in the interactive kill-approval modal. Default: `120` seconds."
         }
       }
     },
