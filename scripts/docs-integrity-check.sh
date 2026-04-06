@@ -10,6 +10,8 @@
 #   3. CHANGELOG.md has an entry for the current package.json version
 #   4. ci.yml test count comment matches actual
 #   5. installer MIN_SAFE_DAEMON_VERSION matches daemon WATCHDOG_VERSION
+#   6. .github/CONTRIBUTING.md test counts match actual
+#   7. .github/PULL_REQUEST_TEMPLATE.md test counts match actual
 #
 # Usage:
 #   bash scripts/docs-integrity-check.sh          # from repo root
@@ -76,6 +78,44 @@ else
         FAIL "ci.yml: comment says $ci_count tests, actual is $actual_js_count"
     else
         PASS "ci.yml: test count comment ($ci_count) matches actual"
+    fi
+
+    # ── Check 6: CONTRIBUTING.md test counts ────────────────────────────────
+    contrib_js_count="$(grep -oP '# \K[0-9]+(?= JS unit tests)' .github/CONTRIBUTING.md 2>/dev/null | head -1 || true)"
+    if [[ -z "$contrib_js_count" ]]; then
+        FAIL "CONTRIBUTING.md: JS test count line not found"
+    elif [[ "$contrib_js_count" != "$actual_js_count" ]]; then
+        FAIL "CONTRIBUTING.md: JS test count says $contrib_js_count, actual is $actual_js_count"
+    else
+        PASS "CONTRIBUTING.md: JS test count ($contrib_js_count) matches actual"
+    fi
+
+    contrib_bash_count="$(grep -oP '\(\K[0-9]+(?= tests, ~3 s\))' .github/CONTRIBUTING.md 2>/dev/null | head -1 || true)"
+    if [[ -z "$contrib_bash_count" ]]; then
+        FAIL "CONTRIBUTING.md: bash test count line not found"
+    elif [[ "$contrib_bash_count" != "20" ]]; then
+        FAIL "CONTRIBUTING.md: bash test count says $contrib_bash_count, expected 20"
+    else
+        PASS "CONTRIBUTING.md: bash test count (20) matches expected"
+    fi
+
+    # ── Check 7: PR template test counts ────────────────────────────────────
+    pr_bash_count="$(grep -oP 'test-watchdog\.sh` — \K[0-9]+(?= bash tests)' .github/PULL_REQUEST_TEMPLATE.md 2>/dev/null || true)"
+    if [[ -z "$pr_bash_count" ]]; then
+        FAIL "PULL_REQUEST_TEMPLATE.md: bash test count line not found"
+    elif [[ "$pr_bash_count" != "20" ]]; then
+        FAIL "PULL_REQUEST_TEMPLATE.md: bash test count says $pr_bash_count, expected 20"
+    else
+        PASS "PULL_REQUEST_TEMPLATE.md: bash test count (20) matches expected"
+    fi
+
+    pr_js_count="$(grep -oP 'npm test` — \K[0-9]+(?= JS unit tests)' .github/PULL_REQUEST_TEMPLATE.md 2>/dev/null || true)"
+    if [[ -z "$pr_js_count" ]]; then
+        FAIL "PULL_REQUEST_TEMPLATE.md: JS test count line not found"
+    elif [[ "$pr_js_count" != "$actual_js_count" ]]; then
+        FAIL "PULL_REQUEST_TEMPLATE.md: JS test count says $pr_js_count, actual is $actual_js_count"
+    else
+        PASS "PULL_REQUEST_TEMPLATE.md: JS test count ($pr_js_count) matches actual"
     fi
 fi
 

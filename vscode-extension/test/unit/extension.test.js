@@ -32,7 +32,7 @@ const path   = require('path');
 
 // ── Step 1: mock 'vscode' ─────────────────────────────────────────────────────
 // Must happen before require('../../extension') below.
-const { setup: vsSetup } = require('../helpers/mockVscode');
+const { setup: vsSetup, mockWindow } = require('../helpers/mockVscode');
 vsSetup();
 
 // ── Step 2: mock './utils' ────────────────────────────────────────────────────
@@ -48,6 +48,8 @@ const mockState = {
     shDelay:     0,      // ms to delay each sh() / checkServiceStatus() call
     shCallCount: 0,      // incremented by mockSh (fallback exec path)
     checkCallCount: 0,   // incremented by mockCheckServiceStatus (cgroup.procs hot path)
+    killRequest:  null,
+    killDecision: null,
 };
 
 const mockReadMeminfo = () => mockState.meminfo;   // returns null | {totalKB,availableKB,pct}
@@ -74,12 +76,22 @@ async function mockCheckServiceStatus() {
     return mockState.svcStatus;
 }
 
+function mockReadKillApprovalRequest() {
+    return mockState.killRequest;
+}
+
+function mockWriteKillApprovalDecision(id, decision, deferSeconds) {
+    mockState.killDecision = { id, decision, deferSeconds };
+}
+
 require.cache[utilsAbsPath] = {
     id: utilsAbsPath, filename: utilsAbsPath, loaded: true, paths: [],
     exports: {
         readMeminfo: mockReadMeminfo,
         sh: mockSh,
         checkServiceStatus: mockCheckServiceStatus,
+        readKillApprovalRequest: mockReadKillApprovalRequest,
+        writeKillApprovalDecision: mockWriteKillApprovalDecision,
         readWatchdogMode: () => '',
         readRssThresholds: () => ({ warnKB: 3400000, emergKB: 3800000 }),
         determineState: ({ serviceStatus, mode, vscodeRssKB, warnKB, emergKB }) => {
@@ -114,7 +126,10 @@ function resetState(overrides = {}) {
         shDelay:        0,
         shCallCount:    0,
         checkCallCount: 0,
+        killRequest:    null,
+        killDecision:   null,
     }, overrides);
+    mockWindow.reset();
 }
 
 // ── State machine ─────────────────────────────────────────────────────────────
@@ -321,5 +336,52 @@ describe('update() — tooltip IPC cache', () => {
         await update(item);                               // pct = 31 → different key
         assert.notStrictEqual(item.tooltip, firstTooltip,
             'tooltip must be recreated when pct crosses a 1%-rounding boundary');
+    });
+});
+
+describe('update() — interactive kill approval prompt', () => {
+    beforeEach(() => { resetState(); resetStateCache(); });
+
+    test('writes allow decision when operator chooses "Sic \'em now"', async () => {
+        resetState({
+            killRequest: {
+                id: 'req-1',
+                ts: 123,
+                signal: 'TERM',
+                mode: 'normal',
+                reason: 'RSS warn path',
+                pct: 24,
+                mem_available_kb: 1600000,
+                psi_full_x100: 345,
+                vscode_rss_kb: 3600000,
+            },
+        });
+        mockWindow._warnChoices.push("Sic 'em now");
+
+        const item = makeItem();
+        await update(item);
+
+        assert.ok(mockWindow._warnMessages.length >= 1, 'modal warning prompt should be shown');
+        assert.ok(mockWindow._warnMessages[0].includes("Sic 'em now:"), 'modal should explain allow action');
+        assert.ok(mockWindow._warnMessages[0].includes('Hold fire:'), 'modal should explain defer action');
+        assert.deepEqual(mockState.killDecision, { id: 'req-1', decision: 'allow', deferSeconds: undefined });
+    });
+
+    test('writes defer decision when operator chooses hold fire', async () => {
+        resetState({
+            killRequest: {
+                id: 'req-2',
+                ts: 124,
+                signal: 'TERM',
+                mode: 'normal',
+                reason: 'Stage 3 reclaim',
+            },
+        });
+        mockWindow._warnChoices.push('Hold fire (2 min)');
+
+        const item = makeItem();
+        await update(item);
+
+        assert.deepEqual(mockState.killDecision, { id: 'req-2', decision: 'defer', deferSeconds: 120 });
     });
 });

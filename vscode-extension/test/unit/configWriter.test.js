@@ -23,6 +23,8 @@ const DEFAULTS = {
     psiThresholdPct:       25,
     vscodeRssWarnMB:       3400,
     vscodeRssEmergencyMB:  3800,
+    'interactiveKillApproval.enabled': true,
+    'interactiveKillApproval.deferSeconds': 120,
 };
 
 function makeCfg(overrides = {}) {
@@ -56,6 +58,8 @@ describe('writeConfig — kill-threshold cross-field validation', () => {
         assert.ok(content.includes('SIGKILL_THRESHOLD=15'), 'sigkill default written');
         assert.ok(content.includes('VSCODE_RSS_WARN_KB=3481600'), 'rss warn written');
         assert.ok(content.includes('VSCODE_RSS_EMERG_KB=3891200'), 'rss emergency written');
+        assert.ok(content.includes('INTERACTIVE_KILL_PROMPT_ENABLED=1'), 'interactive kill prompt enabled written');
+        assert.ok(content.includes('INTERACTIVE_KILL_DEFER_DEFAULT_S=120'), 'interactive defer window written');
     });
 
     test('sigkillPct > sigtermPct: both reverted to defaults + 1 warning', (t) => {
@@ -141,7 +145,9 @@ describe('writeConfig — output file format', () => {
             'SIGKILL_THRESHOLD=15\n' +
             'PSI_THRESHOLD=25\n' +
             'VSCODE_RSS_WARN_KB=3481600\n' +
-            'VSCODE_RSS_EMERG_KB=3891200\n';
+            'VSCODE_RSS_EMERG_KB=3891200\n' +
+            'INTERACTIVE_KILL_PROMPT_ENABLED=1\n' +
+            'INTERACTIVE_KILL_DEFER_DEFAULT_S=120\n';
 
         t.mock.method(fs, 'mkdirSync', () => {});
         t.mock.method(fs, 'readFileSync', () => expected);

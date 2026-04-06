@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.3.20] — 2026-04-05
+
+### Added
+- **Interactive disposable-kill approval modal** ([#157](https://github.com/chf3198/crostini-mem-watchdog/issues/157)) — extension now watches daemon kill-approval requests and shows a modal decision prompt with recent memory trend sparkline (`Sic 'em now` / `Hold fire`). Decisions are written back to the daemon via `kill-approval-response` for non-critical intervention control during headed browser workflows.
+- **New settings** — `memWatchdog.interactiveKillApproval.enabled` and `memWatchdog.interactiveKillApproval.deferSeconds` now control operator approval behavior and defer duration.
+
+### Changed
+- **Decision-assist guidance in modal actions** — interactive kill-approval prompts now include explicit action guidance lines for `Sic 'em now` and `Hold fire`, and button tooltip metadata clarifying that defer only affects non-critical actions while emergency safeguards remain active.
+
 ## [0.3.19] — 2026-04-01
 
 ### Fixed

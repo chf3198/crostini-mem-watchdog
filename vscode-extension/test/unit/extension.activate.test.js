@@ -79,6 +79,8 @@ require.cache[utilsPath] = {
         checkServiceStatus: async () => 'active',
         readWatchdogMode: () => '',
         readRssThresholds: () => ({ warnKB: 3400000, emergKB: 3800000 }),
+        readKillApprovalRequest: () => null,
+        writeKillApprovalDecision: () => {},
         determineState: () => 'GUARDING',
         stateDescription: () => 'Watchdog is on patrol. All systems normal.',
     },

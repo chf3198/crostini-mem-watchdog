@@ -9,7 +9,7 @@
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ChromeOS%20Crostini-4285f4)](https://chromeos.dev/en/linux)
 [![Tests](https://img.shields.io/badge/bash-20%2F20-brightgreen)](tests/test-watchdog.sh)
-[![Tests](https://img.shields.io/badge/js-184%2F184-brightgreen)](vscode-extension/package.json)
+[![Tests](https://img.shields.io/badge/js-189%2F189-brightgreen)](vscode-extension/package.json)
 
 _`earlyoom` hard-crashes on Crostini (exit 104, every 3 seconds, zero protection). This replaces it with a VS Code-aware watchdog that kills Chrome before the kernel OOM-kills VS Code._
 
@@ -87,7 +87,9 @@ This watchdog reads only `MemAvailable` and `MemTotal` — both correct on this 
 
 **Language-server protection:** Built-in language servers (HTML, JSON, CSS, Markdown, ESLint) and the Extension Host process are excluded from the helper-kill candidate pool at normal severity. These 80–120 MB processes are subject to VS Code's 5-crash-in-3-minutes permanent death threshold — killing them saves <2% of memory for 2 seconds (they respawn immediately) while permanently disabling language intelligence until a full VS Code restart. Only at true emergency severity (RSS ≥ 3.8 GB) are they considered as last-resort targets.
 
-**Automation awareness:** When an automation session is active (detected via `TIER_DISPOSABLE_PATTERN_AUX`, default `node.*(playwright|puppeteer|cypress|selenium-webdriver)`), the daemon defers non-critical disposable kills and skips the `DISPOSABLE_COUNT_MAX` cap. At true emergency severity (≤ 15% free), disposable processes are always killed regardless (safety net).
+**Automation awareness:** When an automation session is active (detected via `TIER_DISPOSABLE_PATTERN_AUX`, default `(node|python|claude).*(playwright|puppeteer|cypress|selenium-webdriver|mcp|vision|visualization)`), the daemon defers non-critical disposable kills and skips the `DISPOSABLE_COUNT_MAX` cap. At true emergency severity (≤ 15% free), disposable processes are always killed regardless (safety net).
+
+**Interactive non-critical kill approval (optional):** At non-critical severity, disposable kills can be operator-gated through the VS Code modal workflow (`Sic 'em now` / `Hold fire`). The daemon writes a request to `~/.config/mem-watchdog/kill-approval-request`, the extension writes a decision to `kill-approval-response`, and defer decisions apply a bounded cooldown. Emergency paths remain ungated.
 
 - Checks every **2 seconds** (4s was confirmed too slow — missed a 4 GB spike in < 4s on 2026-03-05)
 - **Startup mode**: 0.5 s polling for 90 s after new VS Code PIDs detected — catches extension-host spikes during startup
@@ -152,6 +154,8 @@ crostini-mem-watchdog/
 | `STARTUP_DURATION`    | `90`      | Seconds to stay in startup mode after new VS Code PIDs |
 | `VSCODE_RSS_WARN_KB`  | `3400000` | ~3.4 GB — VS Code RSS warning level                    |
 | `VSCODE_RSS_EMERG_KB` | `3800000` | ~3.8 GB — VS Code RSS emergency level                  |
+| `INTERACTIVE_KILL_PROMPT_ENABLED` | `1` | Enable operator approval handshake for non-critical disposable kills |
+| `INTERACTIVE_KILL_DEFER_DEFAULT_S` | `120` | Defer cooldown (seconds) applied after operator chooses **Hold fire** |
 | `NOTIFY_INTERVAL`     | `300`     | Seconds between desktop notifications per severity     |
 
 ### Chat Continuity Guard
@@ -203,7 +207,7 @@ All 4 gates must pass before any change is published:
 
 ```bash
 bash tests/test-watchdog.sh              # 20 bash tests (~3 s) — service, OOM scores, PSI, RSS circuit-breaker policy, SwapFree safety, startup chat-footprint warning scan, SIGTERM
-cd vscode-extension && npm test    # 184 JS unit tests (~1 s) — continuity rescue flow (including cross-workspace preemptive archival), extension state machine, activation singleton, low-memory profile guidance, utils
+cd vscode-extension && npm test    # 189 JS unit tests (~1 s) — continuity rescue flow (including cross-workspace preemptive archival), extension state machine, activation singleton, low-memory profile guidance, utils
 bash -n mem-watchdog.sh            # bash syntax check
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh
 ```

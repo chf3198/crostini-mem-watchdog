@@ -49,7 +49,12 @@ const mockWindow = {
     },
     showWarningMessage(msg, ...buttons) {
         this._warnMessages.push(msg);
-        return Promise.resolve(this._warnChoices.shift() || undefined);
+        const next = this._warnChoices.shift();
+        if (typeof next === 'string' && buttons.length > 0) {
+            const hit = buttons.find((b) => (typeof b === 'string' ? b === next : b && b.title === next));
+            if (hit) { return Promise.resolve(hit); }
+        }
+        return Promise.resolve(next || undefined);
     },
     createOutputChannel() {
         return { appendLine() {}, clear() {}, show() {}, dispose() {} };
