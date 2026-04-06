@@ -29,13 +29,22 @@ const mockWindow = {
     _warnMessages:  [],
     _infoChoices:   [],   // the button label the user "clicked" (set per-test)
     _warnChoices:   [],   // same pattern for showWarningMessage button selection
+    // ── QuickPick simulation ─────────────────────────────────────────────────
+    // Push 'allow' | 'defer' | 'help' | null (null = Escape/dismiss) before
+    // the test that triggers maybeHandleKillApprovalPrompt.  The mock's show()
+    // pulls one entry per createQuickPick() call and fires the appropriate
+    // onDidAccept / onDidHide handler synchronously, exactly as VS Code does.
+    _quickPickChoices: [],
+    _lastQuickPick:    null,
 
     reset() {
-        this._infoMessages  = [];
-        this._errorMessages = [];
-        this._warnMessages  = [];
-        this._infoChoices   = [];
-        this._warnChoices   = [];
+        this._infoMessages     = [];
+        this._errorMessages    = [];
+        this._warnMessages     = [];
+        this._infoChoices      = [];
+        this._warnChoices      = [];
+        this._quickPickChoices = [];
+        this._lastQuickPick    = null;
     },
 
     showInformationMessage(msg, ...rest) {
@@ -61,6 +70,56 @@ const mockWindow = {
     },
     createStatusBarItem() {
         return { text: '', color: '', tooltip: '', show() {}, dispose() {} };
+    },
+    /**
+     * QuickPick mock — mirrors the VS Code createQuickPick() contract.
+     *
+     * Behaviour in show():
+     *   • If _quickPickChoices has an entry whose value matches a QuickPickItem's
+     *     .value property, selectedItems is set and onDidAccept fires (then
+     *     onDidHide fires via qp.hide() called inside the real accept handler).
+     *   • null or no entry → Escape / dismiss → onDidHide fires directly.
+     *
+     * The _resolved guard in the real extension code prevents double-resolution,
+     * so firing both handlers in sequence is safe and correctly mirrors VS Code.
+     */
+    createQuickPick() {
+        const self = mockWindow;
+        const qp = {
+            title:          '',
+            placeholder:    '',
+            ignoreFocusOut: false,
+            items:          [],
+            selectedItems:  [],
+            _onAccept:      null,
+            _onHide:        null,
+            onDidAccept(fn) { qp._onAccept = fn; return { dispose() {} }; },
+            onDidHide(fn)   { qp._onHide   = fn; return { dispose() {} }; },
+            hide()   { if (qp._onHide) { qp._onHide(); } },
+            dispose() {},
+            show() {
+                const choice = self._quickPickChoices.shift();
+                if (choice !== undefined && choice !== null) {
+                    const found = qp.items.find((i) => i.value === choice);
+                    if (found) {
+                        qp.selectedItems = [found];
+                        // Accept fires first; the real onDidAccept calls qp.hide()
+                        // which triggers onDidHide — same sequence here.
+                        if (qp._onAccept) { qp._onAccept(); }
+                        // onDidHide triggered by hide() inside the accept handler;
+                        // nothing more to do here.
+                    } else {
+                        // Unknown value → treat as dismiss
+                        if (qp._onHide) { qp._onHide(); }
+                    }
+                } else {
+                    // null or nothing in queue → Escape / dismiss
+                    if (qp._onHide) { qp._onHide(); }
+                }
+            },
+        };
+        self._lastQuickPick = qp;
+        return qp;
     },
     visibleTextEditors: [],
     showTextDocument(doc) {

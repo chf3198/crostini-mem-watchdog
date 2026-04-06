@@ -8,6 +8,11 @@ Daemon versions use `YYYYMMDD.N` (datestamp + revision).
 
 ## [Unreleased]
 
+## Extension v0.3.21 — 2026-04-05
+
+### Changed
+- **Kill-approval UX redesigned with VS Code-native QuickPick** ([#160](https://github.com/chf3198/crostini-mem-watchdog/issues/160)) — replaced `showWarningMessage({ modal: true })` with `createQuickPick()`. Live metrics placeholder, per-item `detail` tooltips, human-readable reason translation (`humanizeReason()`), and a "What does this mean?" help item. No daemon changes.
+
 ### Added
 - **Interactive non-critical kill approval handshake** ([#157](https://github.com/chf3198/crostini-mem-watchdog/issues/157)) — daemon now supports an operator-in-the-loop gate for non-critical `kill_disposable_processes()` actions via `~/.config/mem-watchdog/kill-approval-request` and `kill-approval-response`. When enabled, the daemon requests approval, waits for extension response up to `INTERACTIVE_KILL_PROMPT_TTL_S`, and honors `defer` responses with bounded cooldown (`INTERACTIVE_KILL_DEFER_DEFAULT_S`). Critical paths remain ungated.
 - **Repo-agnostic managed-window helper** ([#146](https://github.com/chf3198/crostini-mem-watchdog/issues/146)) — added `scripts/mem-watchdog-mode.sh` with `status|sleep|normal|run -- <command>` so any repository/workflow can request watchdog `mode=SLEEP` without embedding custom integration code. Installer now deploys it to `~/.local/bin/mem-watchdog-mode.sh`.

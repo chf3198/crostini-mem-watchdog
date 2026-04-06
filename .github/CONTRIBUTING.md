@@ -11,7 +11,7 @@ the non-negotiable invariants, and how to run the gate suite before opening a PR
 git clone https://github.com/chf3198/crostini-mem-watchdog.git
 cd crostini-mem-watchdog/vscode-extension
 npm ci           # install devDependencies (no prod deps)
-npm test         # 189 unit tests — must exit 0
+npm test         # 191 unit tests — must exit 0
 ```
 
 > **Important:** `npm test` must be run from inside `vscode-extension/`, not from
@@ -53,7 +53,7 @@ bash -n mem-watchdog.sh
 # 3. ShellCheck — SC1091 (source) and SC2317 (unreachable) are intentionally suppressed
 shellcheck --shell=bash -e SC1091,SC2317 mem-watchdog.sh scripts/watchdog-tray.sh install.sh
 
-# 4. JS unit tests (189 tests, ~1 s) — must run from vscode-extension/
+# 4. JS unit tests (191 tests, ~1 s) — must run from vscode-extension/
 cd vscode-extension && npm test
 
 # 5. Documentation drift check
@@ -194,7 +194,7 @@ journalctl --user -u mem-watchdog -f
 # Build and publish VS Code extension
 cd vscode-extension
 npm run build                     # populate resources/ for local dev/testing
-npm test                          # 189 JS unit tests
+npm test                          # 191 JS unit tests
 npm run test:coverage             # + c8 V8 coverage report
 npm run test:stress               # stress scenarios
 npx vsce package                  # → mem-watchdog-status-x.y.z.vsix

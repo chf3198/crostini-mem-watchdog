@@ -342,7 +342,7 @@ describe('update() — tooltip IPC cache', () => {
 describe('update() — interactive kill approval prompt', () => {
     beforeEach(() => { resetState(); resetStateCache(); });
 
-    test('writes allow decision when operator chooses "Sic \'em now"', async () => {
+    test('writes allow decision when operator selects allow item', async () => {
         resetState({
             killRequest: {
                 id: 'req-1',
@@ -356,18 +356,28 @@ describe('update() — interactive kill approval prompt', () => {
                 vscode_rss_kb: 3600000,
             },
         });
-        mockWindow._warnChoices.push("Sic 'em now");
+        mockWindow._quickPickChoices.push('allow');
 
         const item = makeItem();
         await update(item);
 
-        assert.ok(mockWindow._warnMessages.length >= 1, 'modal warning prompt should be shown');
-        assert.ok(mockWindow._warnMessages[0].includes("Sic 'em now:"), 'modal should explain allow action');
-        assert.ok(mockWindow._warnMessages[0].includes('Hold fire:'), 'modal should explain defer action');
+        assert.ok(mockWindow._lastQuickPick, 'createQuickPick() should have been called');
+        assert.ok(
+            mockWindow._lastQuickPick.title.includes('Mem Watchdog'),
+            `QuickPick title should include 'Mem Watchdog', got: "${mockWindow._lastQuickPick.title}"`
+        );
+        assert.ok(
+            mockWindow._lastQuickPick.items.length >= 3,
+            `QuickPick should have at least 3 items, got: ${mockWindow._lastQuickPick.items.length}`
+        );
+        // Allow item should carry the human-readable reason in its description
+        const allowItem = mockWindow._lastQuickPick.items.find((i) => i.value === 'allow');
+        assert.ok(allowItem, 'allow item must exist');
+        assert.ok(allowItem.detail && allowItem.detail.length > 0, 'allow item must have a detail (tooltip equivalent)');
         assert.deepEqual(mockState.killDecision, { id: 'req-1', decision: 'allow', deferSeconds: undefined });
     });
 
-    test('writes defer decision when operator chooses hold fire', async () => {
+    test('writes defer decision when operator selects defer item', async () => {
         resetState({
             killRequest: {
                 id: 'req-2',
@@ -377,11 +387,57 @@ describe('update() — interactive kill approval prompt', () => {
                 reason: 'Stage 3 reclaim',
             },
         });
-        mockWindow._warnChoices.push('Hold fire (2 min)');
+        mockWindow._quickPickChoices.push('defer');
 
         const item = makeItem();
         await update(item);
 
+        const deferItem = mockWindow._lastQuickPick.items.find((i) => i.value === 'defer');
+        assert.ok(deferItem, 'defer item must exist');
+        assert.ok(deferItem.detail && deferItem.detail.length > 0, 'defer item must have a detail (tooltip equivalent)');
         assert.deepEqual(mockState.killDecision, { id: 'req-2', decision: 'defer', deferSeconds: 120 });
+    });
+
+    test('defaults to allow when dismissed (Escape / no choice)', async () => {
+        resetState({
+            killRequest: {
+                id: 'req-3',
+                ts: 125,
+                signal: 'TERM',
+                mode: 'normal',
+                reason: '',
+            },
+        });
+        // Nothing pushed to _quickPickChoices → simulates Escape/dismiss
+        const item = makeItem();
+        await update(item);
+
+        assert.ok(mockWindow._lastQuickPick, 'createQuickPick() should have been called even on dismiss');
+        assert.deepEqual(mockState.killDecision, { id: 'req-3', decision: 'allow', deferSeconds: undefined },
+            'dismiss must default to allow to preserve the safety posture');
+    });
+
+    test('shows explanation message and allows when help item is selected', async () => {
+        resetState({
+            killRequest: {
+                id: 'req-4',
+                ts: 126,
+                signal: 'TERM',
+                mode: 'normal',
+                reason: 'ACCEL rss_delta=412MB',
+            },
+        });
+        mockWindow._quickPickChoices.push('help');
+
+        const item = makeItem();
+        await update(item);
+
+        assert.ok(mockWindow._infoMessages.length >= 1,
+            'help choice must show an informationMessage explanation');
+        assert.ok(mockWindow._infoMessages[0].length > 40,
+            'explanation message should be substantive, not empty');
+        // After help, decision should default to allow so the daemon is unblocked
+        assert.deepEqual(mockState.killDecision, { id: 'req-4', decision: 'allow', deferSeconds: undefined },
+            'help choice must fall through to allow to unblock the daemon');
     });
 });
