@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.21] — 2026-04-05
+
+### Changed
+- **Kill-approval prompt redesigned with VS Code-native QuickPick** ([#160](https://github.com/chf3198/crostini-mem-watchdog/issues/160)) — replaced `showWarningMessage({ modal: true })` (flat newline-joined string, non-functional `MessageItem.tooltip`) with `createQuickPick()`. The new panel is dark/light theme-aware and shows: a title, a placeholder with live metrics (% free · MB avail · RSS · PSI · trend sparkline), and three labeled items each with a `detail` line acting as an in-context tooltip. Daemon reason tokens (e.g. `ACCEL rss_delta=412MB`) are translated to human-readable English by a new `humanizeReason()` helper. A **"What does this mean?"** third item opens a full explanation notification, then defaults to Allow to keep the daemon unblocked. Dismiss / Escape still defaults to Allow (safety posture preserved).
+
 ## [0.3.20] — 2026-04-05
 
 ### Added

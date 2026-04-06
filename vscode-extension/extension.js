@@ -118,6 +118,35 @@ function buildSparkline(points) {
     }).join('');
 }
 
+/**
+ * Convert a raw daemon reason token into a human-readable English phrase.
+ * Daemon tokens (e.g. "ACCEL rss_delta=412MB") are intentionally terse for
+ * journal logging; the extension translates them into operator-friendly text.
+ *
+ * @param {string} raw
+ * @returns {string}
+ */
+function humanizeReason(raw) {
+    if (!raw) { return 'Memory pressure detected'; }
+    if (/ACCEL|rss_delta/i.test(raw))      { return 'VS Code RSS is rising fast'; }
+    if (/WARN|rss_warn/i.test(raw))         { return 'VS Code RSS near warning threshold'; }
+    if (/PSI|psi_full/i.test(raw))          { return 'Memory pressure index is elevated'; }
+    if (/DISPOSABLE|disposable/i.test(raw)) { return 'Too many idle browser processes'; }
+    if (/BURST|burst/i.test(raw))           { return 'Process count spiking rapidly'; }
+    return raw;
+}
+
+/**
+ * Show a VS Code-native QuickPick panel requesting operator approval before
+ * a non-critical daemon intervention.  Replaces the previous
+ * showWarningMessage({ modal: true }) call which:
+ *   – dumped all content as a raw newline-joined string
+ *   – silently ignored MessageItem.tooltip
+ *   – used jargon labels with no in-context explanation
+ *
+ * Dismiss / Escape defaults to 'allow' to preserve the safety posture.
+ * Emergency-path actions are never gated by this prompt.
+ */
 async function maybeHandleKillApprovalPrompt() {
     if (_killApprovalInFlight) { return; }
     const req = readKillApprovalRequest();
@@ -130,49 +159,104 @@ async function maybeHandleKillApprovalPrompt() {
             .getConfiguration('memWatchdog')
             .get('interactiveKillApproval.deferSeconds', 120);
         const deferSeconds = Math.max(30, Math.min(900, Math.floor(Number(deferSecondsCfg) || 120)));
-        const deferLabel = deferSeconds >= 60
-            ? `Hold fire (${Math.round(deferSeconds / 60)} min)`
-            : `Hold fire (${deferSeconds}s)`;
 
-        const trend = buildSparkline(_memTrend);
-        const pct = Number.isFinite(req.pct) ? req.pct : null;
-        const availMB = Number.isFinite(req.mem_available_kb) ? Math.round(req.mem_available_kb / 1024) : null;
-        const rssMB = Number.isFinite(req.vscode_rss_kb) ? Math.round(req.vscode_rss_kb / 1024) : null;
-        const psi = Number.isFinite(req.psi_full_x100)
+        const trend    = buildSparkline(_memTrend);
+        const pct      = Number.isFinite(req.pct)              ? req.pct                                   : null;
+        const availMB  = Number.isFinite(req.mem_available_kb) ? Math.round(req.mem_available_kb / 1024)  : null;
+        const rssMB    = Number.isFinite(req.vscode_rss_kb)    ? Math.round(req.vscode_rss_kb / 1024)     : null;
+        const psi      = Number.isFinite(req.psi_full_x100)
             ? `${Math.floor(req.psi_full_x100 / 100)}.${String(req.psi_full_x100 % 100).padStart(2, '0')}`
             : null;
 
-        const detail = [
-            pct === null ? null : `free=${pct}%`,
-            availMB === null ? null : `avail=${availMB}MB`,
-            rssMB === null ? null : `rss=${rssMB}MB`,
-            psi === null ? null : `psi_full=${psi}%`,
-        ].filter(Boolean).join(' · ');
+        // Placeholder: live metrics line shown beneath the title in the QuickPick
+        const metricParts = [
+            pct     !== null ? `${pct}% free`      : null,
+            availMB !== null ? `${availMB} MB avail` : null,
+            rssMB   !== null ? `${rssMB} MB RSS`    : null,
+            psi     !== null ? `PSI ${psi}%`        : null,
+        ].filter(Boolean);
+        const metricsLine = metricParts.length > 0
+            ? metricParts.join('  \u00b7  ')   // middle-dot separator
+            : 'Memory pressure detected';
 
-        const msg = [
-            'Mem Watchdog requests approval for a non-critical disposable-process intervention.',
-            req.reason ? `Reason: ${req.reason}` : null,
-            detail || null,
-            `Memory trend (recent VS Code RSS): ${trend}`,
-            'Sic \'em now: allow one immediate non-critical cleanup action.',
-            `Hold fire: defer non-critical cleanup for ${deferSeconds >= 60 ? `${Math.round(deferSeconds / 60)} minute(s)` : `${deferSeconds} second(s)`}.`,
-            'Allow now, or defer this action for a short cooldown window.',
-        ].filter(Boolean).join('\n');
+        const reasonText    = humanizeReason(req.reason);
+        const deferMinLabel = deferSeconds >= 60
+            ? `${Math.round(deferSeconds / 60)} min`
+            : `${deferSeconds}s`;
+        const deferDetailTime = deferSeconds >= 60
+            ? `${Math.round(deferSeconds / 60)} minutes`
+            : `${deferSeconds} seconds`;
 
-        const allowBtn = {
-            title: 'Sic \'em now',
-            tooltip: 'Allow this one non-critical intervention now. Emergency actions are always allowed regardless.',
-        };
-        const deferBtn = {
-            title: deferLabel,
-            tooltip: `Defer non-critical interventions for ${deferSeconds} seconds. Emergency safeguards remain active.`,
-        };
-        const choice = await vscode.window.showWarningMessage(msg, { modal: true }, allowBtn, deferBtn);
-        if (choice === deferBtn || choice?.title === deferBtn.title) {
-            writeKillApprovalDecision(req.id, 'defer', deferSeconds);
+        const ALLOW = 'allow';
+        const DEFER = 'defer';
+        const HELP  = 'help';
+
+        const choice = await new Promise((resolve) => {
+            const qp = vscode.window.createQuickPick();
+            qp.title          = '$(shield) Mem Watchdog \u2014 Intervention Approval';
+            qp.placeholder    = `${metricsLine}   trend: ${trend}`;
+            qp.ignoreFocusOut = true;
+
+            const allowItem = {
+                label:      '$(play) Allow intervention',
+                description: reasonText,
+                detail:     'Sends SIGTERM to one disposable process (e.g. an idle Chrome renderer). ' +
+                            'Emergency safety actions are always allowed regardless of this choice.',
+                alwaysShow: true,
+                value:      ALLOW,
+            };
+            const deferItem = {
+                label:      `$(clock) Hold fire \u2014 ${deferMinLabel}`,
+                description: `Pause non-critical cleanup for ${deferDetailTime}`,
+                detail:     `Non-critical cleanup is paused for ${deferDetailTime}. ` +
+                            'If RSS crosses the emergency threshold during that window, ' +
+                            'the watchdog acts immediately regardless.',
+                alwaysShow: true,
+                value:      DEFER,
+            };
+            const helpItem = {
+                label:      '$(question) What does this mean?',
+                description: 'Show explanation',
+                detail:     'Learn what this prompt is, why you\'re seeing it, and what each choice does.',
+                alwaysShow: true,
+                value:      HELP,
+            };
+            qp.items = [allowItem, deferItem, helpItem];
+
+            // _resolved prevents double-resolution: onDidAccept resolves first,
+            // then the hide() call inside onDidAccept triggers onDidHide, which
+            // must not re-resolve with the default 'allow'.
+            let _resolved = false;
+            const done = (v) => { if (!_resolved) { _resolved = true; resolve(v); } };
+
+            qp.onDidAccept(() => {
+                const sel = qp.selectedItems[0];
+                done(sel ? sel.value : ALLOW); // resolve before hiding
+                qp.hide();
+            });
+            qp.onDidHide(() => {
+                qp.dispose();
+                done(ALLOW); // Escape → allow; no-op if already resolved by accept
+            });
+
+            qp.show();
+        });
+
+        if (choice === HELP) {
+            vscode.window.showInformationMessage(
+                'Mem Watchdog monitors VS Code memory usage and intervenes before the container OOM killer fires. ' +
+                'This prompt appears when RSS is approaching warning thresholds and a non-critical cleanup action is ready. ' +
+                '"Allow intervention" sends SIGTERM to one disposable process (e.g. an idle Chrome renderer). ' +
+                '"Hold fire" pauses non-critical actions temporarily — emergency actions are never gated by this prompt. ' +
+                'Dismissing (Escape) defaults to Allow to preserve the safety posture.'
+            );
+            // After showing help, default to allow to unblock the daemon.
+            writeKillApprovalDecision(req.id, ALLOW);
+        } else if (choice === DEFER) {
+            writeKillApprovalDecision(req.id, DEFER, deferSeconds);
         } else {
-            // Default to allow when dismissed to preserve safety posture.
-            writeKillApprovalDecision(req.id, 'allow');
+            // ALLOW and any unexpected value
+            writeKillApprovalDecision(req.id, ALLOW);
         }
         _lastKillApprovalId = req.id;
     } catch (err) {
