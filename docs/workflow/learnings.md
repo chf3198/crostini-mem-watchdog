@@ -20,6 +20,29 @@
 
 ---
 
+### 2026-04-07 — VS Code Shared Process has zero auto-restart; NodeService process differentiation requires child-process detection + `--inspect-port`
+
+**Context**: After v0.3.21 shipped, the user reported "A shared background process terminated unexpectedly. Please restart the application to recover." toasts and HTML Language Server crashing 5× (permanent death) during Playwright MCP sessions. Issue #80 (PR #81) added the PTY Host PID exclusion with a comment claiming Shared Process, File Watcher, and Network Service "are safe to kill — they auto-restart."
+
+**Discovery**:
+1. **VS Code Shared Process has zero auto-restart.** VS Code source research confirmed `SharedProcessMain` has no self-restart logic. Death requires `nativeHostService.relaunch()` (full app restart). The `#80` comment was wrong for the Shared Process — File Watcher and Network Service do auto-restart via Chromium IPC, but Shared Process does not. The Shared Process hosts: MCP management, Playwright channel, extension gallery, settings sync, language packs. Killing it is equivalent to killing the app.
+
+2. **All three non-ExtHost utility NodeService processes share identical cmdlines.** PTY Host, Shared Process, and Agent Host all show `--type=utility --utility-sub-type=node.mojom.NodeService` in their cmdlines. The ONLY differentiators at non-ExtHost level are: (a) PTY Host has bash child processes (detected via `ps --ppid`), (b) Extension Host has `--inspect-port=0`. Shared Process and Agent Host have neither — they are distinguishable from PTY Host by "no children" but indistinguishable from each other by cmdline alone.
+
+3. **The correct exclusion pattern for WARN-level fallback kills**: Exclude all `node.mojom.NodeService` utilities without `--inspect-port` at non-critical mode. This excludes both Shared Process and Agent Host (neither auto-restarts cleanly) while PTY Host is already excluded by PID. Extension Host is excluded by the existing `--inspect-port` guard.
+
+4. **Extension Host classified as "other" breaks anti-respawn.** `_classify_helper_type()` returned "other" for Extension Host because no branch matched `--inspect-port`. When Extension Host was killed, `_last_killed_type = "other"` — anti-respawn then skipped ALL "other" candidates. But since Extension Host is excluded at non-critical mode, it can only be killed at "critical" mode, and even there the anti-respawn suppressed unrelated processes unnecessarily. More critically, without the "extension-host" type, the anti-respawn provided NO throttling on consecutive Extension Host kills — each kill cascaded into htmlServerMain death via vscode-languageclient's 5× crash limit.
+
+5. **Global `pct` is stale at `adjust_oom_scores` callsite.** The main loop computes `pct` after `adjust_oom_scores()` returns. `log_status_snapshot()` uses a `local pct`. The startup pre-emptive kill inside `adjust_oom_scores` cannot use the global — it must read `/proc/meminfo` inline.
+
+**Application**:
+- The Shared Process is a hard-no-kill at WARN level. Add `if (md != "critical" && args ~ /--utility-sub-type=node\.mojom\.NodeService/ && args !~ /--inspect-port/) next;` to all fallback and last-resort awk blocks.
+- Any new process classification that needs to be recognized by anti-respawn must be added to BOTH `_classify_helper_type()` (bash) and all awk `classify()` functions (three separate blocks). Missing one means the type can't be throttled.
+- After each exclusion change to `kill_top_vscode_helper`, trace the fallback chain: "If all excluded processes are removed from the candidate pool, what is the next candidate?" The answer must never be a process that requires full app restart.
+- Any variable used inside a function that is also maintained as a global must be checked for staleness at the callsite. Functions called during the polling loop body (before the main loop's update block) see the previous iteration's globals.
+
+---
+
 ### 2026-04-06 — `createQuickPick()` is the correct VS Code API for action-confirmation prompts, not `showWarningMessage({ modal: true })`
 
 **Context**: The kill-approval prompt used `showWarningMessage({ modal: true })` with raw newline-joined text. Users reported it was visually ugly, inconsistent with VS Code styling, and that `MessageItem.tooltip` (requested for context) was silently ignored by VS Code.
