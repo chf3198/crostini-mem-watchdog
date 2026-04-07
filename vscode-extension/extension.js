@@ -133,6 +133,7 @@ function humanizeReason(raw) {
     if (/PSI|psi_full/i.test(raw))          { return 'Memory pressure index is elevated'; }
     if (/DISPOSABLE|disposable/i.test(raw)) { return 'Too many idle browser processes'; }
     if (/BURST|burst/i.test(raw))           { return 'Process count spiking rapidly'; }
+    if (/startup.*freeing|VS Code startup/i.test(raw)) { return 'VS Code loading — proactive Chrome cleanup'; }
     return raw;
 }
 
