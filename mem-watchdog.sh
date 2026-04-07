@@ -74,7 +74,7 @@ CODE_RECOVERY_COOLDOWN=30      # minimum seconds between controlled VS Code main
 # configWriter.js (v0.3.x) writes these to ~/.config/mem-watchdog/config.sh.
 # After config sourcing below, they are mapped to stage constants.
 INTERVAL=2             # Seconds between checks (was 4 — confirmed too slow in crash of 2026-03-05)
-export WATCHDOG_VERSION=20260405.1   # 2026-04-05 v1: broaden automation session detection for Playwright MCP / Claude visualization flows
+export WATCHDOG_VERSION=20260406.1   # 2026-04-06 v1: protect Shared Process from WARN kills; add Extension Host anti-respawn type; gate startup pre-emptive kill on memory pressure (issues #163, #164)
 OOM_VSCODE_ADJ=0       # oom_score_adj for VS Code: lowers Electron's default 200-300
 OOM_CHROME_ADJ=1000    # oom_score_adj for Chrome: maximum killable
 
@@ -124,6 +124,9 @@ STARTUP_DEBOUNCE=300          # minimum seconds between startup mode activations
                               # new code PIDs throughout normal development. Without this guard
                               # the daemon triggered startup mode 567 times in a single day,
                               # keeping it at 0.5 s polling continuously.
+STARTUP_PREEMPT_PCT_THRESHOLD=40   # Only pre-emptively SIGTERM Chrome on VS Code startup
+                              # when MemAvailable drops to or below this % of MemTotal.
+                              # Prevents killing Playwright sessions when memory is ample.
 HELPER_KILL_COOLDOWN=10        # min seconds between helper restarts
 ANTI_RESPAWN_WINDOW=30         # seconds to skip a process type after killing it
                               # 2026-03-13: tsserver killed → immediately respawned → killed again
@@ -657,6 +660,7 @@ kill_top_vscode_helper() {
     elif [[ "$a" == *"jsonServerMain"* ]];        then echo "json-server"
     elif [[ "$a" == *"server.bundle.js"* ]];      then echo "server-bundle"
     elif [[ "$a" == *"--node-ipc"* ]];            then echo "node-ipc"
+    elif [[ "$a" == *"--inspect-port"* ]];        then echo "extension-host"
     elif [[ "$a" == *"--type=renderer"* ]];       then echo "renderer"
     else                                               echo "other"
     fi
@@ -681,6 +685,7 @@ kill_top_vscode_helper() {
         if (a ~ /jsonServerMain/)       return "json-server"
         if (a ~ /server\.bundle\.js/) return "server-bundle"
         if (a ~ /--node-ipc/)           return "node-ipc"
+        if (a ~ /--inspect-port/)       return "extension-host"
         return "other"
       }
       {
@@ -718,6 +723,7 @@ kill_top_vscode_helper() {
           if (a ~ /jsonServerMain/)     return "json-server"
           if (a ~ /server\.bundle\.js/) return "server-bundle"
           if (a ~ /--node-ipc/)         return "node-ipc"
+          if (a ~ /--inspect-port/)       return "extension-host"
           return "other"
         }
         {
@@ -729,6 +735,7 @@ kill_top_vscode_helper() {
           if (args ~ /--type=extensionHost/) next;
           if (md != "critical" && args ~ /--type=utility/ && args ~ /--inspect-port/) next;
           if (pid == pty_host) next;
+          if (md != "critical" && args ~ /--utility-sub-type=node\.mojom\.NodeService/ && args !~ /--inspect-port/) next;
           t=classify(args)
           if (skip != "" && t == skip) next;
           if (prot == "true" && t == "tsserver") next;
@@ -750,6 +757,7 @@ kill_top_vscode_helper() {
           if (args ~ /--type=extensionHost/) next;
           if (md != "critical" && args ~ /--type=utility/ && args ~ /--inspect-port/) next;
           if (pid == pty_host) next;
+          if (md != "critical" && args ~ /--utility-sub-type=node\.mojom\.NodeService/ && args !~ /--inspect-port/) next;
           if (prot == "true" && args ~ /tsserver\.js/) next;
           if (ls == "true" && (args ~ /htmlServerMain/ || args ~ /serverWorkerMain/ || args ~ /cssServerMain/ || args ~ /jsonServerMain/ || args ~ /eslintServer/)) next;
           printf "%s %s %s\n", pid, rss, args;
@@ -895,10 +903,22 @@ adjust_oom_scores() {
         # Record timestamp for restart-loop detection (Issue #25)
         _restart_timestamps="${_restart_timestamps} ${now}"
         log "VS Code startup: ${new_count} new PIDs — startup mode active for ${STARTUP_DURATION}s (${STARTUP_INTERVAL}s interval)"
-        # Pre-emptively SIGTERM Chrome to free memory before extensions load
-        if pgrep -f "$TIER_DISPOSABLE_PATTERN" &>/dev/null; then
-          log "  Startup mode: pre-emptively SIGTERMing Chrome to free memory"
+        # Pre-emptively SIGTERM Chrome only when memory is actually constrained.
+        # Read meminfo inline — global pct is stale here (computed after
+        # adjust_oom_scores returns in the main loop). At high free-memory,
+        # Chrome is not a threat and killing it would disrupt active automation.
+        local _preempt_avail _preempt_total _preempt_pct
+        _preempt_avail=$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+        _preempt_total=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+        _preempt_pct=100
+        [[ -n "$_preempt_avail" && "${_preempt_total:-0}" -gt 0 ]] && \
+          _preempt_pct=$(( _preempt_avail * 100 / _preempt_total ))
+        if pgrep -f "$TIER_DISPOSABLE_PATTERN" &>/dev/null && \
+           (( _preempt_pct <= STARTUP_PREEMPT_PCT_THRESHOLD )); then
+          log "  Startup mode: pre-emptively SIGTERMing Chrome (mem=${_preempt_pct}% free, threshold=${STARTUP_PREEMPT_PCT_THRESHOLD}%)"
           kill_disposable_processes "TERM" "VS Code startup: freeing memory before extension load"
+        else
+          log "  Startup mode: skipping pre-emptive Chrome kill (mem=${_preempt_pct}% free > threshold=${STARTUP_PREEMPT_PCT_THRESHOLD}%)"
         fi
       else
         incr_counter _startup_debounce_skips

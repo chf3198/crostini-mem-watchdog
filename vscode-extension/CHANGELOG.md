@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.3.22] — 2026-04-07
+
+### Fixed
+- **Shared Process protected from WARN-level kills** ([#163](https://github.com/chf3198/crostini-mem-watchdog/issues/163)) — daemon `kill_top_vscode_helper` fallback and last-resort awk blocks now exclude `node.mojom.NodeService` utility processes lacking `--inspect-port` at non-critical mode. Prevents the "A shared background process terminated unexpectedly. Please restart." toast caused by killing the VS Code Shared Process at WARN level.
+- **Extension Host anti-respawn classification** ([#163](https://github.com/chf3198/crostini-mem-watchdog/issues/163)) — daemon `_classify_helper_type()` and awk `classify()` now return `"extension-host"` for `--inspect-port` processes. Fixes repeated Extension Host kills cascading into 5× HTML Language Server deaths (permanent death threshold).
+- **Startup pre-emptive kill gated on memory pressure** ([#163](https://github.com/chf3198/crostini-mem-watchdog/issues/163)) — daemon startup pre-emptive Chrome SIGTERM now only fires when `MemAvailable ≤ STARTUP_PREEMPT_PCT_THRESHOLD` (default 40%). Added new `STARTUP_PREEMPT_PCT_THRESHOLD` daemon config variable. Previously fired unconditionally at any memory level, killing active Playwright sessions.
+- **`humanizeReason()` startup branch** ([#164](https://github.com/chf3198/crostini-mem-watchdog/issues/164)) — QuickPick now shows `'VS Code loading — proactive Chrome cleanup'` instead of the raw daemon reason token for startup-triggered kill approvals.
+
 ## [0.3.21] — 2026-04-05
 
 ### Changed

@@ -8,7 +8,13 @@ Daemon versions use `YYYYMMDD.N` (datestamp + revision).
 
 ## [Unreleased]
 
-## Extension v0.3.21 — 2026-04-05
+## Extension v0.3.22 / Daemon v20260406.1 — 2026-04-07
+
+### Fixed
+- **Shared Process protected from WARN-level kills** ([#163](https://github.com/chf3198/crostini-mem-watchdog/issues/163)) — `kill_top_vscode_helper` fallback and last-resort awk blocks now exclude `node.mojom.NodeService` utility processes that lack `--inspect-port` at non-critical mode. The VS Code Shared Process (hosts MCP management, Playwright channel, settings sync) has zero auto-restart — previous behavior generated the "A shared background process terminated unexpectedly. Please restart." toast and required a full relaunch. (#80's comment claiming auto-restart was incorrect.)
+- **Extension Host anti-respawn classification** ([#163](https://github.com/chf3198/crostini-mem-watchdog/issues/163)) — `_classify_helper_type()` and all three awk `classify()` functions now return `"extension-host"` for processes with `--inspect-port`. Previously returned `"other"`, causing anti-respawn to suppress all 'other' candidates instead of throttling only Extension Host re-kills. Repeated Extension Host kills cascaded into 5× HTML Language Server deaths (permanent death threshold).
+- **Startup pre-emptive kill gated on memory pressure** ([#163](https://github.com/chf3198/crostini-mem-watchdog/issues/163)) — pre-emptive Chrome SIGTERM on VS Code startup now reads `/proc/meminfo` inline and fires only when `MemAvailable ≤ STARTUP_PREEMPT_PCT_THRESHOLD` (default 40%). Previously fired unconditionally whenever Chrome existed and new `code` PIDs appeared, killing active Playwright sessions at 76%+ free memory.
+- **`humanizeReason()` startup branch** ([#164](https://github.com/chf3198/crostini-mem-watchdog/issues/164)) — QuickPick no longer shows the raw `'VS Code startup: freeing memory before extension load'` daemon token; translated to `'VS Code loading — proactive Chrome cleanup'`.
 
 ### Changed
 - **Kill-approval UX redesigned with VS Code-native QuickPick** ([#160](https://github.com/chf3198/crostini-mem-watchdog/issues/160)) — replaced `showWarningMessage({ modal: true })` with `createQuickPick()`. Live metrics placeholder, per-item `detail` tooltips, human-readable reason translation (`humanizeReason()`), and a "What does this mean?" help item. No daemon changes.
