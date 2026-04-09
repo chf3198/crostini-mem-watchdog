@@ -86,6 +86,124 @@ if [[ $POST_PUBLISH -eq 1 ]]; then
     else
         FAIL "Marketplace version ($market_ver) != package.json ($pkg_version)"
     fi
+
+    # Signature/package consistency gate: validate the CDN VSIX byte hash against
+    # the signed .signature.manifest package digest. This catches
+    # PackageIntegrityCheckFailed incidents before closeout.
+    tmp_dir="$(mktemp -d)"
+    latest_json="$tmp_dir/latest.json"
+    sig_zip="$tmp_dir/sig.zip"
+    package_file="$tmp_dir/package.vsix"
+    sig_manifest="$tmp_dir/.signature.manifest"
+
+    if curl -fsSL \
+        -H 'Accept: application/json;api-version=7.2-preview' \
+        -H 'User-Agent: VSCode 1.108.0 (Code)' \
+        -H 'X-Market-Client-Id: VSCode 1.108.0' \
+        "https://marketplace.visualstudio.com/_apis/public/gallery/vscode/CurtisFranks/mem-watchdog-status/latest" \
+        >"$latest_json"; then
+        PASS "Fetched Marketplace latest metadata payload"
+    else
+        FAIL "Could not fetch Marketplace latest metadata payload"
+    fi
+
+    latest_version=""
+    package_url=""
+    signature_url=""
+    while IFS=$'\t' read -r _key _value; do
+        case "$_key" in
+            version) latest_version="$_value" ;;
+            package_url) package_url="$_value" ;;
+            signature_url) signature_url="$_value" ;;
+        esac
+    done < <(
+        python3 - "$latest_json" <<'PY'
+import json, sys
+p = sys.argv[1]
+with open(p, 'r', encoding='utf-8') as f:
+    obj = json.load(f)
+vers = (obj.get('versions') or [])
+if not vers:
+    sys.exit(0)
+v = vers[0]
+print('version\t' + str(v.get('version', '')))
+for file_obj in v.get('files', []):
+    t = str(file_obj.get('assetType', ''))
+    s = str(file_obj.get('source', ''))
+    if t == 'Microsoft.VisualStudio.Services.VSIXPackage':
+        print('package_url\t' + s)
+    elif t == 'Microsoft.VisualStudio.Services.VsixSignature':
+        print('signature_url\t' + s)
+PY
+    )
+
+    if [[ "$latest_version" == "$pkg_version" ]]; then
+        PASS "Latest metadata version matches package.json ($latest_version)"
+    else
+        FAIL "Latest metadata version ($latest_version) != package.json ($pkg_version)"
+    fi
+
+    if [[ -n "$package_url" && -n "$signature_url" ]]; then
+        PASS "Located VSIX package and signature URLs in metadata"
+    else
+        FAIL "Missing VSIX package/signature URLs in latest metadata"
+    fi
+
+    if curl -fsSL "$package_url" -o "$package_file"; then
+        PASS "Downloaded CDN VSIX package"
+    else
+        FAIL "Could not download CDN VSIX package"
+    fi
+
+    if curl -fsSL "$signature_url" -o "$sig_zip"; then
+        PASS "Downloaded VSIX signature archive"
+    else
+        FAIL "Could not download VSIX signature archive"
+    fi
+
+    if unzip -p "$sig_zip" .signature.manifest >"$sig_manifest" 2>/dev/null; then
+        PASS "Extracted .signature.manifest"
+    else
+        FAIL "Could not extract .signature.manifest"
+    fi
+
+    pkg_hash_actual=""
+    pkg_size_actual=""
+    read -r pkg_hash_actual pkg_size_actual < <(
+        python3 - "$package_file" <<'PY'
+import base64, hashlib, os, sys
+path = sys.argv[1]
+with open(path, 'rb') as f:
+    b = f.read()
+print(base64.b64encode(hashlib.sha256(b).digest()).decode(), os.path.getsize(path))
+PY
+    )
+
+    pkg_hash_expected=""
+    pkg_size_expected=""
+    read -r pkg_hash_expected pkg_size_expected < <(
+        python3 - "$sig_manifest" <<'PY'
+import json, sys
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
+    obj = json.load(f)
+pkg = obj.get('package', {})
+print(pkg.get('digests', {}).get('sha256', ''), pkg.get('size', ''))
+PY
+    )
+
+    if [[ -n "$pkg_hash_expected" && "$pkg_hash_actual" == "$pkg_hash_expected" ]]; then
+        PASS "CDN VSIX hash matches signed manifest"
+    else
+        FAIL "CDN VSIX hash mismatch vs signed manifest (actual=$pkg_hash_actual expected=$pkg_hash_expected)"
+    fi
+
+    if [[ -n "$pkg_size_expected" && "$pkg_size_actual" == "$pkg_size_expected" ]]; then
+        PASS "CDN VSIX size matches signed manifest ($pkg_size_actual bytes)"
+    else
+        FAIL "CDN VSIX size mismatch vs signed manifest (actual=$pkg_size_actual expected=$pkg_size_expected)"
+    fi
+
+    rm -rf "$tmp_dir"
 fi
 
 echo ""

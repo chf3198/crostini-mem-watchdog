@@ -8,6 +8,14 @@ Daemon versions use `YYYYMMDD.N` (datestamp + revision).
 
 ## [Unreleased]
 
+## Extension v0.3.23 / Daemon v20260406.1 — 2026-04-09
+
+### Fixed
+- **Marketplace signature/update failure remediation** ([#168](https://github.com/chf3198/crostini-mem-watchdog/issues/168)) — republished extension to resolve `PackageIntegrityCheckFailed` during normal Marketplace update/install flow.
+
+### Changed
+- **Post-publish signature/package integrity gate** ([#168](https://github.com/chf3198/crostini-mem-watchdog/issues/168)) — `scripts/release-integrity-check.sh --post-publish` now verifies CDN VSIX SHA-256 and size against signed `.signature.manifest` from `Microsoft.VisualStudio.Services.VsixSignature`, preventing future signature/package drift from passing release closeout.
+
 ## Extension v0.3.22 / Daemon v20260406.1 — 2026-04-07
 
 ### Fixed
