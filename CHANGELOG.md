@@ -8,6 +8,9 @@ Daemon versions use `YYYYMMDD.N` (datestamp + revision).
 
 ## [Unreleased]
 
+### Changed
+- **Release-integrity target-version parity source hardened** ([#171](https://github.com/chf3198/crostini-mem-watchdog/issues/171)) — `scripts/release-integrity-check.sh --post-publish` now validates VSIX/signature parity using Marketplace ExtensionQuery for the exact `package.json` version. The `/latest` endpoint is treated as informational because it can lag after publish.
+
 ## Extension v0.3.23 / Daemon v20260406.1 — 2026-04-09
 
 ### Fixed

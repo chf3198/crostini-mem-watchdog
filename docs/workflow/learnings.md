@@ -36,6 +36,21 @@
 
 ---
 
+### 2026-04-09 — Marketplace `/latest` can lag after publish; parity checks must target the exact version
+
+**Context**: After publishing `v0.3.23`, release-integrity checks still failed because Marketplace `/latest` returned `0.3.22` while `vsce show` and ExtensionQuery already exposed `0.3.23`.
+
+**Discovery**:
+1. Marketplace surfaces are eventually consistent and can diverge temporarily: listing/version APIs can show the new version before `/latest` updates.
+2. A hard gate tied to `/latest` creates false negatives and can block release closeout even when the target version is healthy.
+3. ExtensionQuery (`_apis/public/gallery/extensionquery`) returns version-specific assets for the published target and is suitable for deterministic parity checks.
+
+**Application**:
+- `scripts/release-integrity-check.sh --post-publish` now uses ExtensionQuery to locate the exact `package.json` version and validates VSIX/signature parity against that version’s assets.
+- `/latest` is retained as informational telemetry only (lag warning), not a release-blocking condition.
+
+---
+
 ### 2026-04-07 — VS Code Shared Process has zero auto-restart; NodeService process differentiation requires child-process detection + `--inspect-port`
 
 **Context**: After v0.3.21 shipped, the user reported "A shared background process terminated unexpectedly. Please restart the application to recover." toasts and HTML Language Server crashing 5× (permanent death) during Playwright MCP sessions. Issue #80 (PR #81) added the PTY Host PID exclusion with a comment claiming Shared Process, File Watcher, and Network Service "are safe to kill — they auto-restart."
