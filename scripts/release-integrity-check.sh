@@ -19,6 +19,7 @@ fail=0
 
 PASS() { ((++pass)); echo "  ✓ $1"; }
 FAIL() { ((++fail)); echo "  ✗ $1"; }
+INFO() { echo "  • $1"; }
 
 pkg_version="$(node -e "process.stdout.write(require('./vscode-extension/package.json').version)")"
 root_daemon_version="$(grep -m1 -oP '^(?:export\s+)?WATCHDOG_VERSION=\K[0-9]+(?:\.[0-9]+)?' mem-watchdog.sh || true)"
@@ -88,10 +89,11 @@ if [[ $POST_PUBLISH -eq 1 ]]; then
     fi
 
     # Signature/package consistency gate: validate the CDN VSIX byte hash against
-    # the signed .signature.manifest package digest. This catches
-    # PackageIntegrityCheckFailed incidents before closeout.
+    # the signed .signature.manifest package digest for the exact published version.
+    # `/latest` can lag after publish, so it is informational only.
     tmp_dir="$(mktemp -d)"
     latest_json="$tmp_dir/latest.json"
+    query_json="$tmp_dir/extensionquery.json"
     sig_zip="$tmp_dir/sig.zip"
     package_file="$tmp_dir/package.vsix"
     sig_manifest="$tmp_dir/.signature.manifest"
@@ -102,51 +104,78 @@ if [[ $POST_PUBLISH -eq 1 ]]; then
         -H 'X-Market-Client-Id: VSCode 1.108.0' \
         "https://marketplace.visualstudio.com/_apis/public/gallery/vscode/CurtisFranks/mem-watchdog-status/latest" \
         >"$latest_json"; then
-        PASS "Fetched Marketplace latest metadata payload"
+        latest_version="$(python3 - "$latest_json" <<'PY'
+import json, sys
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
+    obj = json.load(f)
+vers = (obj.get('versions') or [])
+print(str(vers[0].get('version', '')) if vers else '')
+PY
+)"
+        if [[ "$latest_version" == "$pkg_version" ]]; then
+            PASS "Latest metadata version matches package.json ($latest_version)"
+        else
+            INFO "Latest metadata version is $latest_version while target is $pkg_version (allowed lag)"
+        fi
     else
-        FAIL "Could not fetch Marketplace latest metadata payload"
+        INFO "Could not fetch Marketplace latest metadata payload (continuing with target-version query)"
     fi
 
-    latest_version=""
+    if curl -fsSL \
+        -H 'Content-Type: application/json' \
+        -H 'Accept: application/json;api-version=7.2-preview.1' \
+        --data '{"filters":[{"criteria":[{"filterType":7,"value":"CurtisFranks.mem-watchdog-status"}]}],"flags":8067}' \
+        "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery" \
+        >"$query_json"; then
+        PASS "Fetched Marketplace extensionquery metadata"
+    else
+        FAIL "Could not fetch Marketplace extensionquery metadata"
+    fi
+
+    target_version=""
     package_url=""
     signature_url=""
     while IFS=$'\t' read -r _key _value; do
         case "$_key" in
-            version) latest_version="$_value" ;;
+            target_version) target_version="$_value" ;;
             package_url) package_url="$_value" ;;
             signature_url) signature_url="$_value" ;;
         esac
     done < <(
-        python3 - "$latest_json" <<'PY'
+        python3 - "$query_json" "$pkg_version" <<'PY'
 import json, sys
-p = sys.argv[1]
-with open(p, 'r', encoding='utf-8') as f:
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
     obj = json.load(f)
-vers = (obj.get('versions') or [])
-if not vers:
+target = sys.argv[2]
+results = obj.get('results') or []
+extensions = (results[0].get('extensions') if results else []) or []
+if not extensions:
     sys.exit(0)
-v = vers[0]
-print('version\t' + str(v.get('version', '')))
-for file_obj in v.get('files', []):
-    t = str(file_obj.get('assetType', ''))
-    s = str(file_obj.get('source', ''))
-    if t == 'Microsoft.VisualStudio.Services.VSIXPackage':
-        print('package_url\t' + s)
-    elif t == 'Microsoft.VisualStudio.Services.VsixSignature':
-        print('signature_url\t' + s)
+versions = extensions[0].get('versions') or []
+for v in versions:
+    if str(v.get('version', '')) == target:
+        print('target_version\t' + str(v.get('version', '')))
+        for file_obj in v.get('files', []):
+            t = str(file_obj.get('assetType', ''))
+            s = str(file_obj.get('source', ''))
+            if t == 'Microsoft.VisualStudio.Services.VSIXPackage':
+                print('package_url\t' + s)
+            elif t == 'Microsoft.VisualStudio.Services.VsixSignature':
+                print('signature_url\t' + s)
+        break
 PY
     )
 
-    if [[ "$latest_version" == "$pkg_version" ]]; then
-        PASS "Latest metadata version matches package.json ($latest_version)"
+    if [[ "$target_version" == "$pkg_version" ]]; then
+        PASS "Target version metadata found in extensionquery ($target_version)"
     else
-        FAIL "Latest metadata version ($latest_version) != package.json ($pkg_version)"
+        FAIL "Target version $pkg_version not found in extensionquery"
     fi
 
     if [[ -n "$package_url" && -n "$signature_url" ]]; then
-        PASS "Located VSIX package and signature URLs in metadata"
+        PASS "Located VSIX package and signature URLs for target version"
     else
-        FAIL "Missing VSIX package/signature URLs in latest metadata"
+        FAIL "Missing VSIX package/signature URLs for target version"
     fi
 
     if curl -fsSL "$package_url" -o "$package_file"; then
