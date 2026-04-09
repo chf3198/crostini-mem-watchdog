@@ -20,6 +20,22 @@
 
 ---
 
+### 2026-04-09 — Marketplace signature incidents require signed-manifest vs CDN package parity checks
+
+**Context**: Investigating issue #168 where VS Code update to `v0.3.22` failed with `PackageIntegrityCheckFailed` despite the extension being published and discoverable in Marketplace.
+
+**Discovery**:
+1. A release can present as "published" while the Marketplace signature verification path still fails if the CDN VSIX bytes don't match the signed package digest in `.signature.manifest`.
+2. Version-only checks (`package.json`, `vsce show`, Marketplace page version) are insufficient — they do not prove signature-verifier parity.
+3. The authoritative check is: download `Microsoft.VisualStudio.Services.VSIXPackage` and `Microsoft.VisualStudio.Services.VsixSignature`, extract `.signature.manifest`, then compare package SHA-256 and size against signed `package` fields.
+4. The Marketplace `latest` endpoint is publisher-case-sensitive in practice for this path (`CurtisFranks` works; lowercase can return "extension doesn't exist" payloads), so release scripts should use canonical publisher casing.
+
+**Application**:
+- `scripts/release-integrity-check.sh --post-publish` now includes signed-manifest vs CDN package parity verification (SHA-256 + size), failing release closeout on mismatch.
+- Release governance for VS Code extensions should treat this parity gate as required evidence, not optional diagnostics.
+
+---
+
 ### 2026-04-07 — VS Code Shared Process has zero auto-restart; NodeService process differentiation requires child-process detection + `--inspect-port`
 
 **Context**: After v0.3.21 shipped, the user reported "A shared background process terminated unexpectedly. Please restart the application to recover." toasts and HTML Language Server crashing 5× (permanent death) during Playwright MCP sessions. Issue #80 (PR #81) added the PTY Host PID exclusion with a comment claiming Shared Process, File Watcher, and Network Service "are safe to kill — they auto-restart."

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.3.23] — 2026-04-09
+
+### Fixed
+- **Marketplace update signature failure remediation** ([#168](https://github.com/chf3198/crostini-mem-watchdog/issues/168)) — republished extension to clear the `PackageIntegrityCheckFailed` update/install path seen on `v0.3.22` and restore normal Marketplace update flow.
+
+### Changed
+- **Release integrity guard strengthened** ([#168](https://github.com/chf3198/crostini-mem-watchdog/issues/168)) — `scripts/release-integrity-check.sh --post-publish` now downloads the CDN VSIX package + signature archive, parses `.signature.manifest`, and verifies package SHA-256/size match signed metadata. This catches package/signature drift before release closeout.
+
 ## [0.3.22] — 2026-04-07
 
 ### Fixed
