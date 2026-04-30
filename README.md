@@ -6,6 +6,8 @@
 
 **VS Code OOM protection for ChromeOS Crostini**
 
+<img src=".github/assets/mem-watchdog-banner.png" alt="Mem Watchdog Banner" width="100%">
+
 [![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/CurtisFranks.mem-watchdog-status?label=VS%20Marketplace&color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=CurtisFranks.mem-watchdog-status)
 [![Installs](https://img.shields.io/visual-studio-marketplace/i/CurtisFranks.mem-watchdog-status?color=00d4aa)](https://marketplace.visualstudio.com/items?itemName=CurtisFranks.mem-watchdog-status)
 [![License: PolyForm NC](https://img.shields.io/badge/License-PolyForm%20NC%201.0-blue.svg)](LICENSE)
