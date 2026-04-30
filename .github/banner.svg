@@ -1,0 +1,30 @@
+<svg width="1600" height="420" viewBox="0 0 1600 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="bg" x1="88" y1="44" x2="1490" y2="374" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#07131D"/>
+    <stop offset="0.5" stop-color="#0D354A"/>
+    <stop offset="1" stop-color="#166534"/>
+  </linearGradient>
+  <linearGradient id="shield" x1="1118" y1="90" x2="1376" y2="318" gradientUnits="userSpaceOnUse">
+    <stop stop-color="#46E0FF"/>
+    <stop offset="1" stop-color="#37D27E"/>
+  </linearGradient>
+</defs>
+<rect width="1600" height="420" rx="36" fill="url(#bg)"/>
+<path d="M94 98C227 69 305 147 430 128C560 109 662 40 821 68C995 98 1098 185 1268 173C1376 165 1452 116 1518 77" stroke="#38BDF8" stroke-width="6" stroke-linecap="round" opacity="0.35"/>
+<path d="M99 290C243 250 348 324 496 299C641 274 733 181 890 208C1041 234 1131 327 1285 314C1382 306 1458 255 1517 214" stroke="#4ADE80" stroke-width="5" stroke-linecap="round" opacity="0.28"/>
+<rect x="94" y="84" width="974" height="104" rx="24" fill="#081A26" fill-opacity="0.76" stroke="#67E8F9" stroke-opacity="0.28"/>
+<text x="126" y="146" fill="#F7FBFF" font-family="Segoe UI, Arial, sans-serif" font-size="68" font-weight="800" letter-spacing="1.1">CROSTINI MEM WATCHDOG</text>
+<rect x="120" y="206" width="862" height="44" rx="22" fill="#081A26" fill-opacity="0.84"/>
+<text x="150" y="235" fill="#D7F9FF" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="700">VS Code-aware OOM protection for ChromeOS Crostini • systemd daemon • extension-backed safety</text>
+<path d="M1229 84L1357 136V222C1357 270 1314 314 1229 348C1144 314 1101 270 1101 222V136L1229 84Z" fill="url(#shield)" opacity="0.95"/>
+<path d="M1229 112L1328 152V217C1328 254 1296 286 1229 315C1162 286 1130 254 1130 217V152L1229 112Z" fill="#09202C" fill-opacity="0.86"/>
+<rect x="1175" y="173" width="20" height="72" rx="10" fill="#67E8F9"/>
+<rect x="1208" y="154" width="20" height="91" rx="10" fill="#A7F3D0"/>
+<rect x="1241" y="138" width="20" height="107" rx="10" fill="#67E8F9"/>
+<rect x="1274" y="165" width="20" height="80" rx="10" fill="#A7F3D0"/>
+<path d="M202 320H520L572 280L620 340L688 256L760 320H1035" stroke="#C8FBFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="202" cy="320" r="10" fill="#4ADE80"/><circle cx="520" cy="320" r="10" fill="#4ADE80"/><circle cx="572" cy="280" r="10" fill="#4ADE80"/><circle cx="620" cy="340" r="10" fill="#4ADE80"/><circle cx="688" cy="256" r="10" fill="#4ADE80"/><circle cx="760" cy="320" r="10" fill="#4ADE80"/><circle cx="1035" cy="320" r="10" fill="#4ADE80"/>
+<rect x="480" y="350" width="598" height="40" rx="20" fill="#081A26" fill-opacity="0.9"/>
+<text x="518" y="377" fill="#D5FFE8" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="800" letter-spacing="1.1">CHROMEOS CROSTINI • VS CODE EXTENSION • MEMORY SAFETY</text>
+</svg>
