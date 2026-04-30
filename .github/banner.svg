@@ -15,8 +15,8 @@
 <path d="M99 290C243 250 348 324 496 299C641 274 733 181 890 208C1041 234 1131 327 1285 314C1382 306 1458 255 1517 214" stroke="#4ADE80" stroke-width="5" stroke-linecap="round" opacity="0.28"/>
 <rect x="94" y="84" width="974" height="104" rx="24" fill="#081A26" fill-opacity="0.76" stroke="#67E8F9" stroke-opacity="0.28"/>
 <text x="126" y="146" fill="#F7FBFF" font-family="Segoe UI, Arial, sans-serif" font-size="68" font-weight="800" letter-spacing="1.1">CROSTINI MEM WATCHDOG</text>
-<rect x="120" y="206" width="862" height="44" rx="22" fill="#081A26" fill-opacity="0.84"/>
-<text x="150" y="235" fill="#D7F9FF" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="700">VS Code-aware OOM protection for ChromeOS Crostini • systemd daemon • extension-backed safety</text>
+<rect x="94" y="202" width="1062" height="52" rx="26" fill="#081A26" fill-opacity="0.88" stroke="#67E8F9" stroke-opacity="0.20" stroke-width="1.5"/>
+<text x="126" y="235" fill="#D7F9FF" font-family="Segoe UI, Arial, sans-serif" font-size="26" font-weight="700">VS Code-aware OOM protection for ChromeOS Crostini • systemd daemon • safety</text>
 <path d="M1229 84L1357 136V222C1357 270 1314 314 1229 348C1144 314 1101 270 1101 222V136L1229 84Z" fill="url(#shield)" opacity="0.95"/>
 <path d="M1229 112L1328 152V217C1328 254 1296 286 1229 315C1162 286 1130 254 1130 217V152L1229 112Z" fill="#09202C" fill-opacity="0.86"/>
 <rect x="1175" y="173" width="20" height="72" rx="10" fill="#67E8F9"/>
