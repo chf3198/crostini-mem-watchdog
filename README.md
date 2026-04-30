@@ -1,4 +1,6 @@
 <div align="center">
+<img src=".github/banner.svg" alt="Mem Watchdog Banner" width="100%">
+
 
 # 🛡️ Mem Watchdog
 
